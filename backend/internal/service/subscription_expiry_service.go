@@ -14,6 +14,7 @@ type SubscriptionExpiryService struct {
 	stopCh      chan struct{}
 	stopOnce    sync.Once
 	wg          sync.WaitGroup
+	locker      periodicTaskLocker
 }
 
 func NewSubscriptionExpiryService(userSubRepo UserSubscriptionRepository, interval time.Duration) *SubscriptionExpiryService {
@@ -21,6 +22,7 @@ func NewSubscriptionExpiryService(userSubRepo UserSubscriptionRepository, interv
 		userSubRepo: userSubRepo,
 		interval:    interval,
 		stopCh:      make(chan struct{}),
+		locker:      sharedPeriodicTaskLocker(),
 	}
 }
 
@@ -57,6 +59,17 @@ func (s *SubscriptionExpiryService) Stop() {
 }
 
 func (s *SubscriptionExpiryService) runOnce() {
+	release, acquired := acquirePeriodicTaskRunLock(
+		s.locker,
+		"sub2api:periodic:subscription-expiry",
+		periodicTaskLockTTL(s.interval),
+		"[SubscriptionExpiry]",
+	)
+	if !acquired {
+		return
+	}
+	defer release()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

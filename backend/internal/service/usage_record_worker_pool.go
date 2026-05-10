@@ -18,7 +18,7 @@ const (
 	defaultUsageRecordWorkerCount          = 128
 	defaultUsageRecordQueueSize            = 16384
 	defaultUsageRecordTaskTimeoutSeconds   = 5
-	defaultUsageRecordOverflowPolicy       = config.UsageRecordOverflowPolicySample
+	defaultUsageRecordOverflowPolicy       = config.UsageRecordOverflowPolicySync
 	defaultUsageRecordOverflowSampleRatio  = 10
 	defaultUsageRecordAutoScaleEnabled     = true
 	defaultUsageRecordAutoScaleMinWorkers  = 128
@@ -176,11 +176,24 @@ func (p *UsageRecordWorkerPool) Submit(task UsageRecordTask) UsageRecordSubmitMo
 			p.execute(task)
 			return UsageRecordSubmitModeSync
 		}
+	case config.UsageRecordOverflowPolicyDrop:
+		// Reliability hardening: usage/billing side effects should not be silently
+		// dropped when queue is full. Keep counting queue overflow, but execute
+		// synchronously as compensation.
+		p.syncFallback.Add(1)
+		p.droppedQueueFull.Add(1)
+		p.logDrop("full")
+		p.execute(task)
+		return UsageRecordSubmitModeSync
 	}
 
+	// For sample policy, non-sampled overflows degrade to sync fallback to avoid
+	// silent loss of post-response usage side effects.
+	p.syncFallback.Add(1)
 	p.droppedQueueFull.Add(1)
 	p.logDrop("full")
-	return UsageRecordSubmitModeDropped
+	p.execute(task)
+	return UsageRecordSubmitModeSync
 }
 
 // Stats 返回当前池状态与计数器。

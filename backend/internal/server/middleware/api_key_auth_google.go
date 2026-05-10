@@ -2,10 +2,12 @@ package middleware
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -26,10 +28,13 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			abortWithGoogleError(c, 400, "Query parameter api_key is deprecated. Use Authorization header or key instead.")
 			return
 		}
-		apiKeyString := extractAPIKeyForGoogle(c)
+		apiKeyString, source := extractAPIKeyForGoogle(c)
 		if apiKeyString == "" {
 			abortWithGoogleError(c, 401, "API key is required")
 			return
+		}
+		if source == googleAPIKeySourceQueryKey {
+			c.Header("Warning", `299 - "Query parameter key is deprecated for API keys; use x-goog-api-key, Authorization, or x-api-key header"`)
 		}
 
 		apiKey, err := apiKeyService.GetByKey(c.Request.Context(), apiKeyString)
@@ -42,9 +47,19 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			return
 		}
 
-		if !apiKey.IsActive() {
+		if !apiKey.IsActive() &&
+			apiKey.Status != service.StatusAPIKeyExpired &&
+			apiKey.Status != service.StatusAPIKeyQuotaExhausted {
 			abortWithGoogleError(c, 401, "API key is disabled")
 			return
+		}
+		if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
+			clientIP := ip.GetTrustedClientIP(c)
+			allowed, _ := ip.CheckIPRestrictionWithCompiledRules(clientIP, apiKey.CompiledIPWhitelist, apiKey.CompiledIPBlacklist)
+			if !allowed {
+				abortWithGoogleError(c, 403, "Access denied")
+				return
+			}
 		}
 		if apiKey.User == nil {
 			abortWithGoogleError(c, 401, "User associated with API key not found")
@@ -66,6 +81,23 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			setGroupContext(c, apiKey.Group)
 			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 			c.Next()
+			return
+		}
+
+		switch apiKey.Status {
+		case service.StatusAPIKeyQuotaExhausted:
+			abortWithGoogleError(c, http.StatusTooManyRequests, "API key quota exhausted")
+			return
+		case service.StatusAPIKeyExpired:
+			abortWithGoogleError(c, http.StatusForbidden, "API key expired")
+			return
+		}
+		if apiKey.IsExpired() {
+			abortWithGoogleError(c, http.StatusForbidden, "API key expired")
+			return
+		}
+		if apiKey.IsQuotaExhausted() {
+			abortWithGoogleError(c, http.StatusTooManyRequests, "API key quota exhausted")
 			return
 		}
 
@@ -118,13 +150,23 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 	}
 }
 
+type googleAPIKeySource int
+
+const (
+	googleAPIKeySourceNone googleAPIKeySource = iota
+	googleAPIKeySourceXGoogAPIKey
+	googleAPIKeySourceAuthorizationBearer
+	googleAPIKeySourceXAPIKey
+	googleAPIKeySourceQueryKey
+)
+
 // extractAPIKeyForGoogle extracts API key for Google/Gemini endpoints.
 // Priority: x-goog-api-key > Authorization: Bearer > x-api-key > query key
 // This allows OpenClaw and other clients using Bearer auth to work with Gemini endpoints.
-func extractAPIKeyForGoogle(c *gin.Context) string {
+func extractAPIKeyForGoogle(c *gin.Context) (string, googleAPIKeySource) {
 	// 1) preferred: Gemini native header
 	if k := strings.TrimSpace(c.GetHeader("x-goog-api-key")); k != "" {
-		return k
+		return k, googleAPIKeySourceXGoogAPIKey
 	}
 
 	// 2) fallback: Authorization: Bearer <key>
@@ -133,24 +175,24 @@ func extractAPIKeyForGoogle(c *gin.Context) string {
 		parts := strings.SplitN(auth, " ", 2)
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
 			if k := strings.TrimSpace(parts[1]); k != "" {
-				return k
+				return k, googleAPIKeySourceAuthorizationBearer
 			}
 		}
 	}
 
 	// 3) x-api-key header (backward compatibility)
 	if k := strings.TrimSpace(c.GetHeader("x-api-key")); k != "" {
-		return k
+		return k, googleAPIKeySourceXAPIKey
 	}
 
 	// 4) query parameter key (for specific paths)
 	if allowGoogleQueryKey(c.Request.URL.Path) {
 		if v := strings.TrimSpace(c.Query("key")); v != "" {
-			return v
+			return v, googleAPIKeySourceQueryKey
 		}
 	}
 
-	return ""
+	return "", googleAPIKeySourceNone
 }
 
 func allowGoogleQueryKey(path string) bool {

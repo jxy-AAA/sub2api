@@ -326,6 +326,21 @@ func TestApplyMigrationsFS_ReadMigrationError(t *testing.T) {
 }
 
 func TestPgAdvisoryLockAndUnlock_ErrorBranches(t *testing.T) {
+	t.Run("unsupported_database_dialect_reports_postgres_only", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		mock.ExpectQuery("SELECT pg_try_advisory_lock\\(\\$1\\)").
+			WithArgs(migrationsAdvisoryLockID).
+			WillReturnError(errors.New("function pg_try_advisory_lock(bigint) does not exist"))
+
+		err = pgAdvisoryLock(context.Background(), db)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), postgresOnlySupportedError)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
 	t.Run("context_cancelled_while_not_locked", func(t *testing.T) {
 		db, mock, err := sqlmock.New()
 		require.NoError(t, err)
@@ -355,6 +370,21 @@ func TestPgAdvisoryLockAndUnlock_ErrorBranches(t *testing.T) {
 		err = pgAdvisoryUnlock(context.Background(), db)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "release migrations lock")
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("unlock_unsupported_database_dialect_reports_postgres_only", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		mock.ExpectExec("SELECT pg_advisory_unlock\\(\\$1\\)").
+			WithArgs(migrationsAdvisoryLockID).
+			WillReturnError(errors.New("function pg_advisory_unlock(bigint) does not exist"))
+
+		err = pgAdvisoryUnlock(context.Background(), db)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), postgresOnlySupportedError)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 

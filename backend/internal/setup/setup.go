@@ -17,7 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 	"gopkg.in/yaml.v3"
 )
@@ -28,6 +28,9 @@ const (
 	InstallLockFile            = ".installed"
 	defaultUserConcurrency     = 5
 	simpleModeAdminConcurrency = 30
+	defaultMigrationTimeout    = 10 * time.Minute
+	migrationTimeoutEnvKey     = "MIGRATION_TIMEOUT_SECONDS"
+	legacyMigrationTimeoutKey  = "DATABASE_MIGRATION_TIMEOUT"
 )
 
 func setupDefaultAdminConcurrency() int {
@@ -144,6 +147,94 @@ func decideAdminBootstrap(totalUsers, adminUsers int64) adminBootstrapDecision {
 	}
 }
 
+func buildPostgresDSN(cfg *DatabaseConfig, dbName string) string {
+	return fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, dbName, cfg.SSLMode,
+	)
+}
+
+func managementDatabaseCandidates() []string {
+	return []string{"postgres", "template1"}
+}
+
+func validateSetupDatabaseName(name string) error {
+	if !validateDBName(name) {
+		return fmt.Errorf("invalid database name: must match [a-zA-Z][a-zA-Z0-9_]* and be <= 63 chars")
+	}
+	return nil
+}
+
+func openPostgresManagementDB(cfg *DatabaseConfig) (*sql.DB, string, error) {
+	candidates := managementDatabaseCandidates()
+	failures := make([]string, 0, len(candidates))
+
+	for _, managementDBName := range candidates {
+		managementDSN := buildPostgresDSN(cfg, managementDBName)
+		db, err := sql.Open("postgres", managementDSN)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s(open): %v", managementDBName, err))
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pingErr := db.PingContext(ctx)
+		cancel()
+		if pingErr != nil {
+			failures = append(failures, fmt.Sprintf("%s(ping): %v", managementDBName, pingErr))
+			if err := db.Close(); err != nil {
+				logger.LegacyPrintf("setup", "failed to close postgres connection: %v", err)
+			}
+			continue
+		}
+
+		return db, managementDBName, nil
+	}
+
+	return nil, "", fmt.Errorf(
+		"failed to connect to PostgreSQL management database (tried: %s): %s",
+		strings.Join(candidates, ", "),
+		strings.Join(failures, "; "),
+	)
+}
+
+func getMigrationTimeout() time.Duration {
+	timeoutRaw := strings.TrimSpace(os.Getenv(migrationTimeoutEnvKey))
+	if timeoutRaw != "" {
+		seconds, err := strconv.Atoi(timeoutRaw)
+		if err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		logger.LegacyPrintf(
+			"setup",
+			"invalid %s=%q, fallback to default %s",
+			migrationTimeoutEnvKey,
+			timeoutRaw,
+			defaultMigrationTimeout,
+		)
+		return defaultMigrationTimeout
+	}
+
+	timeoutRaw = strings.TrimSpace(os.Getenv(legacyMigrationTimeoutKey))
+	if timeoutRaw == "" {
+		return defaultMigrationTimeout
+	}
+
+	timeout, err := time.ParseDuration(timeoutRaw)
+	if err != nil || timeout <= 0 {
+		logger.LegacyPrintf(
+			"setup",
+			"invalid %s=%q, fallback to default %s",
+			legacyMigrationTimeoutKey,
+			timeoutRaw,
+			defaultMigrationTimeout,
+		)
+		return defaultMigrationTimeout
+	}
+
+	return timeout
+}
+
 // NeedsSetup checks if the system needs initial setup
 // Uses multiple checks to prevent attackers from forcing re-setup by deleting config
 func NeedsSetup() bool {
@@ -162,15 +253,13 @@ func NeedsSetup() bool {
 
 // TestDatabaseConnection tests the database connection and creates database if not exists
 func TestDatabaseConnection(cfg *DatabaseConfig) error {
-	// First, connect to the default 'postgres' database to check/create target database
-	defaultDSN := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode,
-	)
+	if err := validateSetupDatabaseName(cfg.DBName); err != nil {
+		return err
+	}
 
-	db, err := sql.Open("postgres", defaultDSN)
+	db, managementDBName, err := openPostgresManagementDB(cfg)
 	if err != nil {
-		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
+		return err
 	}
 
 	defer func() {
@@ -185,10 +274,6 @@ func TestDatabaseConnection(cfg *DatabaseConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
-		return fmt.Errorf("ping failed: %w", err)
-	}
-
 	// Check if target database exists
 	var exists bool
 	row := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", cfg.DBName)
@@ -201,11 +286,11 @@ func TestDatabaseConnection(cfg *DatabaseConfig) error {
 		// 注意：数据库名不能参数化，依赖前置输入校验保障安全。
 		// Note: Database names cannot be parameterized, but we've already validated cfg.DBName
 		// in the handler using validateDBName() which only allows [a-zA-Z][a-zA-Z0-9_]*
-		_, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", cfg.DBName))
+		_, err := db.ExecContext(ctx, "CREATE DATABASE "+pq.QuoteIdentifier(cfg.DBName))
 		if err != nil {
 			return fmt.Errorf("failed to create database '%s': %w", cfg.DBName, err)
 		}
-		logger.LegacyPrintf("setup", "Database '%s' created successfully", cfg.DBName)
+		logger.LegacyPrintf("setup", "Database '%s' created successfully via '%s'", cfg.DBName, managementDBName)
 	}
 
 	// Now connect to the target database to verify
@@ -214,10 +299,7 @@ func TestDatabaseConnection(cfg *DatabaseConfig) error {
 	}
 	db = nil
 
-	targetDSN := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode,
-	)
+	targetDSN := buildPostgresDSN(cfg, cfg.DBName)
 
 	targetDB, err := sql.Open("postgres", targetDSN)
 	if err != nil {
@@ -328,11 +410,7 @@ func createInstallLock() error {
 }
 
 func initializeDatabase(cfg *SetupConfig) error {
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Database.Host, cfg.Database.Port, cfg.Database.User,
-		cfg.Database.Password, cfg.Database.DBName, cfg.Database.SSLMode,
-	)
+	dsn := buildPostgresDSN(&cfg.Database, cfg.Database.DBName)
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -345,7 +423,7 @@ func initializeDatabase(cfg *SetupConfig) error {
 		}
 	}()
 
-	migrationCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	migrationCtx, cancel := context.WithTimeout(context.Background(), getMigrationTimeout())
 	defer cancel()
 	return repository.ApplyMigrations(migrationCtx, db)
 }

@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS atlas_schema_revisions (
 
 const migrationsAdvisoryLockID int64 = 694208311321144027
 const migrationsLockRetryInterval = 500 * time.Millisecond
+const postgresOnlySupportedError = "only PostgreSQL is supported"
 const nonTransactionalMigrationSuffix = "_notx.sql"
 const paymentOrdersOutTradeNoUniqueMigration = "120_enforce_payment_orders_out_trade_no_unique_notx.sql"
 const paymentOrdersOutTradeNoUniqueIndex = "paymentorder_out_trade_no_unique"
@@ -463,7 +464,7 @@ func pgAdvisoryLock(ctx context.Context, db migrationSQLExecutor) error {
 	for {
 		var locked bool
 		if err := db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", migrationsAdvisoryLockID).Scan(&locked); err != nil {
-			return fmt.Errorf("acquire migrations lock: %w", err)
+			return wrapMigrationLockError("acquire migrations lock", err)
 		}
 		if locked {
 			return nil
@@ -479,7 +480,25 @@ func pgAdvisoryLock(ctx context.Context, db migrationSQLExecutor) error {
 func pgAdvisoryUnlock(ctx context.Context, db migrationSQLExecutor) error {
 	_, err := db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", migrationsAdvisoryLockID)
 	if err != nil {
-		return fmt.Errorf("release migrations lock: %w", err)
+		return wrapMigrationLockError("release migrations lock", err)
 	}
 	return nil
+}
+
+func wrapMigrationLockError(action string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if isUnsupportedPostgresLockError(err) {
+		return fmt.Errorf("%s: %s: %w", action, postgresOnlySupportedError, err)
+	}
+	return fmt.Errorf("%s: %w", action, err)
+}
+
+func isUnsupportedPostgresLockError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "pg_try_advisory_lock") ||
+		strings.Contains(msg, "pg_advisory_unlock") ||
+		strings.Contains(msg, "function pg_") ||
+		strings.Contains(msg, "sqlstate 42883")
 }

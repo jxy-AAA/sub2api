@@ -6,6 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -17,6 +20,25 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	_ "github.com/lib/pq" // PostgreSQL 驱动，通过副作用导入注册驱动
 )
+
+const defaultRepositoryMigrationTimeout = 10 * time.Minute
+
+func configuredMigrationTimeout() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("MIGRATION_TIMEOUT_SECONDS")); raw != "" {
+		seconds, err := strconv.Atoi(raw)
+		if err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return defaultRepositoryMigrationTimeout
+	}
+	if raw := strings.TrimSpace(os.Getenv("DATABASE_MIGRATION_TIMEOUT")); raw != "" {
+		timeout, err := time.ParseDuration(raw)
+		if err == nil && timeout > 0 {
+			return timeout
+		}
+	}
+	return defaultRepositoryMigrationTimeout
+}
 
 // InitEnt 初始化 Ent ORM 客户端并返回客户端实例和底层的 *sql.DB。
 //
@@ -57,7 +79,7 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	// 确保数据库 schema 已准备就绪。
 	// SQL 迁移文件是 schema 的权威来源（source of truth）。
 	// 这种方式比 Ent 的自动迁移更可控，支持复杂的迁移场景。
-	migrationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	migrationCtx, cancel := context.WithTimeout(context.Background(), configuredMigrationTimeout())
 	defer cancel()
 	if err := applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err != nil {
 		_ = drv.Close() // 迁移失败时关闭驱动，避免资源泄露

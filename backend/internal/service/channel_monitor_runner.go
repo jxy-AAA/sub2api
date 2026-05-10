@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -46,6 +47,7 @@ type monitorRunnerSvc interface {
 type ChannelMonitorRunner struct {
 	svc            monitorRunnerSvc
 	settingService *SettingService
+	locker         periodicTaskLocker
 
 	pool         pond.Pool
 	parentCtx    context.Context
@@ -86,6 +88,7 @@ func newChannelMonitorRunner(svc monitorRunnerSvc, settingService *SettingServic
 	return &ChannelMonitorRunner{
 		svc:            svc,
 		settingService: settingService,
+		locker:         sharedPeriodicTaskLocker(),
 		pool:           pond.NewPool(monitorWorkerConcurrency),
 		parentCtx:      ctx,
 		parentCancel:   cancel,
@@ -283,6 +286,16 @@ func (r *ChannelMonitorRunner) runOne(id int64, name string) {
 				"monitor_id", id, "name", name, "panic", rec)
 		}
 	}()
+
+	lockKey := fmt.Sprintf("sub2api:periodic:channel-monitor:%d", id)
+	lockTTL := monitorRequestTimeout + monitorPingTimeout + monitorRunOneBuffer + 15*time.Second
+	release, acquired := acquirePeriodicTaskRunLock(r.locker, lockKey, lockTTL, "channel_monitor")
+	if !acquired {
+		slog.Debug("channel_monitor: lock held by another instance, skip run",
+			"monitor_id", id, "name", name)
+		return
+	}
+	defer release()
 
 	if _, err := r.svc.RunCheck(ctx, id); err != nil {
 		slog.Warn("channel_monitor: run check failed",

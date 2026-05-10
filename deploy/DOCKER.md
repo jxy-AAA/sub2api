@@ -8,8 +8,17 @@ Sub2API is an AI API Gateway Platform for distributing and managing AI product s
 docker run -d \
   --name sub2api \
   -p 8080:8080 \
-  -e DATABASE_URL="postgres://user:pass@host:5432/sub2api" \
-  -e REDIS_URL="redis://host:6379" \
+  -e AUTO_SETUP=true \
+  -e DATABASE_HOST=host \
+  -e DATABASE_PORT=5432 \
+  -e DATABASE_USER=user \
+  -e DATABASE_PASSWORD=pass \
+  -e DATABASE_DBNAME=sub2api \
+  -e DATABASE_SSLMODE=disable \
+  -e REDIS_HOST=host \
+  -e REDIS_PORT=6379 \
+  -e REDIS_PASSWORD=pass \
+  -e REDIS_DB=0 \
   weishaw/sub2api:latest
 ```
 
@@ -24,8 +33,17 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - DATABASE_URL=postgres://postgres:postgres@db:5432/sub2api?sslmode=disable
-      - REDIS_URL=redis://redis:6379
+      - AUTO_SETUP=true
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - DATABASE_USER=postgres
+      - DATABASE_PASSWORD=postgres
+      - DATABASE_DBNAME=sub2api
+      - DATABASE_SSLMODE=disable
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redispass
+      - REDIS_DB=0
     depends_on:
       - db
       - redis
@@ -53,10 +71,21 @@ volumes:
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | Yes | - |
-| `REDIS_URL` | Redis connection string | Yes | - |
-| `PORT` | Server port | No | `8080` |
-| `GIN_MODE` | Gin framework mode (`debug`/`release`) | No | `release` |
+| `AUTO_SETUP` | Enable install-time auto setup | Recommended | `false` |
+| `DATABASE_HOST` | PostgreSQL host | Yes | - |
+| `DATABASE_PORT` | PostgreSQL port | No | `5432` |
+| `DATABASE_USER` | PostgreSQL username | Yes | - |
+| `DATABASE_PASSWORD` | PostgreSQL password | Yes | - |
+| `DATABASE_DBNAME` | Target database name | No | `sub2api` |
+| `DATABASE_SSLMODE` | PostgreSQL SSL mode | No | `disable` |
+| `MIGRATION_TIMEOUT_SECONDS` | Database migration timeout in seconds | No | `600` |
+| `DATABASE_MIGRATION_TIMEOUT` | Legacy setup migration timeout (`time.ParseDuration` format); prefer `MIGRATION_TIMEOUT_SECONDS` | No | unset |
+| `REDIS_HOST` | Redis host | Yes | - |
+| `REDIS_PORT` | Redis port | No | `6379` |
+| `REDIS_PASSWORD` | Redis password | No | empty |
+| `REDIS_DB` | Redis database index | No | `0` |
+| `SERVER_PORT` | Server port | No | `8080` |
+| `SERVER_MODE` | Server mode (`debug`/`release`) | No | `release` |
 
 ## Supported Architectures
 

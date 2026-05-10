@@ -8301,7 +8301,7 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 		if err := writer.CreateBestEffort(usageCtx, usageLog); err != nil {
 			logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
 			if IsUsageLogCreateDropped(err) {
-				return false
+				logger.LegacyPrintf(logKey, "Create usage log dropped by best-effort queue, request_id=%s account_id=%d; trying sync fallback", usageLog.RequestID, usageLog.AccountID)
 			}
 			if _, syncErr := repo.Create(usageCtx, usageLog); syncErr != nil {
 				logger.LegacyPrintf(logKey, "Create usage log sync fallback failed: %v", syncErr)

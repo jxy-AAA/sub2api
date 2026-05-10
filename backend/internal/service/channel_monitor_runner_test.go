@@ -4,10 +4,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // stubMonitorSvc 实现 monitorRunnerSvc，用于隔离 runner 与真实 service/repo。
@@ -18,6 +21,23 @@ type stubMonitorSvc struct {
 	runErr     error
 	listErr    error
 	runHoldFor time.Duration // RunCheck 内额外阻塞的时长，用来测试 Stop 等待行为
+}
+
+type stubPeriodicLocker struct {
+	acquired bool
+	err      error
+	calls    atomic.Int64
+}
+
+func (s *stubPeriodicLocker) TryLock(_ context.Context, _ string, _ time.Duration) (func(), bool, error) {
+	s.calls.Add(1)
+	if s.err != nil {
+		return nil, false, s.err
+	}
+	if !s.acquired {
+		return nil, false, nil
+	}
+	return func() {}, true, nil
 }
 
 func (s *stubMonitorSvc) ListEnabledMonitors(_ context.Context) ([]*ChannelMonitor, error) {
@@ -258,6 +278,30 @@ func TestInFlight_AcquireReleaseSymmetric(t *testing.T) {
 		t.Fatal("acquire after release should succeed")
 	}
 	r.releaseInFlight(42)
+}
+
+func TestRunOne_DistributedLockNotAcquiredSkipsRunCheck(t *testing.T) {
+	svc := &stubMonitorSvc{}
+	r := newRunnerForTest(svc)
+	locker := &stubPeriodicLocker{acquired: false}
+	r.locker = locker
+
+	r.runOne(11, "m11")
+
+	require.Equal(t, int64(1), locker.calls.Load())
+	require.Equal(t, int64(0), svc.runCount.Load())
+}
+
+func TestRunOne_DistributedLockErrorSkipsRunCheck(t *testing.T) {
+	svc := &stubMonitorSvc{}
+	r := newRunnerForTest(svc)
+	locker := &stubPeriodicLocker{err: errors.New("redis unavailable")}
+	r.locker = locker
+
+	r.runOne(12, "m12")
+
+	require.Equal(t, int64(1), locker.calls.Load())
+	require.Equal(t, int64(0), svc.runCount.Load())
 }
 
 // stoppedWithin 在 timeout 内并行调用 Stop，超时则 Fatal。验证 Stop 不会阻塞。

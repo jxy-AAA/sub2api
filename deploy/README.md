@@ -207,9 +207,14 @@ docker compose down -v
 
 ### Environment Variables
 
+> Note: Sub2API runtime reads `DATABASE_*` and `REDIS_*` variables (not `DATABASE_URL` / `REDIS_URL`).
+> In `docker-compose*.yml`, these are already wired from `.env` values.
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `POSTGRES_PASSWORD` | **Yes** | - | PostgreSQL password |
+| `MIGRATION_TIMEOUT_SECONDS` | No | `600` | Database migration timeout in seconds |
+| `DATABASE_MIGRATION_TIMEOUT` | No | unset | Legacy setup-time migration timeout (`time.ParseDuration` format); prefer `MIGRATION_TIMEOUT_SECONDS` |
 | `JWT_SECRET` | **Recommended** | *(auto-generated)* | JWT secret (fixed for persistent sessions) |
 | `TOTP_ENCRYPTION_KEY` | **Recommended** | *(auto-generated)* | TOTP encryption key (fixed for persistent 2FA) |
 | `SERVER_PORT` | No | `8080` | Server port |

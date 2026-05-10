@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDecideAdminBootstrap(t *testing.T) {
@@ -86,4 +87,91 @@ func TestWriteConfigFileKeepsDefaultUserConcurrency(t *testing.T) {
 	if !strings.Contains(string(data), "user_concurrency: 5") {
 		t.Fatalf("config missing default user concurrency, got:\n%s", string(data))
 	}
+}
+
+func TestValidateSetupDatabaseName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		dbName  string
+		wantErr bool
+	}{
+		{name: "valid name", dbName: "sub2api_prod", wantErr: false},
+		{name: "starts with number", dbName: "1invalid", wantErr: true},
+		{name: "contains dash", dbName: "sub2api-prod", wantErr: true},
+		{name: "too long", dbName: strings.Repeat("a", 64), wantErr: true},
+		{name: "empty", dbName: "", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSetupDatabaseName(tc.dbName)
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateSetupDatabaseName(%q) expected error, got nil", tc.dbName)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateSetupDatabaseName(%q) unexpected error: %v", tc.dbName, err)
+			}
+		})
+	}
+}
+
+func TestManagementDatabaseCandidates(t *testing.T) {
+	t.Parallel()
+
+	candidates := managementDatabaseCandidates()
+	if len(candidates) < 2 {
+		t.Fatalf("expected at least 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0] != "postgres" {
+		t.Fatalf("first candidate = %q, want %q", candidates[0], "postgres")
+	}
+	if candidates[1] != "template1" {
+		t.Fatalf("second candidate = %q, want %q", candidates[1], "template1")
+	}
+}
+
+func TestGetMigrationTimeout(t *testing.T) {
+	t.Run("uses default when env missing", func(t *testing.T) {
+		t.Setenv(migrationTimeoutEnvKey, "")
+		t.Setenv(legacyMigrationTimeoutKey, "")
+		if got := getMigrationTimeout(); got != defaultMigrationTimeout {
+			t.Fatalf("getMigrationTimeout()=%s, want %s", got, defaultMigrationTimeout)
+		}
+	})
+
+	t.Run("uses env seconds when valid", func(t *testing.T) {
+		t.Setenv(migrationTimeoutEnvKey, "720")
+		t.Setenv(legacyMigrationTimeoutKey, "")
+		if got := getMigrationTimeout(); got != 12*time.Minute {
+			t.Fatalf("getMigrationTimeout()=%s, want %s", got, 12*time.Minute)
+		}
+	})
+
+	t.Run("uses legacy duration when seconds env missing", func(t *testing.T) {
+		t.Setenv(migrationTimeoutEnvKey, "")
+		t.Setenv(legacyMigrationTimeoutKey, "12m")
+		if got := getMigrationTimeout(); got != 12*time.Minute {
+			t.Fatalf("getMigrationTimeout()=%s, want %s", got, 12*time.Minute)
+		}
+	})
+
+	t.Run("falls back when env invalid", func(t *testing.T) {
+		t.Setenv(migrationTimeoutEnvKey, "invalid")
+		t.Setenv(legacyMigrationTimeoutKey, "")
+		if got := getMigrationTimeout(); got != defaultMigrationTimeout {
+			t.Fatalf("getMigrationTimeout()=%s, want %s", got, defaultMigrationTimeout)
+		}
+	})
+
+	t.Run("falls back when env non-positive", func(t *testing.T) {
+		t.Setenv(migrationTimeoutEnvKey, "0")
+		t.Setenv(legacyMigrationTimeoutKey, "")
+		if got := getMigrationTimeout(); got != defaultMigrationTimeout {
+			t.Fatalf("getMigrationTimeout()=%s, want %s", got, defaultMigrationTimeout)
+		}
+	})
 }

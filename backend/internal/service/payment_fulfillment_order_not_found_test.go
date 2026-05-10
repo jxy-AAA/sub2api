@@ -104,3 +104,61 @@ func TestErrOrderNotFound_DistinctFromOtherErrors(t *testing.T) {
 	require.False(t, errors.Is(wrappedLookupErr, ErrOrderNotFound),
 		"DB connection failures must not masquerade as order-not-found")
 }
+
+func TestConfirmPayment_OrderIDNotFound_ReturnsSentinel(t *testing.T) {
+	ctx := context.Background()
+	client := newOrderNotFoundTestClient(t)
+
+	svc := &PaymentService{
+		entClient:       client,
+		providersLoaded: true,
+	}
+
+	err := svc.confirmPayment(ctx, 999999, "trade-no", 1, payment.TypeStripe, nil)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrOrderNotFound)
+}
+
+func TestConfirmPayment_DBErrorNotSwallowed(t *testing.T) {
+	ctx := context.Background()
+	client := newOrderNotFoundTestClient(t)
+	require.NoError(t, client.Close())
+
+	svc := &PaymentService{
+		entClient:       client,
+		providersLoaded: true,
+	}
+
+	err := svc.confirmPayment(ctx, 1, "trade-no", 1, payment.TypeStripe, nil)
+	require.Error(t, err)
+	require.False(t, errors.Is(err, ErrOrderNotFound))
+}
+
+func TestAlreadyProcessed_OrderIDNotFound_ReturnsSentinel(t *testing.T) {
+	ctx := context.Background()
+	client := newOrderNotFoundTestClient(t)
+
+	svc := &PaymentService{
+		entClient:       client,
+		providersLoaded: true,
+	}
+
+	err := svc.alreadyProcessed(ctx, &dbent.PaymentOrder{ID: 999999})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrOrderNotFound)
+}
+
+func TestAlreadyProcessed_DBErrorNotSwallowed(t *testing.T) {
+	ctx := context.Background()
+	client := newOrderNotFoundTestClient(t)
+	require.NoError(t, client.Close())
+
+	svc := &PaymentService{
+		entClient:       client,
+		providersLoaded: true,
+	}
+
+	err := svc.alreadyProcessed(ctx, &dbent.PaymentOrder{ID: 1})
+	require.Error(t, err)
+	require.False(t, errors.Is(err, ErrOrderNotFound))
+}

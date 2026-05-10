@@ -15,7 +15,8 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN go build -o main ./cmd/server/
+RUN test -f ./internal/web/dist/index.html && \
+    CGO_ENABLED=0 go build -tags embed -trimpath -o main ./cmd/server/
 
 # 暴露端口
 EXPOSE 8080

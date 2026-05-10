@@ -16,6 +16,7 @@ type PaymentOrderExpiryService struct {
 	stopCh     chan struct{}
 	stopOnce   sync.Once
 	wg         sync.WaitGroup
+	locker     periodicTaskLocker
 }
 
 func NewPaymentOrderExpiryService(paymentSvc *PaymentService, interval time.Duration) *PaymentOrderExpiryService {
@@ -23,6 +24,7 @@ func NewPaymentOrderExpiryService(paymentSvc *PaymentService, interval time.Dura
 		paymentSvc: paymentSvc,
 		interval:   interval,
 		stopCh:     make(chan struct{}),
+		locker:     sharedPeriodicTaskLocker(),
 	}
 }
 
@@ -59,6 +61,17 @@ func (s *PaymentOrderExpiryService) Stop() {
 }
 
 func (s *PaymentOrderExpiryService) runOnce() {
+	release, acquired := acquirePeriodicTaskRunLock(
+		s.locker,
+		"sub2api:periodic:payment-order-expiry",
+		periodicTaskLockTTL(s.interval),
+		"[PaymentOrderExpiry]",
+	)
+	if !acquired {
+		return
+	}
+	defer release()
+
 	ctx, cancel := context.WithTimeout(context.Background(), expiryCheckTimeout)
 	defer cancel()
 

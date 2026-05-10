@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
@@ -214,13 +215,30 @@ func TestVerifyNotificationWithProvidersFailsWhenAllProvidersReject(t *testing.T
 	require.Error(t, err)
 }
 
+func TestHandleNotify_ProviderRoutingErrorReturns5xx(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	paymentService := service.NewPaymentService(nil, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil)
+	h := NewPaymentWebhookHandler(paymentService, payment.NewRegistry())
+
+	r := gin.New()
+	r.POST("/api/v1/payment/webhook/easypay", h.EasyPayNotify)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/payment/webhook/easypay", strings.NewReader(""))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, "provider unavailable", rec.Body.String())
+}
+
 type webhookHandlerProviderStub struct {
 	key          string
 	notification *payment.PaymentNotification
 	verifyErr    error
 }
 
-func (p webhookHandlerProviderStub) Name() string { return p.key }
+func (p webhookHandlerProviderStub) Name() string        { return p.key }
 func (p webhookHandlerProviderStub) ProviderKey() string { return p.key }
 func (p webhookHandlerProviderStub) SupportedTypes() []payment.PaymentType {
 	return []payment.PaymentType{payment.PaymentType(p.key)}
