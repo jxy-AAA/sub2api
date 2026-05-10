@@ -344,6 +344,7 @@ export default {
     dashboard: '仪表盘',
     announcements: '公告',
     apiKeys: 'API 密钥',
+    apihubGuide: 'apihub使用教程',
     usage: '使用记录',
     redeem: '兑换',
     affiliate: '代理分销',

@@ -184,6 +184,17 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/apihub-guide',
+    name: 'ApihubGuide',
+    component: () => import('@/views/user/ApihubGuideView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'apihub使用教程',
+      titleKey: 'nav.apihubGuide'
+    }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: () => import('@/views/user/UsageView.vue'),

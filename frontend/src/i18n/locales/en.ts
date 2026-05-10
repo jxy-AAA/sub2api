@@ -344,6 +344,7 @@ export default {
     dashboard: 'Dashboard',
     announcements: 'Announcements',
     apiKeys: 'API Keys',
+    apihubGuide: 'apihub使用教程',
     usage: 'Usage',
     redeem: 'Redeem',
     affiliate: 'Agent Distribution',
