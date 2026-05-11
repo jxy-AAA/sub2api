@@ -56,6 +56,7 @@ describe('useAuthStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
+    sessionStorage.clear()
     clearAccessToken()
     vi.useFakeTimers()
     vi.clearAllMocks()
@@ -213,9 +214,8 @@ describe('useAuthStore', () => {
 
       expect(store.isAuthenticated).toBe(true)
     })
-
-    it('恢复持久化 pending auth session', () => {
-      localStorage.setItem(
+    it('restores persisted pending auth session metadata without restoring a token', () => {
+      sessionStorage.setItem(
         'pending_auth_session',
         JSON.stringify({
           token: 'pending-token',
@@ -230,10 +230,13 @@ describe('useAuthStore', () => {
 
       expect(store.hasPendingAuthSession).toBe(true)
       expect(store.pendingAuthSession).toEqual({
-        token: 'pending-token',
+        token: '',
         token_field: 'pending_auth_token',
         provider: 'wechat',
         redirect: '/profile',
+        adoption_required: undefined,
+        suggested_display_name: undefined,
+        suggested_avatar_url: undefined
       })
     })
   })
@@ -250,17 +253,25 @@ describe('useAuthStore', () => {
       })
 
       expect(store.hasPendingAuthSession).toBe(true)
-      expect(JSON.parse(localStorage.getItem('pending_auth_session') || 'null')).toEqual({
+      expect(localStorage.getItem('pending_auth_session')).toBeNull()
+      expect(store.pendingAuthSession).toEqual({
         token: 'pending-token',
         token_field: 'pending_auth_token',
         provider: 'wechat',
         redirect: '/profile',
       })
+      const persisted = JSON.parse(sessionStorage.getItem('pending_auth_session') || 'null')
+      expect(persisted).toEqual({
+        token_field: 'pending_auth_token',
+        provider: 'wechat',
+        redirect: '/profile',
+      })
+      expect(sessionStorage.getItem('pending_auth_session')).not.toContain('pending-token')
 
       store.clearPendingAuthSession()
 
       expect(store.hasPendingAuthSession).toBe(false)
-      expect(localStorage.getItem('pending_auth_session')).toBeNull()
+      expect(sessionStorage.getItem('pending_auth_session')).toBeNull()
     })
 
     it('restores a persisted pending oauth session without requiring a token value', () => {
@@ -313,6 +324,55 @@ describe('useAuthStore', () => {
         provider: 'oidc',
         redirect: '/register',
       })
+    })
+
+    it('stages pending registration challenge without persisting password', () => {
+      const store = useAuthStore()
+
+      store.setPendingRegistrationChallenge({
+        email: 'user@example.com',
+        password: 'secret-123',
+        turnstile_token: 'turnstile-token',
+        invitation_code: 'INVITE123',
+        aff_code: 'AFF123',
+        pending_auth_token: 'pending-token',
+        pending_auth_token_field: 'pending_oauth_token',
+      })
+
+      expect(store.hasPendingRegistrationChallenge).toBe(true)
+      expect(localStorage.getItem('pending_registration_challenge')).toBeNull()
+      expect(JSON.parse(sessionStorage.getItem('pending_registration_challenge') || 'null')).toMatchObject({
+        email: 'user@example.com',
+        turnstile_token: 'turnstile-token',
+        invitation_code: 'INVITE123',
+        aff_code: 'AFF123',
+      })
+      expect(sessionStorage.getItem('pending_registration_challenge')).not.toContain('secret-123')
+      expect(sessionStorage.getItem('pending_registration_challenge')).not.toContain('pending-token')
+      expect(store.getPendingRegistrationChallengePayload()).toMatchObject({
+        email: 'user@example.com',
+        password: 'secret-123',
+        turnstile_token: 'turnstile-token',
+        invitation_code: 'INVITE123',
+        aff_code: 'AFF123',
+        pending_auth_token: 'pending-token',
+        pending_auth_token_field: 'pending_oauth_token',
+      })
+    })
+
+    it('clears pending registration challenge after successful login', async () => {
+      const store = useAuthStore()
+      store.setPendingRegistrationChallenge({
+        email: 'user@example.com',
+        password: 'secret-123',
+      })
+      mockLogin.mockResolvedValue(fakeAuthResponse)
+
+      await store.login({ email: 'test@example.com', password: '123456' })
+
+      expect(store.hasPendingRegistrationChallenge).toBe(false)
+      expect(store.getPendingRegistrationChallengePayload()).toBeNull()
+      expect(sessionStorage.getItem('pending_registration_challenge')).toBeNull()
     })
   })
 

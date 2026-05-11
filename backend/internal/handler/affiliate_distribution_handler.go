@@ -15,13 +15,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type modelRatePayload struct {
-	Model      string  `json:"model"`
-	Multiplier float64 `json:"multiplier"`
+type groupRatePayload struct {
+	GroupID        int64   `json:"group_id"`
+	RateMultiplier float64 `json:"rate_multiplier"`
 }
 
-type updateModelRatesRequest struct {
-	ModelRates []modelRatePayload `json:"model_rates" binding:"required"`
+type updateGroupRatesRequest struct {
+	GroupRates []groupRatePayload `json:"group_rates" binding:"required"`
 }
 
 // GetAffiliate returns the current user's distribution overview.
@@ -41,44 +41,44 @@ func (h *UserHandler) GetAffiliate(c *gin.Context) {
 	response.Success(c, detail)
 }
 
-// GetMyInviteModelRates returns the current user's invite-code model pricing.
+// GetMyInviteGroupRates returns the current user's invite-code group pricing.
 // GET /api/v1/user/aff/invite-pricing
-func (h *UserHandler) GetMyInviteModelRates(c *gin.Context) {
+func (h *UserHandler) GetMyInviteGroupRates(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
 
-	rates, err := h.affiliateService.ListInviteModelRates(c.Request.Context(), subject.UserID)
+	rates, err := h.affiliateService.ListInviteGroupRates(c.Request.Context(), subject.UserID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{"model_rates": rates})
+	response.Success(c, gin.H{"group_rates": rates, "invite_group_rates": rates})
 }
 
-// SaveMyInviteModelRates updates the current user's invite-code model pricing.
+// SaveMyInviteGroupRates updates the current user's invite-code group pricing.
 // PUT /api/v1/user/aff/invite-pricing
-func (h *UserHandler) SaveMyInviteModelRates(c *gin.Context) {
+func (h *UserHandler) SaveMyInviteGroupRates(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
 
-	rates, err := bindModelRatesRequest(c)
+	rates, err := bindGroupRatesRequest(c)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	updated, err := h.affiliateService.SaveInviteModelRates(c.Request.Context(), subject.UserID, rates)
+	updated, err := h.affiliateService.SaveInviteGroupRates(c.Request.Context(), subject.UserID, rates)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{"model_rates": updated})
+	response.Success(c, gin.H{"group_rates": updated, "invite_group_rates": updated})
 }
 
 // ListDirectAffiliateMembers returns the current user's direct subordinates.
@@ -98,7 +98,7 @@ func (h *UserHandler) ListDirectAffiliateMembers(c *gin.Context) {
 	response.Success(c, items)
 }
 
-// UpdateDirectAffiliateMemberRates updates one direct subordinate's model pricing.
+// UpdateDirectAffiliateMemberRates updates one direct subordinate's group pricing.
 // PUT /api/v1/user/aff/direct-members/:user_id/pricing
 func (h *UserHandler) UpdateDirectAffiliateMemberRates(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
@@ -112,20 +112,21 @@ func (h *UserHandler) UpdateDirectAffiliateMemberRates(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	rates, err := bindModelRatesRequest(c)
+	rates, err := bindGroupRatesRequest(c)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	updated, err := h.affiliateService.UpdateDirectSubordinateModelRates(c.Request.Context(), subject.UserID, targetUserID, rates)
+	updated, err := h.affiliateService.UpdateDirectSubordinateGroupRates(c.Request.Context(), subject.UserID, targetUserID, rates)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	response.Success(c, gin.H{
-		"user_id":     targetUserID,
-		"model_rates": updated,
+		"user_id":             targetUserID,
+		"group_rates":         updated,
+		"current_group_rates": updated,
 	})
 }
 
@@ -293,12 +294,12 @@ func (h *UserHandler) GetManagedUserDistributionPricing(c *gin.Context) {
 		return
 	}
 
-	rates, err := h.affiliateService.GetUserDistributionPricingScoped(c.Request.Context(), subject.UserID, targetUserID)
+	rates, err := h.affiliateService.GetUserDistributionGroupRatesScoped(c.Request.Context(), subject.UserID, targetUserID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{"user_id": targetUserID, "model_rates": rates})
+	response.Success(c, gin.H{"user_id": targetUserID, "group_rates": rates, "current_group_rates": rates})
 }
 
 // UpdateManagedUserDistributionPricing updates one scoped downline user's pricing.
@@ -325,18 +326,18 @@ func (h *UserHandler) UpdateManagedUserDistributionPricing(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	rates, err := bindModelRatesRequest(c)
+	rates, err := bindGroupRatesRequest(c)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	updated, err := h.affiliateService.UpdateUserDistributionPricingScoped(c.Request.Context(), subject.UserID, targetUserID, rates)
+	updated, err := h.affiliateService.UpdateUserDistributionGroupRatesScoped(c.Request.Context(), subject.UserID, targetUserID, rates)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{"user_id": targetUserID, "model_rates": updated})
+	response.Success(c, gin.H{"user_id": targetUserID, "group_rates": updated, "current_group_rates": updated})
 }
 
 // TransferAffiliateQuota is retained for compatibility but disabled.
@@ -345,32 +346,31 @@ func (h *UserHandler) TransferAffiliateQuota(c *gin.Context) {
 	response.ErrorFrom(c, infraerrors.New(http.StatusGone, "AFFILIATE_TRANSFER_REMOVED", "affiliate transfer is no longer available in distribution mode"))
 }
 
-func bindModelRatesRequest(c *gin.Context) ([]service.AgentModelRateInput, error) {
-	var req updateModelRatesRequest
+func bindGroupRatesRequest(c *gin.Context) ([]service.AgentGroupRateInput, error) {
+	var req updateGroupRatesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_REQUEST", "invalid request: "+err.Error())
 	}
-	if len(req.ModelRates) == 0 {
-		return nil, infraerrors.BadRequest("INVALID_MODEL_RATES", "model_rates cannot be empty")
+	if len(req.GroupRates) == 0 {
+		return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "group_rates cannot be empty")
 	}
 
-	rates := make([]service.AgentModelRateInput, 0, len(req.ModelRates))
-	seen := make(map[string]struct{}, len(req.ModelRates))
-	for _, item := range req.ModelRates {
-		model := strings.TrimSpace(item.Model)
-		if model == "" {
-			return nil, infraerrors.BadRequest("INVALID_MODEL_RATES", "model is required")
+	rates := make([]service.AgentGroupRateInput, 0, len(req.GroupRates))
+	seen := make(map[int64]struct{}, len(req.GroupRates))
+	for _, item := range req.GroupRates {
+		if item.GroupID <= 0 {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "group_id is required")
 		}
-		if _, exists := seen[model]; exists {
-			return nil, infraerrors.BadRequest("INVALID_MODEL_RATES", "duplicate model: "+model)
+		if _, exists := seen[item.GroupID]; exists {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "duplicate group_id")
 		}
-		if item.Multiplier <= 0 || math.IsNaN(item.Multiplier) || math.IsInf(item.Multiplier, 0) {
-			return nil, infraerrors.BadRequest("INVALID_MODEL_RATES", "multiplier must be greater than 0")
+		if item.RateMultiplier <= 0 || math.IsNaN(item.RateMultiplier) || math.IsInf(item.RateMultiplier, 0) {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "rate_multiplier must be greater than 0")
 		}
-		seen[model] = struct{}{}
-		rates = append(rates, service.AgentModelRateInput{
-			Model:      model,
-			Multiplier: item.Multiplier,
+		seen[item.GroupID] = struct{}{}
+		rates = append(rates, service.AgentGroupRateInput{
+			GroupID:        item.GroupID,
+			RateMultiplier: item.RateMultiplier,
 		})
 	}
 	return rates, nil

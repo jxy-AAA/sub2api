@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -17,7 +18,20 @@ type affiliateDistributionRepository struct {
 	client *dbent.Client
 }
 
-const affiliateRateMultiplierFenPerUSD = 10.0
+const (
+	affiliateRateMultiplierFenPerUSD            = 10.0
+	affiliateDistributionRateMultiplierMax      = 100.0
+	affiliateDistributionUsageJobClaimTTL       = 15 * time.Minute
+	affiliateDistributionSourceAdminOverride    = "admin_override"
+	affiliateDistributionSourceUpstreamOverride = "upstream_override"
+	affiliateDistributionSourceInviteCode       = "invite_code"
+	affiliateDistributionSourceDefaultExplicit  = "default_explicit"
+	affiliateDistributionSourceGroupInherited   = "group_inherited"
+	affiliateDistributionSourceGroupDefault     = "group_default"
+	affiliateDistributionSourceRootDefault      = "root_default"
+	affiliateInviterSourceAffiliateCode         = "affiliate_code"
+	affiliateInviterSourceDefaultRoot           = "default_root"
+)
 
 type affiliateDistributionQueryExecer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -35,11 +49,59 @@ func NewAffiliateDistributionRepository(client *dbent.Client) *affiliateDistribu
 }
 
 func affiliateDistributionRebateAmountRMB(usageAmountUSD, parentRate, childRate float64) float64 {
-	rebateRate := childRate - parentRate
-	if rebateRate < 0 {
-		rebateRate = 0
+	if math.IsNaN(usageAmountUSD) || math.IsInf(usageAmountUSD, 0) || usageAmountUSD <= 0 {
+		return 0
 	}
-	return usageAmountUSD * rebateRate / affiliateRateMultiplierFenPerUSD
+	if math.IsNaN(parentRate) || math.IsInf(parentRate, 0) || parentRate <= 0 {
+		return 0
+	}
+	if math.IsNaN(childRate) || math.IsInf(childRate, 0) || childRate <= 0 {
+		return 0
+	}
+	rebateRate := childRate - parentRate
+	if rebateRate <= 0 {
+		return 0
+	}
+	rebateAmount := usageAmountUSD * rebateRate / affiliateRateMultiplierFenPerUSD
+	if math.IsNaN(rebateAmount) || math.IsInf(rebateAmount, 0) || rebateAmount < 0 {
+		return 0
+	}
+	return rebateAmount
+}
+
+func scanAgentGroupRates(rows *sql.Rows, inheritedUpstreamUserID *int64) ([]service.AgentGroupRate, error) {
+	items := make([]service.AgentGroupRate, 0)
+	for rows.Next() {
+		var item service.AgentGroupRate
+		var upstreamUserID sql.NullInt64
+		var updatedAt sql.NullTime
+		if err := rows.Scan(
+			&item.GroupID,
+			&item.GroupName,
+			&item.GroupPlatform,
+			&item.GroupDefaultRateMultiplier,
+			&item.RateMultiplier,
+			&item.SourceType,
+			&item.SourceAffCode,
+			&upstreamUserID,
+			&updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if upstreamUserID.Valid {
+			value := upstreamUserID.Int64
+			item.UpstreamUserID = &value
+		} else if inheritedUpstreamUserID != nil {
+			value := *inheritedUpstreamUserID
+			item.UpstreamUserID = &value
+		}
+		if updatedAt.Valid {
+			value := updatedAt.Time
+			item.UpdatedAt = &value
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (r *affiliateDistributionRepository) GetDistributionOverview(ctx context.Context, userID int64) (*service.AgentDistributionOverview, error) {
@@ -59,17 +121,17 @@ func (r *affiliateDistributionRepository) GetDistributionOverview(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	inviteRates, err := r.ListInviteModelRates(ctx, userID)
+	inviteRates, err := r.ListInviteGroupRates(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	currentRates, err := r.GetUserDistributionGroupRates(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	isAdmin, err := r.isAdminUser(ctx, userID)
 	if err != nil {
 		return nil, err
-	}
-	agentRates := make([]service.AgentModelRate, 0, len(inviteRates))
-	for _, rate := range inviteRates {
-		agentRates = append(agentRates, service.AgentModelRate{Model: rate.Model, Multiplier: rate.Multiplier})
 	}
 	return &service.AgentDistributionOverview{
 		UserID:                  summary.UserID,
@@ -80,55 +142,69 @@ func (r *affiliateDistributionRepository) GetDistributionOverview(ctx context.Co
 		TodayBusinessUSD:        businessUSD,
 		TodayRebateRMB:          rebateRMB,
 		CurrentRebateBalanceRMB: balanceRMB,
-		InviteModelRates:        agentRates,
+		InviteGroupRates:        inviteRates,
+		CurrentGroupRates:       currentRates,
+		MyGroupRates:            currentRates,
 		CanEditSubordinates:     isAdmin || summary.AffCount > 0,
 		CanAdjustOwnRebate:      isAdmin,
 		MonthlyResetDayOfUTC:    1,
 	}, nil
 }
 
-func (r *affiliateDistributionRepository) ListInviteModelRates(ctx context.Context, userID int64) ([]service.AgentModelRate, error) {
+func (r *affiliateDistributionRepository) ListInviteGroupRates(ctx context.Context, userID int64) ([]service.AgentGroupRate, error) {
 	if userID <= 0 {
 		return nil, service.ErrUserNotFound
 	}
-	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, `
-SELECT model_key, rate_multiplier::double precision
-FROM affiliate_distribution_invite_model_rates
-WHERE inviter_user_id = $1
-ORDER BY model_key ASC`, userID)
-	if err != nil {
-		return nil, fmt.Errorf("list invite model rates: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := make([]service.AgentModelRate, 0)
-	for rows.Next() {
-		var item service.AgentModelRate
-		if err := rows.Scan(&item.Model, &item.Multiplier); err != nil {
-			return nil, err
-		}
-		out = append(out, item)
-	}
-	return out, rows.Err()
+	return r.listInviteGroupRatesWithClient(ctx, clientFromContext(ctx, r.client), userID)
 }
 
-func (r *affiliateDistributionRepository) SaveInviteModelRates(ctx context.Context, userID int64, rates []service.AgentModelRateInput) ([]service.AgentModelRate, error) {
+func (r *affiliateDistributionRepository) listInviteGroupRatesWithClient(ctx context.Context, client affiliateDistributionQueryExecer, userID int64) ([]service.AgentGroupRate, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT g.id,
+       g.name,
+       g.platform,
+       g.rate_multiplier::double precision,
+       COALESCE(r.rate_multiplier, g.rate_multiplier)::double precision,
+       CASE WHEN r.group_id IS NOT NULL THEN 'invite_code' ELSE 'group_default' END,
+       ''::varchar,
+       NULL::bigint,
+       r.updated_at
+FROM groups g
+LEFT JOIN affiliate_distribution_invite_group_rates r
+       ON r.group_id = g.id AND r.inviter_user_id = $1
+WHERE g.deleted_at IS NULL AND g.status = 'active'
+ORDER BY g.sort_order ASC, g.id ASC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list invite group rates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanAgentGroupRates(rows, nil)
+}
+
+func (r *affiliateDistributionRepository) SaveInviteGroupRates(ctx context.Context, userID int64, rates []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
 	if userID <= 0 {
 		return nil, service.ErrUserNotFound
 	}
-	normalized := normalizeAgentModelRateInputs(rates)
-	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+	normalized, err := validateAndNormalizeDistributionGroupRateInputs(rates)
+	if err != nil {
+		return nil, err
+	}
+	err = r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
 		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
 			return err
 		}
+		if _, err := txClient.ExecContext(txCtx, `DELETE FROM affiliate_distribution_invite_group_rates WHERE inviter_user_id = $1`, userID); err != nil {
+			return fmt.Errorf("reset invite group rates: %w", err)
+		}
 		for _, rate := range normalized {
 			if _, err := txClient.ExecContext(txCtx, `
-INSERT INTO affiliate_distribution_invite_model_rates (inviter_user_id, model_key, rate_multiplier, created_at, updated_at)
+INSERT INTO affiliate_distribution_invite_group_rates (inviter_user_id, group_id, rate_multiplier, created_at, updated_at)
 VALUES ($1, $2, $3, NOW(), NOW())
-ON CONFLICT (inviter_user_id, model_key)
+ON CONFLICT (inviter_user_id, group_id)
 DO UPDATE SET rate_multiplier = EXCLUDED.rate_multiplier, updated_at = NOW()`,
-				userID, rate.Model, rate.Multiplier,
+				userID, rate.GroupID, rate.RateMultiplier,
 			); err != nil {
-				return fmt.Errorf("save invite model rate: %w", err)
+				return fmt.Errorf("save invite group rate: %w", err)
 			}
 		}
 		return nil
@@ -136,7 +212,7 @@ DO UPDATE SET rate_multiplier = EXCLUDED.rate_multiplier, updated_at = NOW()`,
 	if err != nil {
 		return nil, err
 	}
-	return r.ListInviteModelRates(ctx, userID)
+	return r.ListInviteGroupRates(ctx, userID)
 }
 
 func (r *affiliateDistributionRepository) ListDirectSubordinates(ctx context.Context, userID int64) ([]service.AgentDirectMember, error) {
@@ -147,7 +223,7 @@ func (r *affiliateDistributionRepository) ListDirectSubordinates(ctx context.Con
 SELECT ua.user_id,
        COALESCE(u.email, ''),
        COALESCE(u.username, ''),
-       (u.role = 'admin') AS is_admin,
+       (u.role = 'admin' OR ua.aff_count > 0) AS is_admin,
        ua.created_at,
        COALESCE(dm.revenue_amount_usd, 0)::double precision,
        COALESCE(dm.rebate_amount, 0)::double precision,
@@ -175,25 +251,25 @@ ORDER BY ua.created_at ASC`, userID, truncateToUTCDate(time.Now()))
 			ts := createdAt.Time
 			item.CreatedAt = &ts
 		}
-		rates, err := r.GetUserDistributionPricing(ctx, item.UserID)
+		rates, err := r.GetUserDistributionGroupRates(ctx, item.UserID)
 		if err != nil {
 			return nil, err
 		}
-		item.CurrentModelRates = rates
+		item.CurrentGroupRates = rates
 		item.ParentCanEditRates = true
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
-func (r *affiliateDistributionRepository) UpdateDirectSubordinateModelRates(ctx context.Context, userID, subordinateUserID int64, rates []service.AgentModelRateInput) ([]service.AgentModelRate, error) {
+func (r *affiliateDistributionRepository) UpdateDirectSubordinateGroupRates(ctx context.Context, userID, subordinateUserID int64, rates []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
 	if userID <= 0 || subordinateUserID <= 0 {
 		return nil, service.ErrUserNotFound
 	}
 	if err := r.ensureDirectSubordinate(ctx, userID, subordinateUserID); err != nil {
 		return nil, err
 	}
-	return r.AdminUpdateUserDistributionPricing(ctx, userID, subordinateUserID, rates)
+	return r.AdminUpdateUserDistributionGroupRates(ctx, userID, subordinateUserID, rates)
 }
 
 func (r *affiliateDistributionRepository) ListUserDistributionHistory(ctx context.Context, userID int64, filter service.AgentHistoryFilter) ([]service.AgentHistoryItem, int64, error) {
@@ -563,7 +639,15 @@ WITH RECURSIVE tree AS (
     FROM user_affiliates child
     JOIN tree ON child.inviter_id = tree.user_id
 )
-SELECT t.user_id, t.inviter_id, COALESCE(u.email, ''), COALESCE(u.username, ''), ua.aff_code, t.depth, (u.role = 'admin')::boolean, COALESCE(rb.current_amount, 0)::double precision
+SELECT t.user_id,
+       t.inviter_id,
+       COALESCE(u.email, ''),
+       COALESCE(u.username, ''),
+       ua.aff_code,
+       t.depth,
+       (u.role = 'admin')::boolean,
+       (u.id = (SELECT id FROM users WHERE role = 'admin' AND status = 'active' ORDER BY id ASC LIMIT 1))::boolean,
+       COALESCE(rb.current_amount, 0)::double precision
 FROM tree t
 JOIN users u ON u.id = t.user_id
 JOIN user_affiliates ua ON ua.user_id = t.user_id
@@ -581,58 +665,45 @@ ORDER BY t.depth ASC, t.user_id ASC`, rootPredicate, searchArgIndex, searchArgIn
 	for rows.Next() {
 		var node service.AgentTreeNode
 		var inviterID sql.NullInt64
-		if err := rows.Scan(&node.UserID, &inviterID, &node.Email, &node.Username, &node.InviteCode, &node.Depth, &node.IsAdmin, &node.CurrentRebateBalanceRMB); err != nil {
+		if err := rows.Scan(&node.UserID, &inviterID, &node.Email, &node.Username, &node.InviteCode, &node.Depth, &node.IsAdmin, &node.IsRootAdmin, &node.CurrentRebateBalanceRMB); err != nil {
 			return nil, err
 		}
 		if inviterID.Valid {
 			node.InviterID = &inviterID.Int64
 		}
-		rates, err := r.GetUserDistributionPricing(ctx, node.UserID)
+		rates, err := r.GetUserDistributionGroupRates(ctx, node.UserID)
 		if err != nil {
 			return nil, err
 		}
-		node.CurrentModelRates = rates
+		node.CurrentGroupRates = rates
+		inviteRates, err := r.ListInviteGroupRates(ctx, node.UserID)
+		if err != nil {
+			return nil, err
+		}
+		node.InviteGroupRates = inviteRates
 		items = append(items, node)
 	}
 	return items, rows.Err()
 }
 
-func (r *affiliateDistributionRepository) GetUserDistributionPricing(ctx context.Context, userID int64) ([]service.AgentModelRate, error) {
+func (r *affiliateDistributionRepository) GetUserDistributionGroupRates(ctx context.Context, userID int64) ([]service.AgentGroupRate, error) {
 	if userID <= 0 {
 		return nil, service.ErrUserNotFound
 	}
-	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, `
-SELECT model_key, rate_multiplier::double precision
-FROM affiliate_distribution_user_model_rates
-WHERE user_id = $1
-ORDER BY model_key ASC`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	items := make([]service.AgentModelRate, 0)
-	for rows.Next() {
-		var item service.AgentModelRate
-		if err := rows.Scan(&item.Model, &item.Multiplier); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
+	return r.getUserDistributionGroupRatesWithClient(ctx, clientFromContext(ctx, r.client), userID, make(map[int64][]service.AgentGroupRate))
 }
 
-func (r *affiliateDistributionRepository) AdminUpdateUserDistributionPricing(ctx context.Context, operatorUserID, userID int64, rates []service.AgentModelRateInput) ([]service.AgentModelRate, error) {
+func (r *affiliateDistributionRepository) AdminUpdateUserDistributionGroupRates(ctx context.Context, operatorUserID, userID int64, rates []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
 	if operatorUserID <= 0 || userID <= 0 {
 		return nil, service.ErrUserNotFound
 	}
 	if err := r.ensureDirectOrAdmin(ctx, operatorUserID, userID); err != nil {
 		return nil, err
 	}
-	_, err := r.SaveInviteModelRates(ctx, userID, rates)
-	if err != nil {
+	if _, err := r.saveUserDistributionGroupRates(ctx, userID, rates, "admin_override"); err != nil {
 		return nil, err
 	}
-	return r.GetUserDistributionPricing(ctx, userID)
+	return r.GetUserDistributionGroupRates(ctx, userID)
 }
 
 func (r *affiliateDistributionRepository) ListDailyBusinessRankingScoped(ctx context.Context, operatorUserID int64, filter service.AgentRankingFilter) ([]service.AgentDailyBusinessRankingItem, int64, error) {
@@ -662,28 +733,189 @@ func (r *affiliateDistributionRepository) GetDistributionTreeScoped(ctx context.
 	return r.GetDistributionTree(ctx, filter)
 }
 
-func (r *affiliateDistributionRepository) GetUserDistributionPricingScoped(ctx context.Context, operatorUserID, userID int64) ([]service.AgentModelRate, error) {
+func (r *affiliateDistributionRepository) GetUserDistributionGroupRatesScoped(ctx context.Context, operatorUserID, userID int64) ([]service.AgentGroupRate, error) {
 	if operatorUserID <= 0 || userID <= 0 {
 		return nil, service.ErrUserNotFound
 	}
 	if err := r.ensureDescendant(ctx, operatorUserID, userID); err != nil {
 		return nil, err
 	}
-	return r.GetUserDistributionPricing(ctx, userID)
+	return r.GetUserDistributionGroupRates(ctx, userID)
 }
 
-func (r *affiliateDistributionRepository) UpdateUserDistributionPricingScoped(ctx context.Context, operatorUserID, userID int64, rates []service.AgentModelRateInput) ([]service.AgentModelRate, error) {
+func (r *affiliateDistributionRepository) UpdateUserDistributionGroupRatesScoped(ctx context.Context, operatorUserID, userID int64, rates []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
 	if operatorUserID <= 0 || userID <= 0 {
 		return nil, service.ErrUserNotFound
 	}
 	if err := r.ensureDescendant(ctx, operatorUserID, userID); err != nil {
 		return nil, err
 	}
-	_, err := r.SaveInviteModelRates(ctx, userID, rates)
+	if _, err := r.saveUserDistributionGroupRates(ctx, userID, rates, "upstream_override"); err != nil {
+		return nil, err
+	}
+	return r.GetUserDistributionGroupRates(ctx, userID)
+}
+
+func (r *affiliateDistributionRepository) ListDefaultUserGroupRates(ctx context.Context) ([]service.AgentGroupRate, error) {
+	return r.listDefaultUserGroupRatesWithClient(ctx, clientFromContext(ctx, r.client))
+}
+
+func (r *affiliateDistributionRepository) SaveDefaultUserGroupRates(ctx context.Context, rates []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
+	normalized, err := validateAndNormalizeDistributionGroupRateInputs(rates)
 	if err != nil {
 		return nil, err
 	}
-	return r.GetUserDistributionPricing(ctx, userID)
+	err = r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		if _, err := txClient.ExecContext(txCtx, `DELETE FROM affiliate_distribution_default_user_group_rates`); err != nil {
+			return fmt.Errorf("reset default user group rates: %w", err)
+		}
+		for _, rate := range normalized {
+			if _, err := txClient.ExecContext(txCtx, `
+INSERT INTO affiliate_distribution_default_user_group_rates (group_id, rate_multiplier, created_at, updated_at)
+VALUES ($1, $2, NOW(), NOW())
+ON CONFLICT (group_id)
+DO UPDATE SET rate_multiplier = EXCLUDED.rate_multiplier, updated_at = NOW()`,
+				rate.GroupID, rate.RateMultiplier,
+			); err != nil {
+				return fmt.Errorf("save default user group rate: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.ListDefaultUserGroupRates(ctx)
+}
+
+func (r *affiliateDistributionRepository) EnsureUserDistributionPricing(ctx context.Context, userID int64) ([]service.AgentGroupRate, error) {
+	if userID <= 0 {
+		return nil, service.ErrUserNotFound
+	}
+	if err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		return r.ensureUserDistributionPricingWithClient(txCtx, txClient, userID)
+	}); err != nil {
+		return nil, err
+	}
+	return r.GetUserDistributionGroupRates(ctx, userID)
+}
+
+func (r *affiliateDistributionRepository) AdminSetUserInviter(ctx context.Context, operatorUserID, userID int64, inviterID *int64) (*service.AffiliateSummary, error) {
+	if operatorUserID <= 0 || userID <= 0 {
+		return nil, service.ErrUserNotFound
+	}
+	isAdmin, err := r.isAdminUser(ctx, operatorUserID)
+	if err != nil {
+		return nil, err
+	}
+	if !isAdmin {
+		return nil, infraerrors.Forbidden("AFFILIATE_DISTRIBUTION_ADMIN_REQUIRED", "admin access required")
+	}
+	var updated *service.AffiliateSummary
+	err = r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		rootAdminID, hasRootAdmin, err := queryFirstActiveAdminID(txCtx, txClient)
+		if err != nil {
+			return err
+		}
+		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
+			return err
+		}
+		current, err := queryAffiliateByUserID(txCtx, txClient, userID)
+		if err != nil {
+			return err
+		}
+		if hasRootAdmin && userID == rootAdminID {
+			if inviterID != nil {
+				return infraerrors.Forbidden("AFFILIATE_DISTRIBUTION_ROOT_ADMIN_UPSTREAM_FORBIDDEN", "root admin cannot set inviter")
+			}
+			updated = current
+			return nil
+		}
+
+		targetInviterID := inviterID
+		inviterSource := "admin_override"
+		if targetInviterID == nil && hasRootAdmin {
+			targetInviterID = &rootAdminID
+			inviterSource = "default_root"
+		} else if targetInviterID == nil {
+			inviterSource = "none"
+		}
+		if targetInviterID != nil {
+			if *targetInviterID == userID {
+				return infraerrors.BadRequest("AFFILIATE_DISTRIBUTION_UPSTREAM_SELF_REFERENCE", "user cannot set self as inviter")
+			}
+			if _, err := ensureUserAffiliateWithClient(txCtx, txClient, *targetInviterID); err != nil {
+				return err
+			}
+			if err := r.ensureNoInviterCycle(txCtx, txClient, userID, *targetInviterID); err != nil {
+				return err
+			}
+		}
+
+		if sameNullableInt64(current.InviterID, targetInviterID) {
+			updated = current
+			return nil
+		}
+
+		if _, err := txClient.ExecContext(txCtx, `
+UPDATE user_affiliates
+SET inviter_id = $1,
+    inviter_source = $2,
+    updated_at = NOW()
+WHERE user_id = $3`, nullableInt64(targetInviterID), inviterSource, userID); err != nil {
+			return fmt.Errorf("update affiliate inviter: %w", err)
+		}
+		if current.InviterID != nil {
+			if err := refreshAffiliateCountWithClient(txCtx, txClient, *current.InviterID); err != nil {
+				return err
+			}
+		}
+		if targetInviterID != nil {
+			if err := refreshAffiliateCountWithClient(txCtx, txClient, *targetInviterID); err != nil {
+				return err
+			}
+		}
+
+		sourceCode := ""
+		if targetInviterID != nil {
+			parentSummary, err := queryAffiliateByUserID(txCtx, txClient, *targetInviterID)
+			if err != nil {
+				return err
+			}
+			sourceCode = parentSummary.AffCode
+		}
+		if _, err := txClient.ExecContext(txCtx, `
+UPDATE affiliate_distribution_user_group_rates
+SET upstream_user_id = $1,
+    source_aff_code = $2,
+    updated_at = NOW()
+WHERE user_id = $3`, nullableInt64(targetInviterID), nullableString(sourceCode), userID); err != nil {
+			return fmt.Errorf("sync user group rate upstream: %w", err)
+		}
+		updated, err = queryAffiliateByUserID(txCtx, txClient, userID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+func (r *affiliateDistributionRepository) AdminUpdateUserUpstream(ctx context.Context, operatorUserID, userID int64, upstreamUserID *int64) (*service.AgentUserUpstream, error) {
+	summary, err := r.AdminSetUserInviter(ctx, operatorUserID, userID, upstreamUserID)
+	if err != nil {
+		return nil, err
+	}
+	if summary == nil {
+		return nil, service.ErrUserNotFound
+	}
+	updatedAt := summary.UpdatedAt
+	return &service.AgentUserUpstream{
+		UserID:         summary.UserID,
+		UpstreamUserID: summary.InviterID,
+		InviterID:      summary.InviterID,
+		UpdatedAt:      &updatedAt,
+	}, nil
 }
 
 func (r *affiliateDistributionRepository) ListMonthlyRebateArchives(ctx context.Context, filter service.AgentMonthlyArchiveFilter) ([]service.AgentMonthlyArchiveItem, int64, error) {
@@ -795,10 +1027,21 @@ SELECT COALESCE((SELECT archived_count::bigint FROM finalized), 0)::bigint`, arc
 }
 
 func (r *affiliateDistributionRepository) TryBeginUsageSettlement(ctx context.Context, usageLogID int64) (bool, error) {
+	retryBefore := time.Now().UTC().Add(-affiliateDistributionUsageJobClaimTTL)
 	res, err := clientFromContext(ctx, r.client).ExecContext(ctx, `
-INSERT INTO affiliate_distribution_usage_jobs (usage_log_id, status, claimed_at, updated_at)
-VALUES ($1, 'processing', NOW(), NOW())
-ON CONFLICT (usage_log_id) DO NOTHING`, usageLogID)
+INSERT INTO affiliate_distribution_usage_jobs (usage_log_id, status, claimed_at, updated_at, last_error)
+VALUES ($1, 'processing', NOW(), NOW(), NULL)
+ON CONFLICT (usage_log_id) DO UPDATE
+SET status = 'processing',
+    claimed_at = NOW(),
+    updated_at = NOW(),
+    last_error = NULL
+WHERE affiliate_distribution_usage_jobs.status <> 'done'
+  AND (
+      affiliate_distribution_usage_jobs.status = 'failed'
+      OR affiliate_distribution_usage_jobs.claimed_at < $2
+      OR affiliate_distribution_usage_jobs.updated_at < $2
+  )`, usageLogID, retryBefore)
 	if err != nil {
 		return false, err
 	}
@@ -817,12 +1060,17 @@ WHERE usage_log_id = $1`, usageLogID)
 func (r *affiliateDistributionRepository) MarkUsageSettlementFailed(ctx context.Context, usageLogID int64) error {
 	_, err := clientFromContext(ctx, r.client).ExecContext(ctx, `
 UPDATE affiliate_distribution_usage_jobs
-SET status = 'failed', updated_at = NOW()
+SET status = 'failed',
+    last_error = COALESCE(last_error, 'retryable settlement failure'),
+    updated_at = NOW()
 WHERE usage_log_id = $1`, usageLogID)
 	return err
 }
 
 func (r *affiliateDistributionRepository) SettleUsageDistribution(ctx context.Context, cmd service.AffiliateDistributionUsageSettlementCommand) error {
+	if cmd.GroupID <= 0 {
+		return service.ErrAffiliateDistributionGroupIDRequired
+	}
 	model := strings.TrimSpace(cmd.RequestedModel)
 	if model == "" {
 		model = strings.TrimSpace(cmd.Model)
@@ -834,22 +1082,20 @@ func (r *affiliateDistributionRepository) SettleUsageDistribution(ctx context.Co
 	if usageUSD <= 0 {
 		usageUSD = cmd.ActualCost
 	}
+	if math.IsNaN(usageUSD) || math.IsInf(usageUSD, 0) {
+		return infraerrors.BadRequest("AFFILIATE_DISTRIBUTION_USAGE_INVALID", "usage amount must be finite")
+	}
 	if usageUSD <= 0 {
 		return nil
 	}
 	return r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
-		resolvedRate, err := r.resolveModelRateTx(txCtx, txClient, cmd.UserID, model, 0, 1.0)
-		if err != nil {
-			return err
-		}
-		_ = resolvedRate
 		result, err := r.recordUsageSettlementWithTx(txCtx, txClient, service.RecordAffiliateUsageSettlementInput{
 			UsageLogID:     cmd.UsageLogID,
 			ConsumerUserID: cmd.UserID,
+			GroupID:        cmd.GroupID,
 			ModelKey:       model,
 			UsageAmountUSD: usageUSD,
 			SettlementAt:   cmd.UsageCreatedAt,
-			DefaultMarkup:  0,
 			RootRate:       1.0,
 		})
 		if err != nil {
@@ -879,11 +1125,11 @@ func (r *affiliateDistributionRepository) recordUsageSettlementWithTx(ctx contex
 	for depth := 1; depth < len(chain); depth++ {
 		parent := chain[depth]
 		child := chain[depth-1]
-		parentRate, err := r.resolveModelRateTx(ctx, txClient, parent.UserID, input.ModelKey, input.DefaultMarkup, input.RootRate)
+		parentRate, err := r.resolveGroupRateTx(ctx, txClient, parent.UserID, input.GroupID, input.RootRate)
 		if err != nil {
 			return nil, err
 		}
-		childRate, err := r.resolveModelRateTx(ctx, txClient, child.UserID, input.ModelKey, input.DefaultMarkup, input.RootRate)
+		childRate, err := r.resolveGroupRateTx(ctx, txClient, child.UserID, input.GroupID, input.RootRate)
 		if err != nil {
 			return nil, err
 		}
@@ -944,59 +1190,8 @@ ORDER BY depth ASC`, userID)
 	return nodes, rows.Err()
 }
 
-func (r *affiliateDistributionRepository) resolveModelRateTx(ctx context.Context, client affiliateDistributionQueryExecer, userID int64, model string, defaultMarkup, rootRate float64) (float64, error) {
-	var rate float64
-	err := scanSingleRow(ctx, client, `
-SELECT rate_multiplier::double precision
-FROM affiliate_distribution_user_model_rates
-WHERE user_id = $1 AND model_key = $2
-LIMIT 1`, []any{userID, model}, &rate)
-	if err == nil {
-		return rate, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-	summary, err := queryAffiliateByUserID(ctx, client, userID)
-	if err != nil {
-		return 0, err
-	}
-	if summary.InviterID == nil {
-		if rootRate <= 0 {
-			rootRate = 1
-		}
-		return rootRate, r.upsertUserModelRateTx(ctx, client, userID, nil, model, rootRate, "", "root_default")
-	}
-	parentRate, err := r.resolveModelRateTx(ctx, client, *summary.InviterID, model, defaultMarkup, rootRate)
-	if err != nil {
-		return 0, err
-	}
-	err = scanSingleRow(ctx, client, `
-SELECT rate_multiplier::double precision
-FROM affiliate_distribution_invite_model_rates
-WHERE inviter_user_id = $1 AND model_key = $2
-LIMIT 1`, []any{*summary.InviterID, model}, &rate)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-	sourceType := "invite_code"
-	if errors.Is(err, sql.ErrNoRows) {
-		markup, found, markupErr := r.lookupDefaultMarkup(ctx, client, model)
-		if markupErr != nil {
-			return 0, markupErr
-		}
-		if found {
-			defaultMarkup = markup
-		}
-		rate = parentRate + defaultMarkup
-		sourceType = "default_markup"
-	}
-	parentSummary, _ := queryAffiliateByUserID(ctx, client, *summary.InviterID)
-	sourceCode := ""
-	if parentSummary != nil {
-		sourceCode = parentSummary.AffCode
-	}
-	return rate, r.upsertUserModelRateTx(ctx, client, userID, summary.InviterID, model, rate, sourceCode, sourceType)
+func (r *affiliateDistributionRepository) resolveGroupRateTx(ctx context.Context, client affiliateDistributionQueryExecer, userID, groupID int64, rootRate float64) (float64, error) {
+	return r.resolveGroupRateWithMemo(ctx, client, userID, groupID, rootRate, make(map[[2]int64]float64))
 }
 
 func (r *affiliateDistributionRepository) insertSettlementRow(ctx context.Context, client affiliateDistributionQueryExecer, input service.RecordAffiliateUsageSettlementInput, parentUserID, childUserID, depth int64, parentRate, childRate, rebateAmount float64) (bool, error) {
@@ -1170,19 +1365,38 @@ ON CONFLICT (user_id) DO NOTHING`, userID)
 	return err
 }
 
-func normalizeAgentModelRateInputs(rates []service.AgentModelRateInput) []service.AgentModelRateInput {
+func normalizeAgentGroupRateInputs(rates []service.AgentGroupRateInput) []service.AgentGroupRateInput {
 	if len(rates) == 0 {
-		return []service.AgentModelRateInput{}
+		return []service.AgentGroupRateInput{}
 	}
-	normalized := make([]service.AgentModelRateInput, 0, len(rates))
+	normalized := make([]service.AgentGroupRateInput, 0, len(rates))
 	for _, rate := range rates {
-		model := strings.TrimSpace(rate.Model)
-		if model == "" {
+		if rate.GroupID <= 0 {
 			continue
 		}
-		normalized = append(normalized, service.AgentModelRateInput{Model: model, Multiplier: rate.Multiplier})
+		normalized = append(normalized, service.AgentGroupRateInput{GroupID: rate.GroupID, RateMultiplier: rate.RateMultiplier})
 	}
 	return normalized
+}
+
+func validateAndNormalizeDistributionGroupRateInputs(rates []service.AgentGroupRateInput) ([]service.AgentGroupRateInput, error) {
+	if len(rates) == 0 {
+		return []service.AgentGroupRateInput{}, nil
+	}
+	normalized := make([]service.AgentGroupRateInput, 0, len(rates))
+	for _, rate := range rates {
+		if rate.GroupID <= 0 {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "group_id must be greater than 0")
+		}
+		if err := validateAffiliateDistributionRateMultiplierValue(rate.RateMultiplier); err != nil {
+			return nil, err
+		}
+		normalized = append(normalized, service.AgentGroupRateInput{
+			GroupID:        rate.GroupID,
+			RateMultiplier: rate.RateMultiplier,
+		})
+	}
+	return normalized, nil
 }
 
 func nullableString(value string) any {
@@ -1193,33 +1407,399 @@ func nullableString(value string) any {
 	return trimmed
 }
 
-func (r *affiliateDistributionRepository) lookupDefaultMarkup(ctx context.Context, client affiliateDistributionQueryExecer, model string) (float64, bool, error) {
-	var markup float64
+func (r *affiliateDistributionRepository) lookupDefaultUserGroupRate(ctx context.Context, client affiliateDistributionQueryExecer, groupID int64) (float64, bool, error) {
+	var rate float64
 	err := scanSingleRow(ctx, client, `
-SELECT default_markup::double precision
-FROM affiliate_distribution_default_model_rates
-WHERE model_key = $1 OR model_key = '*'
-ORDER BY CASE WHEN model_key = $1 THEN 0 ELSE 1 END
-LIMIT 1`, []any{model}, &markup)
+SELECT rate_multiplier::double precision
+FROM affiliate_distribution_default_user_group_rates
+WHERE group_id = $1
+LIMIT 1`, []any{groupID}, &rate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
-	return markup, err == nil, err
+	if err != nil {
+		return 0, false, err
+	}
+	if err := validateAffiliateDistributionRateMultiplierValue(rate); err != nil {
+		return 0, false, err
+	}
+	return rate, true, nil
 }
 
-func (r *affiliateDistributionRepository) upsertUserModelRateTx(ctx context.Context, client affiliateDistributionQueryExecer, userID int64, upstreamUserID *int64, model string, multiplier float64, sourceAffCode, sourceType string) error {
+func (r *affiliateDistributionRepository) listDefaultUserGroupRatesWithClient(ctx context.Context, client affiliateDistributionQueryExecer) ([]service.AgentGroupRate, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT g.id,
+       g.name,
+       g.platform,
+       g.rate_multiplier::double precision,
+       COALESCE(r.rate_multiplier, g.rate_multiplier)::double precision,
+       CASE WHEN r.group_id IS NOT NULL THEN 'default_explicit' ELSE 'group_default' END,
+       ''::varchar,
+       NULL::bigint,
+       r.updated_at
+FROM groups g
+LEFT JOIN affiliate_distribution_default_user_group_rates r
+       ON r.group_id = g.id
+WHERE g.deleted_at IS NULL AND g.status = 'active'
+ORDER BY g.sort_order ASC, g.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list default user group rates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanAgentGroupRates(rows, nil)
+}
+
+func (r *affiliateDistributionRepository) ensureUserDistributionPricingWithClient(ctx context.Context, client affiliateDistributionQueryExecer, userID int64) error {
+	_, err := ensureUserAffiliateWithClient(ctx, client, userID)
+	return err
+}
+
+func validateAffiliateDistributionRateMultiplierValue(multiplier float64) error {
+	if math.IsNaN(multiplier) || math.IsInf(multiplier, 0) || multiplier <= 0 || multiplier > affiliateDistributionRateMultiplierMax {
+		return infraerrors.BadRequest("INVALID_GROUP_RATES", "rate_multiplier must be a finite number greater than 0 and at most 100")
+	}
+	return nil
+}
+
+func isExplicitDistributionUserGroupRateSource(sourceType string) bool {
+	return sourceType == affiliateDistributionSourceAdminOverride || sourceType == affiliateDistributionSourceUpstreamOverride
+}
+
+func (r *affiliateDistributionRepository) getUserDistributionGroupRatesWithClient(ctx context.Context, client affiliateDistributionQueryExecer, userID int64, memo map[int64][]service.AgentGroupRate) ([]service.AgentGroupRate, error) {
+	if userID <= 0 {
+		return nil, service.ErrUserNotFound
+	}
+	if cached, ok := memo[userID]; ok {
+		return append([]service.AgentGroupRate(nil), cached...), nil
+	}
+
+	summary, err := queryAffiliateByUserID(ctx, client, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	var inviterArg any
+	parentAffCode := ""
+	parentRatesByGroup := make(map[int64]service.AgentGroupRate)
+	if summary.InviterID != nil {
+		inviterArg = *summary.InviterID
+		parentSummary, err := queryAffiliateByUserID(ctx, client, *summary.InviterID)
+		if err != nil {
+			return nil, err
+		}
+		parentAffCode = parentSummary.AffCode
+		parentRates, err := r.getUserDistributionGroupRatesWithClient(ctx, client, *summary.InviterID, memo)
+		if err != nil {
+			return nil, err
+		}
+		for _, rate := range parentRates {
+			parentRatesByGroup[rate.GroupID] = rate
+		}
+	}
+
+	rows, err := client.QueryContext(ctx, `
+SELECT g.id,
+       g.name,
+       g.platform,
+       g.rate_multiplier::double precision,
+       ug.rate_multiplier::double precision,
+       ug.source_type,
+       COALESCE(ug.source_aff_code, ''),
+       ug.upstream_user_id,
+       ug.updated_at,
+       ig.rate_multiplier::double precision,
+       dg.rate_multiplier::double precision
+FROM groups g
+LEFT JOIN affiliate_distribution_user_group_rates ug
+       ON ug.group_id = g.id
+      AND ug.user_id = $1
+      AND ug.source_type IN ('admin_override', 'upstream_override')
+LEFT JOIN affiliate_distribution_invite_group_rates ig
+       ON ig.group_id = g.id
+      AND ig.inviter_user_id = $2
+LEFT JOIN affiliate_distribution_default_user_group_rates dg
+       ON dg.group_id = g.id
+WHERE g.deleted_at IS NULL AND g.status = 'active'
+ORDER BY g.sort_order ASC, g.id ASC`, userID, inviterArg)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := make([]service.AgentGroupRate, 0)
+	for rows.Next() {
+		var item service.AgentGroupRate
+		var explicitRate sql.NullFloat64
+		var explicitSourceType sql.NullString
+		var explicitSourceCode string
+		var explicitUpstreamUserID sql.NullInt64
+		var explicitUpdatedAt sql.NullTime
+		var inviteRate sql.NullFloat64
+		var defaultRate sql.NullFloat64
+
+		if err := rows.Scan(
+			&item.GroupID,
+			&item.GroupName,
+			&item.GroupPlatform,
+			&item.GroupDefaultRateMultiplier,
+			&explicitRate,
+			&explicitSourceType,
+			&explicitSourceCode,
+			&explicitUpstreamUserID,
+			&explicitUpdatedAt,
+			&inviteRate,
+			&defaultRate,
+		); err != nil {
+			return nil, err
+		}
+		if err := validateAffiliateDistributionRateMultiplierValue(item.GroupDefaultRateMultiplier); err != nil {
+			return nil, err
+		}
+
+		switch {
+		case explicitRate.Valid:
+			if err := validateAffiliateDistributionRateMultiplierValue(explicitRate.Float64); err != nil {
+				return nil, err
+			}
+			item.RateMultiplier = explicitRate.Float64
+			item.SourceType = explicitSourceType.String
+			item.SourceAffCode = explicitSourceCode
+			if explicitUpstreamUserID.Valid {
+				upstreamUserID := explicitUpstreamUserID.Int64
+				item.UpstreamUserID = &upstreamUserID
+			}
+			if explicitUpdatedAt.Valid {
+				updatedAt := explicitUpdatedAt.Time
+				item.UpdatedAt = &updatedAt
+			}
+		case inviteRate.Valid:
+			if err := validateAffiliateDistributionRateMultiplierValue(inviteRate.Float64); err != nil {
+				return nil, err
+			}
+			item.RateMultiplier = inviteRate.Float64
+			item.SourceType = affiliateDistributionSourceInviteCode
+			item.SourceAffCode = parentAffCode
+			if summary.InviterID != nil {
+				item.UpstreamUserID = summary.InviterID
+			}
+		case defaultRate.Valid:
+			if err := validateAffiliateDistributionRateMultiplierValue(defaultRate.Float64); err != nil {
+				return nil, err
+			}
+			item.RateMultiplier = defaultRate.Float64
+			item.SourceType = affiliateDistributionSourceDefaultExplicit
+			item.SourceAffCode = parentAffCode
+			if summary.InviterID != nil {
+				item.UpstreamUserID = summary.InviterID
+			}
+		case summary.InviterID != nil:
+			parentRate, ok := parentRatesByGroup[item.GroupID]
+			if ok {
+				item.RateMultiplier = parentRate.RateMultiplier
+			} else {
+				item.RateMultiplier = item.GroupDefaultRateMultiplier
+			}
+			if err := validateAffiliateDistributionRateMultiplierValue(item.RateMultiplier); err != nil {
+				return nil, err
+			}
+			item.SourceType = affiliateDistributionSourceGroupInherited
+			item.SourceAffCode = parentAffCode
+			item.UpstreamUserID = summary.InviterID
+		default:
+			item.RateMultiplier = item.GroupDefaultRateMultiplier
+			item.SourceType = affiliateDistributionSourceGroupDefault
+		}
+
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	memo[userID] = append([]service.AgentGroupRate(nil), items...)
+	return append([]service.AgentGroupRate(nil), items...), nil
+}
+
+func (r *affiliateDistributionRepository) lookupExplicitUserGroupRate(ctx context.Context, client affiliateDistributionQueryExecer, userID, groupID int64) (float64, bool, error) {
+	var rate float64
+	var sourceType string
+	err := scanSingleRow(ctx, client, `
+SELECT rate_multiplier::double precision,
+       source_type
+FROM affiliate_distribution_user_group_rates
+WHERE user_id = $1
+  AND group_id = $2
+LIMIT 1`, []any{userID, groupID}, &rate, &sourceType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if !isExplicitDistributionUserGroupRateSource(sourceType) {
+		return 0, false, nil
+	}
+	if err := validateAffiliateDistributionRateMultiplierValue(rate); err != nil {
+		return 0, false, err
+	}
+	return rate, true, nil
+}
+
+func (r *affiliateDistributionRepository) lookupInviteGroupRate(ctx context.Context, client affiliateDistributionQueryExecer, inviterUserID, groupID int64) (float64, bool, error) {
+	var rate float64
+	err := scanSingleRow(ctx, client, `
+SELECT rate_multiplier::double precision
+FROM affiliate_distribution_invite_group_rates
+WHERE inviter_user_id = $1
+  AND group_id = $2
+LIMIT 1`, []any{inviterUserID, groupID}, &rate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if err := validateAffiliateDistributionRateMultiplierValue(rate); err != nil {
+		return 0, false, err
+	}
+	return rate, true, nil
+}
+
+func (r *affiliateDistributionRepository) resolveGroupRateWithMemo(ctx context.Context, client affiliateDistributionQueryExecer, userID, groupID int64, rootRate float64, memo map[[2]int64]float64) (float64, error) {
+	key := [2]int64{userID, groupID}
+	if rate, ok := memo[key]; ok {
+		return rate, nil
+	}
+	if err := r.ensureUserDistributionPricingWithClient(ctx, client, userID); err != nil {
+		return 0, err
+	}
+
+	if rate, found, err := r.lookupExplicitUserGroupRate(ctx, client, userID, groupID); err != nil {
+		return 0, err
+	} else if found {
+		memo[key] = rate
+		return rate, nil
+	}
+
+	summary, err := queryAffiliateByUserID(ctx, client, userID)
+	if err != nil {
+		return 0, err
+	}
+	if summary.InviterID == nil {
+		if rootRate <= 0 {
+			rootRate = 1
+		}
+		if err := validateAffiliateDistributionRateMultiplierValue(rootRate); err != nil {
+			return 0, err
+		}
+		memo[key] = rootRate
+		return rootRate, nil
+	}
+
+	if rate, found, err := r.lookupInviteGroupRate(ctx, client, *summary.InviterID, groupID); err != nil {
+		return 0, err
+	} else if found {
+		memo[key] = rate
+		return rate, nil
+	}
+
+	if rate, found, err := r.lookupDefaultUserGroupRate(ctx, client, groupID); err != nil {
+		return 0, err
+	} else if found {
+		memo[key] = rate
+		return rate, nil
+	}
+
+	rate, err := r.resolveGroupRateWithMemo(ctx, client, *summary.InviterID, groupID, rootRate, memo)
+	if err != nil {
+		return 0, err
+	}
+	memo[key] = rate
+	return rate, nil
+}
+
+func (r *affiliateDistributionRepository) saveUserDistributionGroupRates(ctx context.Context, userID int64, rates []service.AgentGroupRateInput, sourceType string) ([]service.AgentGroupRate, error) {
+	normalized, err := validateAndNormalizeDistributionGroupRateInputs(rates)
+	if err != nil {
+		return nil, err
+	}
+	err = r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
+			return err
+		}
+		summary, err := queryAffiliateByUserID(txCtx, txClient, userID)
+		if err != nil {
+			return err
+		}
+		sourceCode := ""
+		if _, err := txClient.ExecContext(txCtx, `DELETE FROM affiliate_distribution_user_group_rates WHERE user_id = $1`, userID); err != nil {
+			return fmt.Errorf("reset user distribution group rates: %w", err)
+		}
+		if summary.InviterID != nil {
+			parentSummary, err := queryAffiliateByUserID(txCtx, txClient, *summary.InviterID)
+			if err != nil {
+				return err
+			}
+			sourceCode = parentSummary.AffCode
+		}
+		for _, rate := range normalized {
+			if err := r.upsertUserGroupRateTx(txCtx, txClient, userID, summary.InviterID, rate.GroupID, rate.RateMultiplier, sourceCode, sourceType); err != nil {
+				return fmt.Errorf("save user distribution group rate: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.GetUserDistributionGroupRates(ctx, userID)
+}
+
+func (r *affiliateDistributionRepository) ensureNoInviterCycle(ctx context.Context, client affiliateDistributionQueryExecer, userID, inviterID int64) error {
+	var exists bool
+	err := scanSingleRow(ctx, client, `
+WITH RECURSIVE descendants AS (
+    SELECT ua.user_id
+    FROM user_affiliates ua
+    WHERE ua.user_id = $1
+    UNION ALL
+    SELECT child.user_id
+    FROM user_affiliates child
+    JOIN descendants ON child.inviter_id = descendants.user_id
+)
+SELECT TRUE
+FROM descendants
+WHERE user_id = $2
+LIMIT 1`, []any{userID, inviterID}, &exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return infraerrors.BadRequest("AFFILIATE_DISTRIBUTION_UPSTREAM_CYCLE", "inviter assignment would create a cycle")
+}
+
+func sameNullableInt64(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func (r *affiliateDistributionRepository) upsertUserGroupRateTx(ctx context.Context, client affiliateDistributionQueryExecer, userID int64, upstreamUserID *int64, groupID int64, multiplier float64, sourceAffCode, sourceType string) error {
 	_, err := client.ExecContext(ctx, `
-INSERT INTO affiliate_distribution_user_model_rates (
-    user_id, upstream_user_id, model_key, rate_multiplier, source_aff_code, source_type, created_at, updated_at
+INSERT INTO affiliate_distribution_user_group_rates (
+    user_id, upstream_user_id, group_id, rate_multiplier, source_aff_code, source_type, created_at, updated_at
 ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-ON CONFLICT (user_id, model_key)
+ON CONFLICT (user_id, group_id)
 DO UPDATE SET
     upstream_user_id = EXCLUDED.upstream_user_id,
     rate_multiplier = EXCLUDED.rate_multiplier,
     source_aff_code = EXCLUDED.source_aff_code,
     source_type = EXCLUDED.source_type,
     updated_at = NOW()`,
-		userID, nullableInt64Arg(upstreamUserID), model, multiplier, nullableString(sourceAffCode), sourceType,
+		userID, nullableInt64Arg(upstreamUserID), groupID, multiplier, nullableString(sourceAffCode), sourceType,
 	)
 	return err
 }

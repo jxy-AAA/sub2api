@@ -15,32 +15,27 @@ import type {
   NotifyEmailEntry,
   UserAuthProvider,
 } from '@/types'
+import type {
+  AffiliateDistributionDetail,
+  AffiliateDistributionDetailResponse,
+  AffiliateDirectChild,
+  AffiliateDirectChildResponse,
+  AffiliateGroupRate,
+  AffiliateGroupRateInput,
+  AffiliatePricingResponse,
+  AffiliateRawGroupRate,
+} from '@/components/affiliate/types'
 
-export interface AffiliateModelRate {
-  model_name: string
-  multiplier: number
-  parent_multiplier?: number | null
-  source?: 'invite_code' | 'user_override' | 'default' | string
-  updated_at?: string | null
-}
+export type {
+  AffiliateDistributionDetail,
+  AffiliateDirectChild,
+  AffiliateGroupRate,
+  AffiliateGroupRateInput,
+  AffiliatePricingResponse,
+} from '@/components/affiliate/types'
 
 export interface AffiliateInviteCodePricing {
-  invite_code: string
-  model_rates: AffiliateModelRate[]
-  updated_at?: string | null
-}
-
-export interface AffiliateDirectChild {
-  user_id: number
-  email: string
-  username: string
-  inviter_id?: number | null
-  role?: 'agent' | 'user' | string
-  today_revenue_usd?: number
-  today_rebate_rmb?: number
-  current_rebate_balance_rmb?: number
-  model_rates?: AffiliateModelRate[]
-  created_at?: string | null
+  group_rates: AffiliateGroupRate[]
   updated_at?: string | null
 }
 
@@ -87,41 +82,104 @@ export interface ListAffiliateStatsParams {
   timezone?: string
 }
 
-export interface UpdateInviteCodeModelRatesRequest {
+export interface UpdateInviteCodeGroupRatesRequest {
   invite_code?: string
-  model_rates: Array<{
-    model_name: string
-    multiplier: number
-  }>
+  group_rates: AffiliateGroupRateInput[]
 }
 
-export interface UpdateDirectChildModelRatesRequest {
-  model_rates: Array<{
-    model_name: string
-    multiplier: number
-  }>
+export interface UpdateDirectChildGroupRatesRequest {
+  group_rates: AffiliateGroupRateInput[]
 }
 
-export interface UserAffiliateOverview {
-  user_id: number
-  aff_code: string
-  inviter_id?: number | null
-  inviter_email?: string | null
-  inviter_username?: string | null
-  invite_code_pricing: AffiliateInviteCodePricing[]
-  direct_children: AffiliateDirectChild[]
-  direct_children_count: number
-  today_revenue_usd: number
-  today_rebate_rmb: number
-  current_rebate_balance_rmb: number
-  monthly_rebate_rmb?: number
-}
-
-export type UserAffiliateDetail = UserAffiliateOverview
+export type UserAffiliateOverview = AffiliateDistributionDetail
+export type UserAffiliateDetail = AffiliateDistributionDetail
 
 export interface AffiliateTransferResponse {
   transferred_quota: number
   balance: number
+}
+
+function toFiniteAffiliateNumber(value: unknown, fallback = 0): number {
+  const numberValue = Number(value)
+  return Number.isFinite(numberValue) ? numberValue : fallback
+}
+
+function normalizeAffiliateGroupRates(rates?: AffiliateRawGroupRate[] | null): AffiliateGroupRate[] {
+  return (rates ?? [])
+    .map((rate) => {
+      const groupId = Number(rate.group_id)
+      const rateMultiplier = toFiniteAffiliateNumber(rate.rate_multiplier, Number.NaN)
+
+      return {
+        group_id: groupId,
+        group_name: rate.group_name ?? undefined,
+        group_platform: rate.group_platform ?? undefined,
+        group_rate_multiplier: rate.group_rate_multiplier ?? undefined,
+        rate_multiplier: rateMultiplier,
+        source_type: rate.source_type ?? undefined,
+        source_aff_code: rate.source_aff_code ?? undefined,
+        upstream_user_id: rate.upstream_user_id ?? null,
+        updated_at: rate.updated_at ?? null,
+      } satisfies AffiliateGroupRate
+    })
+    .filter((rate) => rate.group_id > 0 && Number.isFinite(rate.rate_multiplier) && rate.rate_multiplier > 0)
+}
+
+function normalizeAffiliateDirectChild(child: AffiliateDirectChildResponse): AffiliateDirectChild {
+  return {
+    user_id: child.user_id,
+    email: child.email ?? '',
+    username: child.username ?? '',
+    role: child.role ?? (child.is_agent ? 'agent' : 'user'),
+    joined_at: child.joined_at ?? child.created_at ?? null,
+    today_revenue_usd: toFiniteAffiliateNumber(child.today_revenue_usd ?? child.today_business_usd, 0),
+    today_rebate_rmb: toFiniteAffiliateNumber(child.today_rebate_rmb, 0),
+    current_rebate_balance_rmb: toFiniteAffiliateNumber(child.current_rebate_balance_rmb, 0),
+    group_rates: normalizeAffiliateGroupRates(child.current_group_rates ?? child.group_rates),
+  }
+}
+
+function normalizeAffiliateOverview(raw: AffiliateDistributionDetailResponse): UserAffiliateOverview {
+  const directChildren = (raw.direct_children ?? []).map(normalizeAffiliateDirectChild)
+
+  return {
+    user_id: raw.user_id,
+    aff_code: raw.aff_code ?? raw.invite_code ?? '',
+    inviter_id: raw.inviter_id ?? null,
+    invite_group_rates: normalizeAffiliateGroupRates(raw.invite_group_rates),
+    my_group_rates: normalizeAffiliateGroupRates(raw.my_group_rates ?? raw.current_group_rates ?? raw.group_rates),
+    today_revenue_usd: toFiniteAffiliateNumber(raw.today_revenue_usd ?? raw.today_business_usd, 0),
+    today_rebate_rmb: toFiniteAffiliateNumber(raw.today_rebate_rmb, 0),
+    current_rebate_balance_rmb: toFiniteAffiliateNumber(raw.current_rebate_balance_rmb, 0),
+    direct_children: directChildren,
+    direct_children_count: toFiniteAffiliateNumber(raw.direct_children_count ?? raw.direct_member_count, directChildren.length),
+  }
+}
+
+function normalizeAffiliatePricingResponse(data: unknown, fallbackUserId?: number): AffiliatePricingResponse {
+  const payload = data as {
+    user_id?: number
+    group_rates?: AffiliateRawGroupRate[]
+    current_group_rates?: AffiliateRawGroupRate[]
+    invite_group_rates?: AffiliateRawGroupRate[]
+  } | null
+
+  return {
+    user_id: Number.isFinite(Number(payload?.user_id)) ? Number(payload?.user_id) : fallbackUserId,
+    group_rates: normalizeAffiliateGroupRates(
+      payload?.group_rates
+        ?? payload?.current_group_rates
+        ?? payload?.invite_group_rates
+        ?? [],
+    ),
+    updated_at: typeof (data as any)?.updated_at === 'string' ? (data as any).updated_at : null,
+  }
+}
+
+function createMissingGroupRatesError(path: string): Error {
+  return Object.assign(new Error(`Expected non-empty group_rates from ${path}`), {
+    code: 'INVALID_GROUP_RATES_RESPONSE',
+  })
 }
 
 /**
@@ -282,40 +340,81 @@ export async function startOAuthBinding(
 }
 
 export async function getAffiliateOverview(): Promise<UserAffiliateOverview> {
-  const { data } = await apiClient.get<UserAffiliateOverview>('/user/aff')
-  return data
+  const { data } = await apiClient.get<AffiliateDistributionDetailResponse>('/user/aff/distribution')
+  return normalizeAffiliateOverview(data)
 }
 
 export async function getAffiliateDetail(): Promise<UserAffiliateDetail> {
   return getAffiliateOverview()
 }
 
-export async function updateInviteCodeModelRates(
-  payload: UpdateInviteCodeModelRatesRequest,
-): Promise<AffiliateInviteCodePricing[]> {
-  const { data } = await apiClient.put<AffiliateInviteCodePricing[]>(
+export async function getInviteCodeGroupRates(): Promise<AffiliatePricingResponse> {
+  const { data } = await apiClient.get<unknown>('/user/aff/invite-pricing')
+  return normalizeAffiliatePricingResponse(data)
+}
+
+export async function updateInviteCodeGroupRates(
+  payload: UpdateInviteCodeGroupRatesRequest,
+): Promise<AffiliatePricingResponse> {
+  const { data } = await apiClient.put<unknown>(
     '/user/aff/invite-pricing',
-    payload,
+    {
+      ...(payload.invite_code ? { invite_code: payload.invite_code } : {}),
+      group_rates: payload.group_rates.map((rate) => ({
+        group_id: rate.group_id,
+        rate_multiplier: rate.rate_multiplier,
+      })),
+    },
   )
-  return data
+
+  const normalized = normalizeAffiliatePricingResponse(data)
+  if (normalized.group_rates.length > 0) {
+    return normalized
+  }
+
+  const verified = await getInviteCodeGroupRates()
+  if (verified.group_rates.length > 0) {
+    return verified
+  }
+
+  throw createMissingGroupRatesError('/user/aff/invite-pricing')
 }
 
 export async function listAffiliateDirectChildren(
   params: ListAffiliateStatsParams = {},
 ): Promise<AffiliateDirectChild[]> {
-  const { data } = await apiClient.get<AffiliateDirectChild[]>('/user/aff/direct-members', { params })
-  return data
+  const { data } = await apiClient.get<AffiliateDirectChildResponse[]>('/user/aff/direct-members', { params })
+  return data.map(normalizeAffiliateDirectChild)
 }
 
-export async function updateAffiliateDirectChildModelRates(
+export async function updateAffiliateDirectChildGroupRates(
   userId: number,
-  payload: UpdateDirectChildModelRatesRequest,
-): Promise<{ user_id: number; model_rates: AffiliateModelRate[] }> {
-  const { data } = await apiClient.put<{ user_id: number; model_rates: AffiliateModelRate[] }>(
+  payload: UpdateDirectChildGroupRatesRequest,
+): Promise<AffiliatePricingResponse> {
+  const { data } = await apiClient.put<unknown>(
     `/user/aff/direct-members/${userId}/pricing`,
-    payload,
+    {
+      group_rates: payload.group_rates.map((rate) => ({
+        group_id: rate.group_id,
+        rate_multiplier: rate.rate_multiplier,
+      })),
+    },
   )
-  return data
+
+  const normalized = normalizeAffiliatePricingResponse(data, userId)
+  if (normalized.group_rates.length > 0) {
+    return normalized
+  }
+
+  const verifiedChild = (await listAffiliateDirectChildren()).find((child) => child.user_id === userId)
+  if (verifiedChild && verifiedChild.group_rates.length > 0) {
+    return {
+      user_id: userId,
+      group_rates: verifiedChild.group_rates,
+    }
+  }
+
+  throw createMissingGroupRatesError(`/user/aff/direct-members/${userId}/pricing`)
 }
 
 export async function listAffiliateDailyRevenue(
@@ -359,9 +458,10 @@ export const userAPI = {
   startOAuthBinding,
   getAffiliateOverview,
   getAffiliateDetail,
-  updateInviteCodeModelRates,
+  getInviteCodeGroupRates,
+  updateInviteCodeGroupRates,
   listAffiliateDirectChildren,
-  updateAffiliateDirectChildModelRates,
+  updateAffiliateDirectChildGroupRates,
   listAffiliateDailyRevenue,
   listAffiliateRebateBalances,
   listAffiliateMonthlyArchives,

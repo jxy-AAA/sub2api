@@ -138,4 +138,8 @@ aicodex
 output/
 
 # Local runtime state
-.runtime/data/
+.runtime/**
+!.runtime/
+!.runtime/seed_affiliate_demo.sql
+!.runtime/start_backend.cmd
+!.runtime/start_frontend.cmd

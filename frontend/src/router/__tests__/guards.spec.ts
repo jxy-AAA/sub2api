@@ -53,6 +53,7 @@ interface MockAuthState {
   isSimpleMode: boolean
   backendModeEnabled: boolean
   hasPendingAuthSession: boolean
+  hasPendingRegistrationChallenge?: boolean
 }
 
 /**
@@ -68,6 +69,13 @@ function simulateGuard(
 
   // 不需要认证的路由
   if (!requiresAuth) {
+    if (authState.isAuthenticated && toPath === '/email-verify') {
+      if (authState.backendModeEnabled && !authState.isAdmin) {
+        return '/login'
+      }
+      return authState.isAdmin ? '/admin/dashboard' : '/dashboard'
+    }
+
     if (
       authState.isAuthenticated &&
       (toPath === '/login' || toPath === '/register')
@@ -90,7 +98,7 @@ function simulateGuard(
       const isAllowed =
         allowed.some((path) => toPath === path || toPath.startsWith(path)) ||
         callbackPaths.includes(toPath) ||
-        (authState.hasPendingAuthSession && pendingAuthPaths.includes(toPath))
+        ((authState.hasPendingAuthSession || authState.hasPendingRegistrationChallenge === true) && pendingAuthPaths.includes(toPath))
       if (!isAllowed) {
         return '/login'
       }
@@ -139,7 +147,7 @@ function simulateGuard(
     const isAllowed =
       allowed.some((path) => toPath === path || toPath.startsWith(path)) ||
       callbackPaths.includes(toPath) ||
-      (authState.hasPendingAuthSession && pendingAuthPaths.includes(toPath))
+      ((authState.hasPendingAuthSession || authState.hasPendingRegistrationChallenge === true) && pendingAuthPaths.includes(toPath))
     if (!isAllowed) {
       return '/login'
     }
@@ -402,6 +410,18 @@ describe('路由守卫逻辑', () => {
       expect(redirect).toBe('/admin/dashboard')
     })
 
+    it('admin: /email-verify redirects to /admin/dashboard', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: true,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/email-verify', { requiresAuth: false }, authState)
+      expect(redirect).toBe('/admin/dashboard')
+    })
+
     it('non-admin authenticated: /dashboard redirects to /login', () => {
       const authState: MockAuthState = {
         isAuthenticated: true,
@@ -424,6 +444,18 @@ describe('路由守卫逻辑', () => {
       }
       const redirect = simulateGuard('/login', { requiresAuth: false }, authState)
       expect(redirect).toBeNull()
+    })
+
+    it('non-admin authenticated: /email-verify redirects to /login in backend mode', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/email-verify', { requiresAuth: false }, authState)
+      expect(redirect).toBe('/login')
     })
 
     it('non-admin authenticated: /key-usage is allowed', () => {
@@ -496,6 +528,31 @@ describe('路由守卫逻辑', () => {
       }
       const redirect = simulateGuard('/email-verify', { requiresAuth: false }, authState)
       expect(redirect).toBe('/login')
+    })
+
+    it('authenticated users are redirected away from /email-verify', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: false,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/email-verify', { requiresAuth: false }, authState)
+      expect(redirect).toBe('/dashboard')
+    })
+
+    it('unauthenticated: /email-verify is allowed with a pending registration challenge', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: false,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+        hasPendingRegistrationChallenge: true,
+      }
+      const redirect = simulateGuard('/email-verify', { requiresAuth: false }, authState)
+      expect(redirect).toBeNull()
     })
   })
 })

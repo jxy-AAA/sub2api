@@ -191,13 +191,44 @@ const verifyCode = ref<string>('')
 const countdown = ref<number>(0)
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 
-// Registration data from sessionStorage
 type PendingAuthTokenField = 'pending_auth_token' | 'pending_oauth_token'
 type PendingAuthSessionSummary = {
   token: string
   token_field: PendingAuthTokenField
   provider: string
   redirect?: string
+}
+type PendingRegistrationAdoptionDecision = {
+  adoptDisplayName?: boolean
+  adoptAvatar?: boolean
+}
+type PendingRegistrationChallengePayload = {
+  ticket: string
+  email: string
+  password: string
+  turnstile_token?: string
+  invitation_code?: string
+  aff_code?: string
+  pending_auth_token?: string
+  pending_auth_token_field?: PendingAuthTokenField
+  pending_provider?: string
+  pending_redirect?: string
+  pending_adoption_decision?: PendingRegistrationAdoptionDecision
+}
+type LegacyRegisterData = {
+  email?: string
+  password?: string
+  turnstile_token?: string
+  invitation_code?: string
+  aff_code?: string
+  pending_auth_token?: string
+  pending_auth_token_field?: PendingAuthTokenField
+  pending_provider?: string
+  pending_redirect?: string
+  pending_adoption_decision?: {
+    adopt_display_name?: boolean
+    adopt_avatar?: boolean
+  }
 }
 type PendingOAuthCreateAccountResponse = {
   auth_result?: string
@@ -212,7 +243,6 @@ type PendingOAuthCreateAccountResponse = {
 const email = ref<string>('')
 const password = ref<string>('')
 const initialTurnstileToken = ref<string>('')
-const promoCode = ref<string>('')
 const invitationCode = ref<string>('')
 const affCode = ref<string>('')
 const pendingAuthToken = ref<string>('')
@@ -251,37 +281,87 @@ watch(validationToastMessage, (value, previousValue) => {
   }
 })
 
+function clearPendingRegistrationState(): void {
+  authStore.clearPendingRegistrationChallenge()
+  sessionStorage.removeItem('register_data')
+}
+
+function hydrateChallengeState(
+  payload: PendingRegistrationChallengePayload,
+  activePendingSession: PendingAuthSessionSummary | null
+): void {
+  email.value = payload.email || ''
+  password.value = payload.password || ''
+  initialTurnstileToken.value = payload.turnstile_token || ''
+  invitationCode.value = payload.invitation_code || ''
+  affCode.value = payload.aff_code || loadAffiliateReferralCode()
+  pendingAuthToken.value = payload.pending_auth_token || activePendingSession?.token || ''
+  pendingAuthTokenField.value =
+    payload.pending_auth_token_field || activePendingSession?.token_field || 'pending_auth_token'
+  pendingProvider.value = payload.pending_provider || activePendingSession?.provider || ''
+  pendingRedirect.value = payload.pending_redirect || activePendingSession?.redirect || ''
+  pendingAdoptionDecision.value = payload.pending_adoption_decision || null
+  hasRegisterData.value = !!(email.value && password.value)
+}
+
+function migrateLegacyRegisterData(
+  activePendingSession: PendingAuthSessionSummary | null
+): PendingRegistrationChallengePayload | null {
+  const registerDataStr = sessionStorage.getItem('register_data')
+  if (!registerDataStr) {
+    return authStore.getPendingRegistrationChallengePayload()
+  }
+
+  try {
+    const registerData = JSON.parse(registerDataStr) as LegacyRegisterData
+    if (!registerData.email || !registerData.password) {
+      clearPendingRegistrationState()
+      return null
+    }
+
+    authStore.setPendingRegistrationChallenge({
+      email: registerData.email,
+      password: registerData.password,
+      turnstile_token: registerData.turnstile_token || undefined,
+      invitation_code: registerData.invitation_code || undefined,
+      aff_code: registerData.aff_code || undefined,
+      pending_auth_token: registerData.pending_auth_token || activePendingSession?.token || undefined,
+      pending_auth_token_field:
+        registerData.pending_auth_token_field || activePendingSession?.token_field || undefined,
+      pending_provider: registerData.pending_provider || activePendingSession?.provider || undefined,
+      pending_redirect: registerData.pending_redirect || activePendingSession?.redirect || undefined,
+      pending_adoption_decision: registerData.pending_adoption_decision
+        ? {
+            adoptDisplayName: registerData.pending_adoption_decision.adopt_display_name === true,
+            adoptAvatar: registerData.pending_adoption_decision.adopt_avatar === true
+          }
+        : undefined
+    })
+  } catch {
+    clearPendingRegistrationState()
+    return null
+  }
+
+  sessionStorage.removeItem('register_data')
+  return authStore.getPendingRegistrationChallengePayload()
+}
+
 // ==================== Lifecycle ====================
 
 onMounted(async () => {
   const activePendingSession = authStore.pendingAuthSession as PendingAuthSessionSummary | null
 
-  // Load registration data from sessionStorage
-  const registerDataStr = sessionStorage.getItem('register_data')
-  if (registerDataStr) {
-    try {
-      const registerData = JSON.parse(registerDataStr)
-      email.value = registerData.email || ''
-      password.value = registerData.password || ''
-      initialTurnstileToken.value = registerData.turnstile_token || ''
-      promoCode.value = registerData.promo_code || ''
-      invitationCode.value = registerData.invitation_code || ''
-      affCode.value = registerData.aff_code || loadAffiliateReferralCode()
-      pendingAuthToken.value = registerData.pending_auth_token || activePendingSession?.token || ''
-      pendingAuthTokenField.value = registerData.pending_auth_token_field || activePendingSession?.token_field || 'pending_auth_token'
-      pendingProvider.value = registerData.pending_provider || activePendingSession?.provider || ''
-      pendingRedirect.value = registerData.pending_redirect || activePendingSession?.redirect || ''
-      pendingAdoptionDecision.value = registerData.pending_adoption_decision
-        ? {
-            adoptDisplayName: registerData.pending_adoption_decision.adopt_display_name === true,
-            adoptAvatar: registerData.pending_adoption_decision.adopt_avatar === true
-          }
-        : null
-      hasRegisterData.value = !!(email.value && password.value)
-    } catch {
-      hasRegisterData.value = false
+  const pendingChallenge =
+    authStore.getPendingRegistrationChallengePayload() || migrateLegacyRegisterData(activePendingSession)
+  if (pendingChallenge) {
+    hydrateChallengeState(pendingChallenge, activePendingSession)
+  } else {
+    if (authStore.hasPendingRegistrationChallenge) {
+      clearPendingRegistrationState()
     }
-  } else if (activePendingSession) {
+  }
+
+  if (!hasRegisterData.value && activePendingSession) {
     pendingAuthToken.value = activePendingSession.token
     pendingAuthTokenField.value = activePendingSession.token_field
     pendingProvider.value = activePendingSession.provider
@@ -408,7 +488,7 @@ async function sendCode(): Promise<void> {
     const requestPayload = {
       email: email.value,
       [pendingAuthTokenField.value]: pendingAuthToken.value || undefined,
-      // 优先使用重发时新获取的 token（因为初始 token 可能已被使用）
+      // Prefer a fresh resend token once available.
       turnstile_token: resendTurnstileToken.value || initialTurnstileToken.value || undefined
     } as Parameters<typeof sendVerifyCode>[0]
     const response = isPendingOAuthFlow()
@@ -419,7 +499,7 @@ async function sendCode(): Promise<void> {
       ? getPendingOAuthSendCodeSessionResponse(response as PendingOAuthSendVerifyCodeResponse)
       : null
     if (pendingSendCodeSession) {
-      sessionStorage.removeItem('register_data')
+      clearPendingRegistrationState()
       persistPendingOAuthSession(
         pendingSendCodeSession.provider || pendingProvider.value,
         pendingSendCodeSession.redirect,
@@ -489,6 +569,17 @@ async function handleVerify(): Promise<void> {
     return
   }
 
+  const pendingChallenge = authStore.getPendingRegistrationChallengePayload()
+  if (!pendingChallenge) {
+    hasRegisterData.value = false
+    clearPendingRegistrationState()
+    errorMessage.value = t('auth.sessionExpired')
+    appStore.showError(errorMessage.value)
+    return
+  }
+
+  password.value = pendingChallenge.password
+
   isLoading.value = true
 
   try {
@@ -503,7 +594,7 @@ async function handleVerify(): Promise<void> {
         '/auth/oauth/pending/create-account',
         {
           email: email.value,
-          password: password.value,
+          password: pendingChallenge.password,
           verify_code: verifyCode.value.trim(),
           invitation_code: invitationCode.value || undefined,
           ...oauthAffiliatePayload(affCode.value || loadAffiliateReferralCode()),
@@ -512,7 +603,7 @@ async function handleVerify(): Promise<void> {
         }
       )
       if (isPendingOAuthSessionResponse(data)) {
-        sessionStorage.removeItem('register_data')
+        clearPendingRegistrationState()
         persistPendingOAuthSession(data.provider || pendingProvider.value, data.redirect)
         await router.push(resolvePendingOAuthCallbackRoute(data.provider || pendingProvider.value))
         return
@@ -528,17 +619,15 @@ async function handleVerify(): Promise<void> {
       // Register with verification code
       await authStore.register({
         email: email.value,
-        password: password.value,
+        password: pendingChallenge.password,
         verify_code: verifyCode.value.trim(),
         turnstile_token: initialTurnstileToken.value || undefined,
-        promo_code: promoCode.value || undefined,
         invitation_code: invitationCode.value || undefined,
         ...(affCode.value ? { aff_code: affCode.value } : {})
       })
     }
 
-    // Clear session data
-    sessionStorage.removeItem('register_data')
+    clearPendingRegistrationState()
     clearAllAffiliateReferralCodes()
 
     // Show success toast
@@ -558,8 +647,7 @@ async function handleVerify(): Promise<void> {
 }
 
 function handleBack(): void {
-  // Clear session data
-  sessionStorage.removeItem('register_data')
+  clearPendingRegistrationState()
 
   // Go back to registration
   router.push('/register')
@@ -572,7 +660,7 @@ function buildEmailSuffixNotAllowedMessage(): string {
   if (normalizedWhitelist.length === 0) {
     return t('auth.emailSuffixNotAllowed')
   }
-  const separator = String(locale.value || '').toLowerCase().startsWith('zh') ? '、' : ', '
+  const separator = String(locale.value || '').toLowerCase().startsWith('zh') ? '\u3001' : ', '
   return t('auth.emailSuffixNotAllowedWithAllowed', {
     suffixes: normalizedWhitelist.join(separator)
   })

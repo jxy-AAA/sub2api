@@ -63,6 +63,7 @@ type AffiliateSummary struct {
 	AffCodeCustom        bool      `json:"aff_code_custom"`
 	AffRebateRatePercent *float64  `json:"aff_rebate_rate_percent,omitempty"`
 	InviterID            *int64    `json:"inviter_id,omitempty"`
+	InviterSource        string    `json:"-"`
 	AffCount             int       `json:"aff_count"`
 	AffQuota             float64   `json:"aff_quota"`
 	AffFrozenQuota       float64   `json:"aff_frozen_quota"`
@@ -282,12 +283,8 @@ func (s *AffiliateService) BindInviterByCode(ctx context.Context, userID int64, 
 		return ErrAffiliateCodeInvalid
 	}
 
-	selfSummary, err := s.repo.EnsureUserAffiliate(ctx, userID)
-	if err != nil {
+	if _, err := s.repo.EnsureUserAffiliate(ctx, userID); err != nil {
 		return err
-	}
-	if selfSummary.InviterID != nil {
-		return nil
 	}
 
 	inviterSummary, err := s.repo.GetAffiliateByCode(ctx, code)
@@ -309,6 +306,31 @@ func (s *AffiliateService) BindInviterByCode(ctx context.Context, userID int64, 
 		return ErrAffiliateAlreadyBound
 	}
 	return nil
+}
+
+func (s *AffiliateService) ValidateAffiliateCode(ctx context.Context, rawCode string) (*AffiliateSummary, error) {
+	code := strings.ToUpper(strings.TrimSpace(rawCode))
+	if code == "" {
+		return nil, ErrAffiliateCodeInvalid
+	}
+	if s == nil || s.repo == nil {
+		return nil, infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "affiliate service unavailable")
+	}
+	if !isValidAffiliateCodeFormat(code) {
+		return nil, ErrAffiliateCodeInvalid
+	}
+
+	summary, err := s.repo.GetAffiliateByCode(ctx, code)
+	if err != nil {
+		if errors.Is(err, ErrAffiliateProfileNotFound) {
+			return nil, ErrAffiliateCodeInvalid
+		}
+		return nil, err
+	}
+	if summary == nil || summary.UserID <= 0 {
+		return nil, ErrAffiliateCodeInvalid
+	}
+	return summary, nil
 }
 
 func (s *AffiliateService) AccrueInviteRebate(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64) (float64, error) {

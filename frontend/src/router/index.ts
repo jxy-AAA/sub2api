@@ -705,7 +705,11 @@ const BACKEND_MODE_CALLBACK_PATHS = [
 ]
 const BACKEND_MODE_PENDING_AUTH_PATHS = ['/register', '/email-verify']
 
-function isBackendModePublicRouteAllowed(path: string, hasPendingAuthSession: boolean): boolean {
+function isBackendModePublicRouteAllowed(
+  path: string,
+  hasPendingAuthSession: boolean,
+  hasPendingRegistrationChallenge: boolean
+): boolean {
   if (BACKEND_MODE_ALLOWED_PATHS.some((allowedPath) => path === allowedPath || path.startsWith(allowedPath))) {
     return true
   }
@@ -714,7 +718,10 @@ function isBackendModePublicRouteAllowed(path: string, hasPendingAuthSession: bo
     return true
   }
 
-  if (hasPendingAuthSession && BACKEND_MODE_PENDING_AUTH_PATHS.some((allowedPath) => path === allowedPath)) {
+  if (
+    (hasPendingAuthSession || hasPendingRegistrationChallenge)
+    && BACKEND_MODE_PENDING_AUTH_PATHS.some((allowedPath) => path === allowedPath)
+  ) {
     return true
   }
 
@@ -758,6 +765,17 @@ router.beforeEach((to, _from, next) => {
 
   // If route doesn't require auth, allow access
   if (!requiresAuth) {
+    if (authStore.isAuthenticated && to.path === '/email-verify') {
+      authStore.clearPendingAuthSession()
+      authStore.clearPendingRegistrationChallenge()
+      if (appStore.backendModeEnabled && !authStore.isAdmin) {
+        next('/login')
+        return
+      }
+      next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+      return
+    }
+
     // If already authenticated and trying to access login/register, redirect to appropriate dashboard
     if (authStore.isAuthenticated && (to.path === '/login' || to.path === '/register')) {
       // In backend mode, non-admin users should NOT be redirected away from login
@@ -772,7 +790,11 @@ router.beforeEach((to, _from, next) => {
     }
     // Backend mode: block public pages for unauthenticated users (except login, key-usage, setup)
     if (appStore.backendModeEnabled && !authStore.isAuthenticated) {
-      const isAllowed = isBackendModePublicRouteAllowed(to.path, authStore.hasPendingAuthSession)
+      const isAllowed = isBackendModePublicRouteAllowed(
+        to.path,
+        authStore.hasPendingAuthSession,
+        authStore.hasPendingRegistrationChallenge
+      )
       if (!isAllowed) {
         next('/login')
         return
@@ -840,7 +862,11 @@ router.beforeEach((to, _from, next) => {
       next()
       return
     }
-    const isAllowed = isBackendModePublicRouteAllowed(to.path, authStore.hasPendingAuthSession)
+    const isAllowed = isBackendModePublicRouteAllowed(
+      to.path,
+      authStore.hasPendingAuthSession,
+      authStore.hasPendingRegistrationChallenge
+    )
     if (!isAllowed) {
       next('/login')
       return

@@ -42,6 +42,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { clearOAuthCallbackFragment } from '@/api/auth'
 import { useAppStore } from '@/stores'
 
 const { t } = useI18n()
@@ -97,6 +98,7 @@ function goBackToPayment() {
 
 onMounted(async () => {
   const fragment = parseFragmentParams()
+  clearOAuthCallbackFragment()
   const readParam = (key: string) => fragment.get(key) || readQueryString(key)
 
   const error = readParam('error') || readParam('err_msg') || readParam('errmsg')

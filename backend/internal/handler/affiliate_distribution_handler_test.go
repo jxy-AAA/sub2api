@@ -20,10 +20,14 @@ import (
 
 type affiliateDistributionRepoStub struct {
 	overview                    *service.AgentDistributionOverview
-	inviteRates                 []service.AgentModelRate
+	overviewErr                 error
+	affiliateByCode             *service.AffiliateSummary
+	getAffiliateByCodeErr       error
+	inviteRates                 []service.AgentGroupRate
 	permissions                 *service.AgentDistributionPermission
-	savedInviteRates            []service.AgentModelRateInput
+	savedInviteRates            []service.AgentGroupRateInput
 	directMembers               []service.AgentDirectMember
+	directMembersErr            error
 	history                     []service.AgentHistoryItem
 	historyTotal                int64
 	scopedDailyRanking          []service.AgentDailyBusinessRankingItem
@@ -31,11 +35,11 @@ type affiliateDistributionRepoStub struct {
 	scopedRebateRanking         []service.AgentRebateBalanceRankingItem
 	scopedRebateTotal           int64
 	scopedTree                  []service.AgentTreeNode
-	scopedPricing               []service.AgentModelRate
+	scopedPricing               []service.AgentGroupRate
 	lastUpdatedSubordinateID    int64
-	lastUpdatedSubordinateRates []service.AgentModelRateInput
+	lastUpdatedSubordinateRates []service.AgentGroupRateInput
 	lastScopedPricingUserID     int64
-	lastScopedPricingRates      []service.AgentModelRateInput
+	lastScopedPricingRates      []service.AgentGroupRateInput
 	updateSubordinateErr        error
 	updatePermissionsErr        error
 	scopedDailyErr              error
@@ -50,6 +54,13 @@ func (s *affiliateDistributionRepoStub) EnsureUserAffiliate(context.Context, int
 	return &service.AffiliateSummary{}, nil
 }
 func (s *affiliateDistributionRepoStub) GetAffiliateByCode(context.Context, string) (*service.AffiliateSummary, error) {
+	if s.getAffiliateByCodeErr != nil {
+		return nil, s.getAffiliateByCodeErr
+	}
+	if s.affiliateByCode != nil {
+		copyValue := *s.affiliateByCode
+		return &copyValue, nil
+	}
 	return nil, service.ErrAffiliateProfileNotFound
 }
 func (s *affiliateDistributionRepoStub) BindInviter(context.Context, int64, int64) (bool, error) {
@@ -98,31 +109,37 @@ func (s *affiliateDistributionRepoStub) GetAffiliateUserOverview(context.Context
 	return nil, nil
 }
 func (s *affiliateDistributionRepoStub) GetDistributionOverview(context.Context, int64) (*service.AgentDistributionOverview, error) {
+	if s.overviewErr != nil {
+		return nil, s.overviewErr
+	}
 	return s.overview, nil
 }
-func (s *affiliateDistributionRepoStub) ListInviteModelRates(context.Context, int64) ([]service.AgentModelRate, error) {
-	return append([]service.AgentModelRate(nil), s.inviteRates...), nil
+func (s *affiliateDistributionRepoStub) ListInviteGroupRates(context.Context, int64) ([]service.AgentGroupRate, error) {
+	return append([]service.AgentGroupRate(nil), s.inviteRates...), nil
 }
-func (s *affiliateDistributionRepoStub) SaveInviteModelRates(_ context.Context, _ int64, rates []service.AgentModelRateInput) ([]service.AgentModelRate, error) {
-	s.savedInviteRates = append([]service.AgentModelRateInput(nil), rates...)
-	out := make([]service.AgentModelRate, 0, len(rates))
+func (s *affiliateDistributionRepoStub) SaveInviteGroupRates(_ context.Context, _ int64, rates []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
+	s.savedInviteRates = append([]service.AgentGroupRateInput(nil), rates...)
+	out := make([]service.AgentGroupRate, 0, len(rates))
 	for _, rate := range rates {
-		out = append(out, service.AgentModelRate{Model: rate.Model, Multiplier: rate.Multiplier})
+		out = append(out, service.AgentGroupRate{GroupID: rate.GroupID, RateMultiplier: rate.RateMultiplier})
 	}
 	return out, nil
 }
 func (s *affiliateDistributionRepoStub) ListDirectSubordinates(context.Context, int64) ([]service.AgentDirectMember, error) {
+	if s.directMembersErr != nil {
+		return nil, s.directMembersErr
+	}
 	return append([]service.AgentDirectMember(nil), s.directMembers...), nil
 }
-func (s *affiliateDistributionRepoStub) UpdateDirectSubordinateModelRates(_ context.Context, _ int64, subordinateUserID int64, rates []service.AgentModelRateInput) ([]service.AgentModelRate, error) {
+func (s *affiliateDistributionRepoStub) UpdateDirectSubordinateGroupRates(_ context.Context, _ int64, subordinateUserID int64, rates []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
 	if s.updateSubordinateErr != nil {
 		return nil, s.updateSubordinateErr
 	}
 	s.lastUpdatedSubordinateID = subordinateUserID
-	s.lastUpdatedSubordinateRates = append([]service.AgentModelRateInput(nil), rates...)
-	out := make([]service.AgentModelRate, 0, len(rates))
+	s.lastUpdatedSubordinateRates = append([]service.AgentGroupRateInput(nil), rates...)
+	out := make([]service.AgentGroupRate, 0, len(rates))
 	for _, rate := range rates {
-		out = append(out, service.AgentModelRate{Model: rate.Model, Multiplier: rate.Multiplier})
+		out = append(out, service.AgentGroupRate{GroupID: rate.GroupID, RateMultiplier: rate.RateMultiplier})
 	}
 	return out, nil
 }
@@ -154,10 +171,10 @@ func (s *affiliateDistributionRepoStub) AdminSetRebateBalance(context.Context, i
 func (s *affiliateDistributionRepoStub) GetDistributionTree(context.Context, service.AgentTreeFilter) ([]service.AgentTreeNode, error) {
 	return nil, nil
 }
-func (s *affiliateDistributionRepoStub) GetUserDistributionPricing(context.Context, int64) ([]service.AgentModelRate, error) {
+func (s *affiliateDistributionRepoStub) GetUserDistributionGroupRates(context.Context, int64) ([]service.AgentGroupRate, error) {
 	return nil, nil
 }
-func (s *affiliateDistributionRepoStub) AdminUpdateUserDistributionPricing(context.Context, int64, int64, []service.AgentModelRateInput) ([]service.AgentModelRate, error) {
+func (s *affiliateDistributionRepoStub) AdminUpdateUserDistributionGroupRates(context.Context, int64, int64, []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
 	return nil, nil
 }
 func (s *affiliateDistributionRepoStub) ListMonthlyRebateArchives(context.Context, service.AgentMonthlyArchiveFilter) ([]service.AgentMonthlyArchiveItem, int64, error) {
@@ -184,21 +201,21 @@ func (s *affiliateDistributionRepoStub) GetDistributionTreeScoped(context.Contex
 	}
 	return append([]service.AgentTreeNode(nil), s.scopedTree...), nil
 }
-func (s *affiliateDistributionRepoStub) GetUserDistributionPricingScoped(context.Context, int64, int64) ([]service.AgentModelRate, error) {
+func (s *affiliateDistributionRepoStub) GetUserDistributionGroupRatesScoped(context.Context, int64, int64) ([]service.AgentGroupRate, error) {
 	if s.scopedPricingErr != nil {
 		return nil, s.scopedPricingErr
 	}
-	return append([]service.AgentModelRate(nil), s.scopedPricing...), nil
+	return append([]service.AgentGroupRate(nil), s.scopedPricing...), nil
 }
-func (s *affiliateDistributionRepoStub) UpdateUserDistributionPricingScoped(_ context.Context, _ int64, userID int64, rates []service.AgentModelRateInput) ([]service.AgentModelRate, error) {
+func (s *affiliateDistributionRepoStub) UpdateUserDistributionGroupRatesScoped(_ context.Context, _ int64, userID int64, rates []service.AgentGroupRateInput) ([]service.AgentGroupRate, error) {
 	if s.updateScopedPricingErr != nil {
 		return nil, s.updateScopedPricingErr
 	}
 	s.lastScopedPricingUserID = userID
-	s.lastScopedPricingRates = append([]service.AgentModelRateInput(nil), rates...)
-	out := make([]service.AgentModelRate, 0, len(rates))
+	s.lastScopedPricingRates = append([]service.AgentGroupRateInput(nil), rates...)
+	out := make([]service.AgentGroupRate, 0, len(rates))
 	for _, rate := range rates {
-		out = append(out, service.AgentModelRate{Model: rate.Model, Multiplier: rate.Multiplier})
+		out = append(out, service.AgentGroupRate{GroupID: rate.GroupID, RateMultiplier: rate.RateMultiplier})
 	}
 	return out, nil
 }
@@ -225,12 +242,12 @@ func TestUserHandlerTransferAffiliateQuotaDeprecated(t *testing.T) {
 	require.Equal(t, "AFFILIATE_TRANSFER_REMOVED", resp.Reason)
 }
 
-func TestUserHandlerSaveMyInviteModelRates(t *testing.T) {
+func TestUserHandlerSaveMyInviteGroupRates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	repo := &affiliateDistributionRepoStub{}
 	handler := NewUserHandler(nil, nil, nil, nil, service.NewAffiliateService(repo, nil, nil, nil))
-	body := []byte(`{"model_rates":[{"model":"gpt-4.1","multiplier":1.6},{"model":"claude-3-7-sonnet","multiplier":1.8}]}`)
+	body := []byte(`{"group_rates":[{"group_id":1,"rate_multiplier":1.6},{"group_id":2,"rate_multiplier":1.8}]}`)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -238,12 +255,12 @@ func TestUserHandlerSaveMyInviteModelRates(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 21})
 
-	handler.SaveMyInviteModelRates(c)
+	handler.SaveMyInviteGroupRates(c)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Len(t, repo.savedInviteRates, 2)
-	require.Equal(t, "gpt-4.1", repo.savedInviteRates[0].Model)
-	require.Equal(t, 1.6, repo.savedInviteRates[0].Multiplier)
+	require.Equal(t, int64(1), repo.savedInviteRates[0].GroupID)
+	require.Equal(t, 1.6, repo.savedInviteRates[0].RateMultiplier)
 }
 
 func TestUserHandlerGetAffiliateUsesRMBFields(t *testing.T) {
@@ -280,6 +297,44 @@ func TestUserHandlerGetAffiliateUsesRMBFields(t *testing.T) {
 	require.False(t, hasBalanceUSD)
 }
 
+func TestUserHandlerGetAffiliateIncludesDirectChildrenFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repo := &affiliateDistributionRepoStub{
+		overview: &service.AgentDistributionOverview{
+			UserID:                  21,
+			InviteCode:              "AGENT21",
+			TodayBusinessUSD:        2000,
+			TodayRebateRMB:          40,
+			CurrentRebateBalanceRMB: 88.8,
+		},
+		directMembers: []service.AgentDirectMember{{
+			UserID:             33,
+			Email:              "child@example.com",
+			Username:           "child",
+			CurrentGroupRates:  []service.AgentGroupRate{{GroupID: 1, GroupName: "Default", RateMultiplier: 1.6}},
+			ParentCanEditRates: true,
+		}},
+	}
+	handler := NewUserHandler(nil, nil, nil, nil, service.NewAffiliateService(repo, nil, nil, nil))
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/user/aff/distribution", nil)
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 21})
+
+	handler.GetAffiliate(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var resp struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.JSONEq(t, `[{"user_id":33,"email":"child@example.com","username":"child","is_agent":false,"today_business_usd":0,"today_rebate_rmb":0,"current_rebate_balance_rmb":0,"current_group_rates":[{"group_id":1,"group_name":"Default","group_rate_multiplier":0,"rate_multiplier":1.6}],"parent_can_edit_rates":true}]`, string(resp.Data["direct_children"]))
+	require.JSONEq(t, `1`, string(resp.Data["direct_children_count"]))
+	require.JSONEq(t, `1`, string(resp.Data["direct_member_count"]))
+}
+
 func TestUserHandlerListDirectAffiliateMembersUsesRMBFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -292,7 +347,7 @@ func TestUserHandlerListDirectAffiliateMembersUsesRMBFields(t *testing.T) {
 			TodayBusinessUSD:        1200,
 			TodayRebateRMB:          24,
 			CurrentRebateBalanceRMB: 66.6,
-			CurrentModelRates:       []service.AgentModelRate{{Model: "gpt-4.1", Multiplier: 1.6}},
+			CurrentGroupRates:       []service.AgentGroupRate{{GroupID: 1, GroupName: "Default", RateMultiplier: 1.6}},
 			ParentCanEditRates:      true,
 		}},
 	}
@@ -317,6 +372,49 @@ func TestUserHandlerListDirectAffiliateMembersUsesRMBFields(t *testing.T) {
 	_, hasBalanceUSD := resp.Data[0]["current_rebate_balance_usd"]
 	require.False(t, hasTodayUSD)
 	require.False(t, hasBalanceUSD)
+}
+
+func TestUserHandlerListDirectAffiliateMembersReturnsEmptyArray(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewUserHandler(nil, nil, nil, nil, service.NewAffiliateService(&affiliateDistributionRepoStub{}, nil, nil, nil))
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/user/aff/direct-members", nil)
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 21})
+
+	handler.ListDirectAffiliateMembers(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var resp struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.JSONEq(t, `[]`, string(resp.Data))
+}
+
+func TestUserHandlerListDirectAffiliateMembersReturnsError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repo := &affiliateDistributionRepoStub{
+		directMembersErr: infraerrors.ServiceUnavailable("DIRECT_MEMBERS_FAILED", "failed to load direct members"),
+	}
+	handler := NewUserHandler(nil, nil, nil, nil, service.NewAffiliateService(repo, nil, nil, nil))
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/user/aff/direct-members", nil)
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 21})
+
+	handler.ListDirectAffiliateMembers(c)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	var resp struct {
+		Reason string `json:"reason"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.Equal(t, "DIRECT_MEMBERS_FAILED", resp.Reason)
 }
 
 func TestUserHandlerListMyAffiliateBusinessHistory(t *testing.T) {
@@ -454,7 +552,7 @@ func TestUserHandlerUpdateManagedUserDistributionPricingRejectsBranchUser(t *tes
 		updateScopedPricingErr: infraerrors.Forbidden("INSUFFICIENT_PERMISSIONS", "insufficient permissions"),
 	}
 	handler := NewUserHandler(nil, nil, nil, nil, service.NewAffiliateService(repo, nil, nil, nil))
-	body := []byte(`{"model_rates":[{"model":"gpt-4.1","multiplier":1.7}]}`)
+	body := []byte(`{"group_rates":[{"group_id":1,"rate_multiplier":1.7}]}`)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -521,7 +619,7 @@ func TestUserHandlerUpdateDirectAffiliateMemberRates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			handler := NewUserHandler(nil, nil, nil, nil, service.NewAffiliateService(tt.repo, nil, nil, nil))
-			body := []byte(`{"model_rates":[{"model":"gpt-4.1","multiplier":1.6}]}`)
+			body := []byte(`{"group_rates":[{"group_id":1,"rate_multiplier":1.6}]}`)
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/user/aff/direct-members/"+tt.targetUserID+"/pricing", bytes.NewReader(body))

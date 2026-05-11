@@ -134,49 +134,54 @@
           </transition>
         </div>
 
-        <!-- Promo Code Input (Optional) -->
-        <div v-if="promoCodeEnabled">
-          <label for="promo_code" class="input-label">
-            {{ t('auth.promoCodeLabel') }}
+        <!-- Agent Invitation Code Input -->
+        <div>
+          <label for="agent_invitation_code" class="input-label">
+            {{ t('auth.agentInvitationCodeLabel') }}
             <span class="ml-1 text-xs font-normal text-gray-400 dark:text-dark-500">({{ t('common.optional') }})</span>
           </label>
           <div class="relative">
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-              <Icon name="gift" size="md" :class="promoValidation.valid ? 'text-green-500' : 'text-gray-400 dark:text-dark-500'" />
+              <Icon
+                name="gift"
+                size="md"
+                :class="affiliateCodeValidation.valid ? 'text-green-500' : 'text-gray-400 dark:text-dark-500'"
+              />
             </div>
             <input
-              id="promo_code"
-              v-model="formData.promo_code"
+              id="agent_invitation_code"
+              v-model="formData.aff_code"
               type="text"
               :disabled="registrationActionDisabled"
               class="input pl-11 pr-10"
               :class="{
-                'border-green-500 focus:border-green-500 focus:ring-green-500': promoValidation.valid,
-                'border-red-500 focus:border-red-500 focus:ring-red-500': promoValidation.invalid
+                'border-green-500 focus:border-green-500 focus:ring-green-500': affiliateCodeValidation.valid,
+                'border-red-500 focus:border-red-500 focus:ring-red-500': affiliateCodeValidation.invalid
               }"
-              :placeholder="t('auth.promoCodePlaceholder')"
-              @input="handlePromoCodeInput"
+              :placeholder="t('auth.agentInvitationCodePlaceholder')"
+              @input="handleAffiliateCodeInput"
             />
-            <!-- Validation indicator -->
-            <div v-if="promoValidating" class="absolute inset-y-0 right-0 flex items-center pr-3.5">
+            <div v-if="affiliateCodeValidating" class="absolute inset-y-0 right-0 flex items-center pr-3.5">
               <svg class="h-4 w-4 animate-spin text-gray-400" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
             </div>
-            <div v-else-if="promoValidation.valid" class="absolute inset-y-0 right-0 flex items-center pr-3.5">
+            <div v-else-if="affiliateCodeValidation.valid" class="absolute inset-y-0 right-0 flex items-center pr-3.5">
               <Icon name="checkCircle" size="md" class="text-green-500" />
             </div>
-            <div v-else-if="promoValidation.invalid" class="absolute inset-y-0 right-0 flex items-center pr-3.5">
+            <div v-else-if="affiliateCodeValidation.invalid" class="absolute inset-y-0 right-0 flex items-center pr-3.5">
               <Icon name="exclamationCircle" size="md" class="text-red-500" />
             </div>
           </div>
-          <!-- Promo code validation result -->
           <transition name="fade">
-            <div v-if="promoValidation.valid" class="mt-2 flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 dark:bg-green-900/20">
-              <Icon name="gift" size="sm" class="text-green-600 dark:text-green-400" />
+            <div
+              v-if="affiliateCodeValidation.valid"
+              class="mt-2 flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 dark:bg-green-900/20"
+            >
+              <Icon name="checkCircle" size="sm" class="text-green-600 dark:text-green-400" />
               <span class="text-sm text-green-700 dark:text-green-400">
-                {{ t('auth.promoCodeValid', { amount: promoValidation.bonusAmount?.toFixed(2) }) }}
+                {{ t('auth.agentInvitationCodeValid') }}
               </span>
             </div>
           </transition>
@@ -313,7 +318,7 @@ import { useAuthStore, useAppStore } from '@/stores'
 import {
   getPublicSettings,
   isWeChatWebOAuthEnabled,
-  validatePromoCode,
+  validateAffiliateCode,
   validateInvitationCode
 } from '@/api/auth'
 import { buildAuthErrorMessage } from '@/utils/authError'
@@ -348,7 +353,6 @@ const showPassword = ref<boolean>(false)
 // Public settings
 const registrationEnabled = ref<boolean>(true)
 const emailVerifyEnabled = ref<boolean>(false)
-const promoCodeEnabled = ref<boolean>(true)
 const invitationCodeEnabled = ref<boolean>(false)
 const turnstileEnabled = ref<boolean>(false)
 const turnstileSiteKey = ref<string>('')
@@ -372,15 +376,15 @@ const showAgreementModal = ref<boolean>(false)
 const turnstileRef = ref<InstanceType<typeof TurnstileWidget> | null>(null)
 const turnstileToken = ref<string>('')
 
-// Promo code validation
-const promoValidating = ref<boolean>(false)
-const promoValidation = reactive({
+// Agent invitation code validation
+const affiliateCodeValidating = ref<boolean>(false)
+const affiliateCodeValidation = reactive({
   valid: false,
   invalid: false,
-  bonusAmount: null as number | null,
   message: ''
 })
-let promoValidateTimeout: ReturnType<typeof setTimeout> | null = null
+let affiliateCodeValidateTimeout: ReturnType<typeof setTimeout> | null = null
+let affiliateCodeValidationRequestId = 0
 
 // Invitation code validation
 const invitationValidating = ref<boolean>(false)
@@ -390,14 +394,15 @@ const invitationValidation = reactive({
   message: ''
 })
 let invitationValidateTimeout: ReturnType<typeof setTimeout> | null = null
+let invitationValidationRequestId = 0
 
 const formData = reactive({
   email: '',
   password: '',
-  promo_code: '',
   invitation_code: '',
   aff_code: ''
 })
+const affiliateCodeTouched = ref<boolean>(false)
 
 const errors = reactive({
   email: '',
@@ -409,9 +414,9 @@ const errors = reactive({
 const validationToastMessage = computed(() =>
   errors.email ||
   errors.password ||
+  (affiliateCodeValidation.invalid ? affiliateCodeValidation.message : '') ||
   (invitationValidation.invalid ? invitationValidation.message : '') ||
   errors.invitation_code ||
-  (promoValidation.invalid ? promoValidation.message : '') ||
   errors.turnstile ||
   ''
 )
@@ -441,8 +446,9 @@ watch(validationToastMessage, (value, previousValue) => {
 
 function syncAffiliateReferralCode(): string {
   const code = resolveAffiliateReferralCode(route.query.aff, route.query.aff_code)
-  if (code) {
+  if (code && (!affiliateCodeTouched.value || !formData.aff_code.trim())) {
     formData.aff_code = code
+    scheduleAffiliateCodeValidation(code)
   }
   return code
 }
@@ -456,7 +462,6 @@ onMounted(async () => {
     const settings = await getPublicSettings()
     registrationEnabled.value = settings.registration_enabled
     emailVerifyEnabled.value = settings.email_verify_enabled
-    promoCodeEnabled.value = settings.promo_code_enabled
     invitationCodeEnabled.value = settings.invitation_code_enabled
     turnstileEnabled.value = settings.turnstile_enabled
     turnstileSiteKey.value = settings.turnstile_site_key || ''
@@ -472,15 +477,6 @@ onMounted(async () => {
     )
     applyLoginAgreementSettings(settings)
 
-    // Read promo code from URL parameter only if promo code is enabled
-    if (promoCodeEnabled.value) {
-      const promoParam = route.query.promo as string
-      if (promoParam) {
-        formData.promo_code = promoParam
-        // Validate the promo code from URL
-        await validatePromoCodeDebounced(promoParam)
-      }
-    }
     syncAffiliateReferralCode()
   } catch (error) {
     console.error('Failed to load public settings:', error)
@@ -499,8 +495,8 @@ watch(
 )
 
 onUnmounted(() => {
-  if (promoValidateTimeout) {
-    clearTimeout(promoValidateTimeout)
+  if (affiliateCodeValidateTimeout) {
+    clearTimeout(affiliateCodeValidateTimeout)
   }
   if (invitationValidateTimeout) {
     clearTimeout(invitationValidateTimeout)
@@ -566,79 +562,84 @@ function rejectLoginAgreement(): void {
   localStorage.removeItem(LOGIN_AGREEMENT_STORAGE_KEY)
   agreementAccepted.value = false
   showAgreementModal.value = false
-  appStore.showWarning('未同意最新条款前，无法注册或使用快捷登录。')
+  appStore.showWarning('\u672a\u540c\u610f\u6700\u65b0\u6761\u6b3e\u524d\uff0c\u65e0\u6cd5\u6ce8\u518c\u6216\u4f7f\u7528\u5feb\u6377\u767b\u5f55\u3002')
 }
 
-// ==================== Promo Code Validation ====================
+function clearAffiliateCodeValidation(): void {
+  affiliateCodeValidation.valid = false
+  affiliateCodeValidation.invalid = false
+  affiliateCodeValidation.message = ''
+}
 
-function handlePromoCodeInput(): void {
-  const code = formData.promo_code.trim()
+function handleAffiliateCodeInput(): void {
+  affiliateCodeTouched.value = true
+  scheduleAffiliateCodeValidation(formData.aff_code)
+}
 
-  // Clear previous validation
-  promoValidation.valid = false
-  promoValidation.invalid = false
-  promoValidation.bonusAmount = null
-  promoValidation.message = ''
+function scheduleAffiliateCodeValidation(rawCode: string): void {
+  const code = rawCode.trim()
+  affiliateCodeValidationRequestId += 1
+  clearAffiliateCodeValidation()
+
+  if (affiliateCodeValidateTimeout) {
+    clearTimeout(affiliateCodeValidateTimeout)
+  }
 
   if (!code) {
-    promoValidating.value = false
+    affiliateCodeValidating.value = false
     return
   }
 
-  // Debounce validation
-  if (promoValidateTimeout) {
-    clearTimeout(promoValidateTimeout)
-  }
-
-  promoValidateTimeout = setTimeout(() => {
-    validatePromoCodeDebounced(code)
+  const requestId = affiliateCodeValidationRequestId
+  affiliateCodeValidateTimeout = setTimeout(() => {
+    void validateAffiliateCodeDebounced(code, requestId)
   }, 500)
 }
 
-async function validatePromoCodeDebounced(code: string): Promise<void> {
-  if (!code.trim()) return
+async function validateAffiliateCodeDebounced(code: string, requestId: number): Promise<void> {
+  const normalizedCode = code.trim()
+  if (!normalizedCode) {
+    return
+  }
 
-  promoValidating.value = true
+  affiliateCodeValidating.value = true
 
   try {
-    const result = await validatePromoCode(code)
+    const result = await validateAffiliateCode(normalizedCode)
+
+    if (requestId !== affiliateCodeValidationRequestId || normalizedCode !== formData.aff_code.trim()) {
+      return
+    }
 
     if (result.valid) {
-      promoValidation.valid = true
-      promoValidation.invalid = false
-      promoValidation.bonusAmount = result.bonus_amount || 0
-      promoValidation.message = ''
+      affiliateCodeValidation.valid = true
+      affiliateCodeValidation.invalid = false
+      affiliateCodeValidation.message = ''
     } else {
-      promoValidation.valid = false
-      promoValidation.invalid = true
-      promoValidation.bonusAmount = null
-      // 根据错误码显示对应的翻译
-      promoValidation.message = getPromoErrorMessage(result.error_code)
+      affiliateCodeValidation.valid = false
+      affiliateCodeValidation.invalid = true
+      affiliateCodeValidation.message = getAffiliateCodeErrorMessage(result.error_code)
     }
-  } catch (error) {
-    console.error('Failed to validate promo code:', error)
-    promoValidation.valid = false
-    promoValidation.invalid = true
-    promoValidation.message = t('auth.promoCodeInvalid')
+  } catch {
+    if (requestId !== affiliateCodeValidationRequestId || normalizedCode !== formData.aff_code.trim()) {
+      return
+    }
+
+    affiliateCodeValidation.valid = false
+    affiliateCodeValidation.invalid = true
+    affiliateCodeValidation.message = t('auth.agentInvitationCodeInvalid')
   } finally {
-    promoValidating.value = false
+    if (requestId === affiliateCodeValidationRequestId && normalizedCode === formData.aff_code.trim()) {
+      affiliateCodeValidating.value = false
+    }
   }
 }
 
-function getPromoErrorMessage(errorCode?: string): string {
+function getAffiliateCodeErrorMessage(errorCode?: string): string {
   switch (errorCode) {
-    case 'PROMO_CODE_NOT_FOUND':
-      return t('auth.promoCodeNotFound')
-    case 'PROMO_CODE_EXPIRED':
-      return t('auth.promoCodeExpired')
-    case 'PROMO_CODE_DISABLED':
-      return t('auth.promoCodeDisabled')
-    case 'PROMO_CODE_MAX_USED':
-      return t('auth.promoCodeMaxUsed')
-    case 'PROMO_CODE_ALREADY_USED':
-      return t('auth.promoCodeAlreadyUsed')
+    case 'AFFILIATE_CODE_INVALID':
     default:
-      return t('auth.promoCodeInvalid')
+      return t('auth.agentInvitationCodeInvalid')
   }
 }
 
@@ -646,6 +647,7 @@ function getPromoErrorMessage(errorCode?: string): string {
 
 function handleInvitationCodeInput(): void {
   const code = formData.invitation_code.trim()
+  invitationValidationRequestId += 1
 
   // Clear previous validation
   invitationValidation.valid = false
@@ -662,16 +664,26 @@ function handleInvitationCodeInput(): void {
     clearTimeout(invitationValidateTimeout)
   }
 
+  const requestId = invitationValidationRequestId
   invitationValidateTimeout = setTimeout(() => {
-    validateInvitationCodeDebounced(code)
+    void validateInvitationCodeDebounced(code, requestId)
   }, 500)
 }
 
-async function validateInvitationCodeDebounced(code: string): Promise<void> {
+async function validateInvitationCodeDebounced(code: string, requestId: number): Promise<void> {
+  const normalizedCode = code.trim()
+  if (!normalizedCode) {
+    return
+  }
+
   invitationValidating.value = true
 
   try {
-    const result = await validateInvitationCode(code)
+    const result = await validateInvitationCode(normalizedCode)
+
+    if (requestId !== invitationValidationRequestId || normalizedCode !== formData.invitation_code.trim()) {
+      return
+    }
 
     if (result.valid) {
       invitationValidation.valid = true
@@ -683,11 +695,17 @@ async function validateInvitationCodeDebounced(code: string): Promise<void> {
       invitationValidation.message = getInvitationErrorMessage(result.error_code)
     }
   } catch {
+    if (requestId !== invitationValidationRequestId || normalizedCode !== formData.invitation_code.trim()) {
+      return
+    }
+
     invitationValidation.valid = false
     invitationValidation.invalid = true
     invitationValidation.message = t('auth.invitationCodeInvalid')
   } finally {
-    invitationValidating.value = false
+    if (requestId === invitationValidationRequestId && normalizedCode === formData.invitation_code.trim()) {
+      invitationValidating.value = false
+    }
   }
 }
 
@@ -737,7 +755,7 @@ function buildEmailSuffixNotAllowedMessage(): string {
   if (normalizedWhitelist.length === 0) {
     return t('auth.emailSuffixNotAllowed')
   }
-  const separator = String(locale.value || '').toLowerCase().startsWith('zh') ? '、' : ', '
+  const separator = String(locale.value || '').toLowerCase().startsWith('zh') ? '\u3001' : ', '
   return t('auth.emailSuffixNotAllowedWithAllowed', {
     suffixes: normalizedWhitelist.join(separator)
   })
@@ -753,7 +771,7 @@ function validateForm(): boolean {
   let isValid = true
 
   if (agreementGateActive.value) {
-    appStore.showWarning('请先阅读并同意最新条款后再注册。')
+    appStore.showWarning('\u8bf7\u5148\u9605\u8bfb\u5e76\u540c\u610f\u6700\u65b0\u6761\u6b3e\u540e\u518d\u6ce8\u518c\u3002')
     if (loginAgreementMode.value !== 'checkbox') {
       showAgreementModal.value = true
     }
@@ -811,17 +829,23 @@ async function handleRegister(): Promise<void> {
     return
   }
 
-  // Check promo code validation status
-  if (formData.promo_code.trim()) {
-    // If promo code is being validated, wait
-    if (promoValidating.value) {
-      errorMessage.value = t('auth.promoCodeValidating')
+  const normalizedAffiliateCode = formData.aff_code.trim()
+  if (normalizedAffiliateCode) {
+    if (affiliateCodeValidating.value) {
+      errorMessage.value = t('auth.agentInvitationCodeValidating')
       return
     }
-    // If promo code is invalid, block submission
-    if (promoValidation.invalid) {
-      errorMessage.value = t('auth.promoCodeInvalidCannotRegister')
+    if (affiliateCodeValidation.invalid) {
+      errorMessage.value = t('auth.agentInvitationCodeInvalidCannotRegister')
       return
+    }
+    if (!affiliateCodeValidation.valid) {
+      const requestId = ++affiliateCodeValidationRequestId
+      await validateAffiliateCodeDebounced(normalizedAffiliateCode, requestId)
+      if (!affiliateCodeValidation.valid) {
+        errorMessage.value = t('auth.agentInvitationCodeInvalidCannotRegister')
+        return
+      }
     }
   }
 
@@ -840,8 +864,8 @@ async function handleRegister(): Promise<void> {
     // If invitation code is required but not validated yet
     if (formData.invitation_code.trim() && !invitationValidation.valid) {
       errorMessage.value = t('auth.invitationCodeValidating')
-      // Trigger validation
-      await validateInvitationCodeDebounced(formData.invitation_code.trim())
+      const requestId = ++invitationValidationRequestId
+      await validateInvitationCodeDebounced(formData.invitation_code.trim(), requestId)
       if (!invitationValidation.valid) {
         errorMessage.value = t('auth.invitationCodeInvalidCannotRegister')
         return
@@ -859,18 +883,14 @@ async function handleRegister(): Promise<void> {
 
     // If email verification is enabled, redirect to verification page
     if (emailVerifyEnabled.value) {
-      // Store registration data in sessionStorage
-      sessionStorage.setItem(
-        'register_data',
-        JSON.stringify({
-          email: formData.email,
-          password: formData.password,
-          turnstile_token: turnstileToken.value,
-          promo_code: formData.promo_code || undefined,
-          invitation_code: formData.invitation_code || undefined,
-          ...(affCode ? { aff_code: affCode } : {})
-        })
-      )
+      authStore.setPendingRegistrationChallenge({
+        email: formData.email,
+        password: formData.password,
+        turnstile_token: turnstileToken.value,
+        invitation_code: formData.invitation_code || undefined,
+        ...(affCode ? { aff_code: affCode } : {})
+      })
+      sessionStorage.removeItem('register_data')
 
       // Navigate to email verification page
       await router.push('/email-verify')
@@ -882,7 +902,6 @@ async function handleRegister(): Promise<void> {
       email: formData.email,
       password: formData.password,
       turnstile_token: turnstileEnabled.value ? turnstileToken.value : undefined,
-      promo_code: formData.promo_code || undefined,
       invitation_code: formData.invitation_code || undefined,
       ...(affCode ? { aff_code: affCode } : {})
     })

@@ -153,6 +153,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useAppStore, useAuthStore } from '@/stores'
 import { apiClient } from '@/api/client'
 import {
+  clearOAuthCallbackFragment,
   exchangePendingOAuthCompletion,
   persistOAuthTokenContext,
   type OAuthTokenResponse
@@ -366,6 +367,7 @@ async function handleSubmitRegistration() {
 
 onMounted(async () => {
   const params = parseFragmentParams()
+  clearOAuthCallbackFragment()
   const tokenResponse = readTokenResponse(params)
   const fragmentError = params.get('error') || ''
   const fragmentErrorDescription =

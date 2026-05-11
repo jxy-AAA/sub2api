@@ -2,49 +2,13 @@ package service
 
 import "time"
 
-type UpsertAffiliateInviteModelRatesInput struct {
-	InviterUserID int64
-	ModelRates    []AffiliateDistributionRateInput
-}
-
-type AffiliateDistributionRateInput struct {
-	ModelKey       string
-	RateMultiplier float64
-}
-
-type InitializeAffiliateUserModelRatesInput struct {
-	UserID         int64
-	UpstreamUserID int64
-	InviteCode     string
-	ModelKeys      []string
-	DefaultMarkup  float64
-	RootRate       float64
-}
-
-type UpsertAffiliateUserModelRateInput struct {
-	UserID         int64
-	UpstreamUserID *int64
-	ModelKey       string
-	RateMultiplier float64
-	SourceAffCode  string
-	SourceType     string
-}
-
-type ResolveAffiliateUserModelRateInput struct {
-	UserID          int64
-	ModelKey        string
-	DefaultMarkup   float64
-	RootRate        float64
-	PersistResolved bool
-}
-
 type RecordAffiliateUsageSettlementInput struct {
 	UsageLogID     int64
 	ConsumerUserID int64
+	GroupID        int64
 	ModelKey       string
 	UsageAmountUSD float64
 	SettlementAt   time.Time
-	DefaultMarkup  float64
 	RootRate       float64
 }
 
@@ -63,10 +27,10 @@ type AffiliateDistributionSettlementEntry struct {
 }
 
 type AffiliateDistributionSettlementResult struct {
-	UsageLogID     int64                                 `json:"usage_log_id"`
-	ConsumerUserID int64                                 `json:"consumer_user_id"`
-	ModelKey       string                                `json:"model_key"`
-	SettlementDay  time.Time                             `json:"settlement_day"`
+	UsageLogID     int64                                  `json:"usage_log_id"`
+	ConsumerUserID int64                                  `json:"consumer_user_id"`
+	ModelKey       string                                 `json:"model_key"`
+	SettlementDay  time.Time                              `json:"settlement_day"`
 	AppliedEntries []AffiliateDistributionSettlementEntry `json:"applied_entries"`
 }
 
@@ -89,11 +53,11 @@ type AffiliateDistributionRevenueLeaderboardEntry struct {
 }
 
 type AffiliateDistributionRebateLeaderboardEntry struct {
-	Rank           int64   `json:"rank"`
-	UserID         int64   `json:"user_id"`
-	Email          string  `json:"email"`
-	Username       string  `json:"username"`
-	AffCode        string  `json:"aff_code"`
+	Rank              int64   `json:"rank"`
+	UserID            int64   `json:"user_id"`
+	Email             string  `json:"email"`
+	Username          string  `json:"username"`
+	AffCode           string  `json:"aff_code"`
 	CurrentAmountRMB  float64 `json:"current_amount_rmb"`
 	LifetimeAmountRMB float64 `json:"lifetime_amount_rmb"`
 }
@@ -106,7 +70,7 @@ type SetAffiliateCurrentRebateBalanceInput struct {
 }
 
 type AffiliateDistributionBalanceSnapshot struct {
-	UserID         int64     `json:"user_id"`
+	UserID            int64     `json:"user_id"`
 	CurrentAmountRMB  float64   `json:"current_amount_rmb"`
 	LifetimeAmountRMB float64   `json:"lifetime_amount_rmb"`
 	UpdatedAt         time.Time `json:"updated_at"`

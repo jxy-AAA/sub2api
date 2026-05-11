@@ -2,7 +2,7 @@
 #
 # Sub2API Installation Script
 # Sub2API 安装脚本
-# Usage: curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | bash
+# Usage: verify a versioned release bundle, extract it, then run ./deploy/install.sh
 #
 
 set -e
@@ -21,9 +21,14 @@ INSTALL_DIR="/opt/sub2api"
 SERVICE_NAME="sub2api"
 SERVICE_USER="sub2api"
 CONFIG_DIR="/etc/sub2api"
+ENV_FILE_PATH="${CONFIG_DIR}/sub2api.env"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_BUNDLE_DIR=""
+LOCAL_BUNDLE_BINARY=""
+LOCAL_BUNDLE_VERSION=""
 
 # Server configuration (will be set by user)
-SERVER_HOST="0.0.0.0"
+SERVER_HOST="127.0.0.1"
 SERVER_PORT="8080"
 
 # Language (default: zh = Chinese)
@@ -311,9 +316,9 @@ print_error() {
 }
 
 # Check if running interactively (can access terminal)
-# When piped (curl | bash), stdin is not a terminal, but /dev/tty may still be available
+# In non-interactive launches, stdin may not be a terminal, but /dev/tty may still be available
 is_interactive() {
-    # Check if /dev/tty is available (works even when piped)
+    # Check if /dev/tty is available
     [ -e /dev/tty ] && [ -r /dev/tty ] && [ -w /dev/tty ]
 }
 
@@ -446,16 +451,101 @@ detect_platform() {
     print_info "$(msg 'detected_platform'): ${OS}_${ARCH}"
 }
 
+compute_sha256() {
+    local file_path="$1"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file_path" | awk '{print $1}'
+        return 0
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file_path" | awk '{print $1}'
+        return 0
+    fi
+
+    print_error "Missing sha256 tool (sha256sum or shasum)."
+    exit 1
+}
+
+download_file() {
+    local url="$1"
+    local output_path="$2"
+
+    curl -fsSL --proto '=https' --tlsv1.2 "$url" -o "$output_path"
+}
+
+detect_local_bundle() {
+    if [ "$(basename "$SCRIPT_DIR")" != "deploy" ]; then
+        return
+    fi
+
+    LOCAL_BUNDLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+    LOCAL_BUNDLE_BINARY="${LOCAL_BUNDLE_DIR}/sub2api"
+
+    if [ ! -x "$LOCAL_BUNDLE_BINARY" ]; then
+        LOCAL_BUNDLE_BINARY=""
+        return
+    fi
+
+    LOCAL_BUNDLE_VERSION=$("$LOCAL_BUNDLE_BINARY" --version 2>/dev/null | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    if [ -n "$LOCAL_BUNDLE_VERSION" ] && [[ "$LOCAL_BUNDLE_VERSION" != v* ]]; then
+        LOCAL_BUNDLE_VERSION="v${LOCAL_BUNDLE_VERSION}"
+    fi
+}
+
+can_use_local_bundle() {
+    local requested_version="${1:-}"
+
+    if [ -z "$LOCAL_BUNDLE_BINARY" ] || [ ! -x "$LOCAL_BUNDLE_BINARY" ]; then
+        return 1
+    fi
+
+    if [ -z "$requested_version" ] || [ -z "$LOCAL_BUNDLE_VERSION" ]; then
+        return 0
+    fi
+
+    [ "${requested_version#v}" = "${LOCAL_BUNDLE_VERSION#v}" ]
+}
+
+install_bundle_contents() {
+    local bundle_root="$1"
+
+    mkdir -p "$INSTALL_DIR"
+    cp "${bundle_root}/sub2api" "$INSTALL_DIR/sub2api"
+    chmod +x "$INSTALL_DIR/sub2api"
+
+    if [ -d "${bundle_root}/deploy" ]; then
+        cp -r "${bundle_root}/deploy/"* "$INSTALL_DIR/" 2>/dev/null || true
+    fi
+
+    print_success "$(msg 'binary_installed') $INSTALL_DIR/sub2api"
+}
+
+write_service_env_file() {
+    install -m 600 /dev/null "$ENV_FILE_PATH"
+    cat > "$ENV_FILE_PATH" <<EOF
+GIN_MODE=release
+SERVER_HOST=${SERVER_HOST}
+SERVER_PORT=${SERVER_PORT}
+EOF
+    chown root:root "$ENV_FILE_PATH"
+}
+
 # Check dependencies
 check_dependencies() {
     local missing=()
 
-    if ! command -v curl &> /dev/null; then
+    if [ -z "$LOCAL_BUNDLE_BINARY" ] && ! command -v curl &> /dev/null; then
         missing+=("curl")
     fi
 
     if ! command -v tar &> /dev/null; then
         missing+=("tar")
+    fi
+
+    if ! command -v sha256sum &> /dev/null && ! command -v shasum &> /dev/null; then
+        missing+=("sha256sum/shasum")
     fi
 
     if [ ${#missing[@]} -gt 0 ]; then
@@ -468,7 +558,7 @@ check_dependencies() {
 # Get latest release version
 get_latest_version() {
     print_info "$(msg 'fetching_version')"
-    LATEST_VERSION=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    LATEST_VERSION=$(curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
 
     if [ -z "$LATEST_VERSION" ]; then
         print_error "$(msg 'failed_get_version')"
@@ -484,7 +574,7 @@ list_versions() {
     print_info "$(msg 'fetching_versions')"
 
     local versions
-    versions=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -20)
+    versions=$(curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -20)
 
     if [ -z "$versions" ]; then
         print_error "$(msg 'failed_get_version')"
@@ -521,7 +611,7 @@ validate_version() {
 
     # Check if the release exists
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${version}" 2>/dev/null)
+    http_code=$(curl -fsSL --proto '=https' --tlsv1.2 -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${version}" 2>/dev/null || true)
 
     # Check for network errors (empty or non-numeric response)
     if [ -z "$http_code" ] || ! [[ "$http_code" =~ ^[0-9]+$ ]]; then
@@ -552,6 +642,12 @@ get_current_version() {
 
 # Download and extract
 download_and_extract() {
+    if can_use_local_bundle "${LATEST_VERSION:-}"; then
+        print_info "Using verified local bundle${LOCAL_BUNDLE_VERSION:+: ${LOCAL_BUNDLE_VERSION}}"
+        install_bundle_contents "$LOCAL_BUNDLE_DIR"
+        return
+    fi
+
     local version_num=${LATEST_VERSION#v}
     local archive_name="sub2api_${version_num}_${OS}_${ARCH}.tar.gz"
     local download_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/${archive_name}"
@@ -564,45 +660,41 @@ download_and_extract() {
     trap "rm -rf $TEMP_DIR" EXIT
 
     # Download archive
-    if ! curl -sL "$download_url" -o "$TEMP_DIR/$archive_name"; then
+    if ! download_file "$download_url" "$TEMP_DIR/$archive_name"; then
         print_error "$(msg 'download_failed')"
         exit 1
     fi
 
     # Download and verify checksum
     print_info "$(msg 'verifying_checksum')"
-    if curl -sL "$checksum_url" -o "$TEMP_DIR/checksums.txt" 2>/dev/null; then
-        local expected_checksum=$(grep "$archive_name" "$TEMP_DIR/checksums.txt" | awk '{print $1}')
-        local actual_checksum=$(sha256sum "$TEMP_DIR/$archive_name" | awk '{print $1}')
-
-        if [ "$expected_checksum" != "$actual_checksum" ]; then
-            print_error "$(msg 'checksum_failed')"
-            print_error "Expected: $expected_checksum"
-            print_error "Actual: $actual_checksum"
-            exit 1
-        fi
-        print_success "$(msg 'checksum_verified')"
-    else
-        print_warning "$(msg 'checksum_not_found')"
+    if ! download_file "$checksum_url" "$TEMP_DIR/checksums.txt"; then
+        print_error "$(msg 'checksum_not_found')"
+        exit 1
     fi
+
+    local expected_checksum
+    expected_checksum=$(grep " ${archive_name}$" "$TEMP_DIR/checksums.txt" | awk '{print $1}' || true)
+    if [ -z "$expected_checksum" ]; then
+        print_error "$(msg 'checksum_not_found')"
+        exit 1
+    fi
+
+    local actual_checksum
+    actual_checksum=$(compute_sha256 "$TEMP_DIR/$archive_name")
+
+    if [ "$expected_checksum" != "$actual_checksum" ]; then
+        print_error "$(msg 'checksum_failed')"
+        print_error "Expected: $expected_checksum"
+        print_error "Actual: $actual_checksum"
+        exit 1
+    fi
+    print_success "$(msg 'checksum_verified')"
 
     # Extract
     print_info "$(msg 'extracting')"
     tar -xzf "$TEMP_DIR/$archive_name" -C "$TEMP_DIR"
 
-    # Create install directory
-    mkdir -p "$INSTALL_DIR"
-
-    # Copy binary
-    cp "$TEMP_DIR/sub2api" "$INSTALL_DIR/sub2api"
-    chmod +x "$INSTALL_DIR/sub2api"
-
-    # Copy deploy files if they exist in the archive
-    if [ -d "$TEMP_DIR/deploy" ]; then
-        cp -r "$TEMP_DIR/deploy/"* "$INSTALL_DIR/" 2>/dev/null || true
-    fi
-
-    print_success "$(msg 'binary_installed') $INSTALL_DIR/sub2api"
+    install_bundle_contents "$TEMP_DIR"
 }
 
 # Create system user
@@ -651,6 +743,8 @@ setup_directories() {
 install_service() {
     print_info "$(msg 'installing_service')"
 
+    write_service_env_file
+
     # Create service file with configured host and port
     cat > /etc/systemd/system/sub2api.service << EOF
 [Unit]
@@ -676,12 +770,10 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/sub2api
+ReadWritePaths=/opt/sub2api /etc/sub2api
 
 # Environment - Server configuration
-Environment=GIN_MODE=release
-Environment=SERVER_HOST=${SERVER_HOST}
-Environment=SERVER_PORT=${SERVER_PORT}
+EnvironmentFile=-${ENV_FILE_PATH}
 
 [Install]
 WantedBy=multi-user.target
@@ -702,9 +794,15 @@ prepare_for_setup() {
 get_public_ip() {
     print_info "$(msg 'getting_public_ip')"
 
+    if ! command -v curl >/dev/null 2>&1; then
+        print_warning "$(msg 'public_ip_failed')"
+        PUBLIC_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "YOUR_SERVER_IP")
+        return 1
+    fi
+
     # Try to get public IP from ipinfo.io
     local response
-    response=$(curl -s --connect-timeout 5 --max-time 10 "https://ipinfo.io/json" 2>/dev/null)
+    response=$(curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 10 "https://ipinfo.io/json" 2>/dev/null || true)
 
     if [ -n "$response" ]; then
         # Extract IP from JSON response using grep and sed (no jq dependency)
@@ -814,7 +912,11 @@ upgrade() {
     print_info "$(msg 'backup_created'): $INSTALL_DIR/sub2api.backup"
 
     # Download and install new version
-    get_latest_version
+    if [ -n "$LOCAL_BUNDLE_VERSION" ]; then
+        LATEST_VERSION="$LOCAL_BUNDLE_VERSION"
+    else
+        get_latest_version
+    fi
     download_and_extract
 
     # Set permissions
@@ -910,7 +1012,7 @@ uninstall() {
     # If not interactive (piped), require -y flag or skip confirmation
     if ! is_interactive; then
         if [ "${FORCE_YES:-}" != "true" ]; then
-            print_error "Non-interactive mode detected. Use 'curl ... | bash -s -- uninstall -y' to confirm."
+            print_error "Non-interactive mode detected. Run the verified local install.sh with 'uninstall -y' to confirm."
             exit 1
         fi
     else
@@ -1008,6 +1110,8 @@ main() {
     # Restore positional arguments
     set -- "${positional_args[@]}"
 
+    detect_local_bundle
+
     # Select language first
     select_language
 
@@ -1059,7 +1163,11 @@ main() {
             else
                 # Fresh install with latest version
                 configure_server
-                get_latest_version
+                if [ -n "$LOCAL_BUNDLE_VERSION" ]; then
+                    LATEST_VERSION="$LOCAL_BUNDLE_VERSION"
+                else
+                    get_latest_version
+                fi
                 download_and_extract
                 create_user
                 setup_directories
@@ -1153,7 +1261,11 @@ main() {
     else
         # Install latest version
         configure_server
-        get_latest_version
+        if [ -n "$LOCAL_BUNDLE_VERSION" ]; then
+            LATEST_VERSION="$LOCAL_BUNDLE_VERSION"
+        else
+            get_latest_version
+        fi
         download_and_extract
         create_user
         setup_directories

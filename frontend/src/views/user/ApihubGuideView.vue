@@ -488,7 +488,9 @@ const articleRef = ref<HTMLElement | null>(null)
 const copiedCodeKey = ref('')
 const copiedAnchor = ref('')
 const activeSectionId = ref('')
-const htmlInteractionHandlers = new Map<Element, EventListener>()
+type HtmlInteractionHandler = Parameters<Element['addEventListener']>[1]
+
+const htmlInteractionHandlers = new Map<Element, HtmlInteractionHandler>()
 let copyCodeTimer: ReturnType<typeof setTimeout> | null = null
 let copyAnchorTimer: ReturnType<typeof setTimeout> | null = null
 let headingObserver: IntersectionObserver | null = null

@@ -1,7 +1,7 @@
 package admin
 
 import (
-	"context"
+	"encoding/json"
 	"math"
 	"strconv"
 	"strings"
@@ -15,13 +15,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type adminModelRatePayload struct {
-	Model      string  `json:"model"`
-	Multiplier float64 `json:"multiplier"`
+type adminGroupRatePayload struct {
+	GroupID        int64   `json:"group_id"`
+	RateMultiplier float64 `json:"rate_multiplier"`
 }
 
-type adminUpdateModelRatesRequest struct {
-	ModelRates []adminModelRatePayload `json:"model_rates" binding:"required"`
+type adminUpdateGroupRatesRequest struct {
+	GroupRates []adminGroupRatePayload `json:"group_rates" binding:"required"`
+}
+
+type updateUserUpstreamRequest struct {
+	UpstreamUserID    *int64 `json:"-"`
+	InviterID         *int64 `json:"-"`
+	ClearUpstream     *bool  `json:"-"`
+	hasUpstreamUserID bool
+	hasInviterID      bool
+	hasClearUpstream  bool
 }
 
 type updateAgentDistributionPermissionsRequest struct {
@@ -34,6 +43,50 @@ type setRebateBalanceRequest struct {
 	UserID int64   `json:"user_id"`
 	Amount float64 `json:"amount" binding:"required"`
 	Note   string  `json:"note" binding:"required"`
+}
+
+func (r *updateUserUpstreamRequest) UnmarshalJSON(data []byte) error {
+	type rawUpdateUserUpstreamRequest struct {
+		UpstreamUserID json.RawMessage `json:"upstream_user_id"`
+		InviterID      json.RawMessage `json:"inviter_id"`
+		ClearUpstream  json.RawMessage `json:"clear_upstream"`
+	}
+
+	var raw rawUpdateUserUpstreamRequest
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*r = updateUserUpstreamRequest{}
+
+	if raw.UpstreamUserID != nil {
+		r.hasUpstreamUserID = true
+		value, err := decodeOptionalInt64(raw.UpstreamUserID, "upstream_user_id")
+		if err != nil {
+			return err
+		}
+		r.UpstreamUserID = value
+	}
+
+	if raw.InviterID != nil {
+		r.hasInviterID = true
+		value, err := decodeOptionalInt64(raw.InviterID, "inviter_id")
+		if err != nil {
+			return err
+		}
+		r.InviterID = value
+	}
+
+	if raw.ClearUpstream != nil {
+		r.hasClearUpstream = true
+		var clear bool
+		if err := json.Unmarshal(raw.ClearUpstream, &clear); err != nil {
+			return err
+		}
+		r.ClearUpstream = &clear
+	}
+
+	return nil
 }
 
 // ListDailyBusinessRanking returns ranked daily business totals for agents.
@@ -139,7 +192,7 @@ func (h *AffiliateHandler) setRebateBalance(c *gin.Context, rawUserID string) {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
-	if err := h.requireRootAdmin(c.Request.Context(), operator.UserID); err != nil {
+	if err := h.requireRootAdmin(c, operator.UserID); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -203,26 +256,26 @@ func (h *AffiliateHandler) GetDistributionTree(c *gin.Context) {
 	response.Success(c, items)
 }
 
-// GetUserDistributionPricing returns a target user's model pricing.
+// GetUserDistributionGroupRates returns a target user's current group pricing.
 // GET /api/v1/admin/affiliates/users/:user_id/pricing
-func (h *AffiliateHandler) GetUserDistributionPricing(c *gin.Context) {
+func (h *AffiliateHandler) GetUserDistributionGroupRates(c *gin.Context) {
 	userID, err := parseAdminPositiveInt64(c.Param("user_id"), "user_id")
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	rates, err := h.affiliateService.GetUserDistributionPricing(c.Request.Context(), userID)
+	rates, err := h.affiliateService.GetUserDistributionGroupRates(c.Request.Context(), userID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{"user_id": userID, "model_rates": rates})
+	response.Success(c, gin.H{"user_id": userID, "group_rates": rates})
 }
 
-// UpdateUserDistributionPricing updates a target user's model pricing.
+// UpdateUserDistributionPricing updates a target user's current group pricing.
 // PUT /api/v1/admin/affiliates/users/:user_id/pricing
-func (h *AffiliateHandler) UpdateUserDistributionPricing(c *gin.Context) {
+func (h *AffiliateHandler) UpdateUserDistributionGroupRates(c *gin.Context) {
 	operator, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
@@ -234,18 +287,124 @@ func (h *AffiliateHandler) UpdateUserDistributionPricing(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	rates, err := bindAdminModelRatesRequest(c)
+	rates, err := bindAdminGroupRatesRequest(c)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	updated, err := h.affiliateService.AdminUpdateUserDistributionPricing(c.Request.Context(), operator.UserID, userID, rates)
+	updated, err := h.affiliateService.SaveUserCurrentGroupRates(c.Request.Context(), operator.UserID, userID, rates)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, gin.H{"user_id": userID, "model_rates": updated})
+	response.Success(c, gin.H{"user_id": userID, "group_rates": updated})
+}
+
+// GetDefaultDistributionPricing returns the default explicit group pricing for users without an affiliate code.
+// GET /api/v1/admin/affiliates/default-pricing
+func (h *AffiliateHandler) GetDefaultDistributionGroupRates(c *gin.Context) {
+	rates, err := h.affiliateService.ListDefaultUserGroupRates(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"group_rates": rates})
+}
+
+// UpdateDefaultDistributionPricing updates the default explicit group pricing for users without an affiliate code.
+// PUT /api/v1/admin/affiliates/default-pricing
+func (h *AffiliateHandler) UpdateDefaultDistributionGroupRates(c *gin.Context) {
+	rates, err := bindAdminGroupRatesRequest(c)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	updated, err := h.affiliateService.SaveDefaultUserGroupRates(c.Request.Context(), rates)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"group_rates": updated})
+}
+
+// GetUserInvitePricing returns the invite-code group pricing a user gives to new direct downstream members.
+// GET /api/v1/admin/affiliates/users/:user_id/invite-pricing
+func (h *AffiliateHandler) GetUserInviteGroupRates(c *gin.Context) {
+	userID, err := parseAdminPositiveInt64(c.Param("user_id"), "user_id")
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	rates, err := h.affiliateService.ListUserInviteGroupRates(c.Request.Context(), userID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"user_id": userID, "group_rates": rates})
+}
+
+// UpdateUserInvitePricing updates the invite-code group pricing a user gives to new direct downstream members.
+// PUT /api/v1/admin/affiliates/users/:user_id/invite-pricing
+func (h *AffiliateHandler) UpdateUserInviteGroupRates(c *gin.Context) {
+	userID, err := parseAdminPositiveInt64(c.Param("user_id"), "user_id")
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	rates, err := bindAdminGroupRatesRequest(c)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	updated, err := h.affiliateService.SaveUserInviteGroupRates(c.Request.Context(), userID, rates)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"user_id": userID, "group_rates": updated})
+}
+
+// UpdateUserUpstream updates a user's upstream/inviter relationship.
+// PUT /api/v1/admin/affiliates/users/:user_id/upstream
+func (h *AffiliateHandler) UpdateUserUpstream(c *gin.Context) {
+	operator, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if err := rejectAdminAPIKey(c, "ADMIN_JWT_REQUIRED", "admin JWT required for upstream updates"); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	userID, err := parseAdminPositiveInt64(c.Param("user_id"), "user_id")
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	var req updateUserUpstreamRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_REQUEST", "invalid request: "+err.Error()))
+		return
+	}
+
+	upstreamUserID, err := resolveUpstreamUserID(req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	updated, err := h.affiliateService.AdminUpdateUserUpstream(c.Request.Context(), operator.UserID, userID, upstreamUserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, updated)
 }
 
 // ListMonthlyRebateArchives returns archived monthly rebate balances.
@@ -267,32 +426,31 @@ func (h *AffiliateHandler) ListMonthlyRebateArchives(c *gin.Context) {
 	response.Paginated(c, items, total, page, pageSize)
 }
 
-func bindAdminModelRatesRequest(c *gin.Context) ([]service.AgentModelRateInput, error) {
-	var req adminUpdateModelRatesRequest
+func bindAdminGroupRatesRequest(c *gin.Context) ([]service.AgentGroupRateInput, error) {
+	var req adminUpdateGroupRatesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_REQUEST", "invalid request: "+err.Error())
 	}
-	if len(req.ModelRates) == 0 {
-		return nil, infraerrors.BadRequest("INVALID_MODEL_RATES", "model_rates cannot be empty")
+	if len(req.GroupRates) == 0 {
+		return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "group_rates cannot be empty")
 	}
 
-	rates := make([]service.AgentModelRateInput, 0, len(req.ModelRates))
-	seen := make(map[string]struct{}, len(req.ModelRates))
-	for _, item := range req.ModelRates {
-		model := strings.TrimSpace(item.Model)
-		if model == "" {
-			return nil, infraerrors.BadRequest("INVALID_MODEL_RATES", "model is required")
+	rates := make([]service.AgentGroupRateInput, 0, len(req.GroupRates))
+	seen := make(map[int64]struct{}, len(req.GroupRates))
+	for _, item := range req.GroupRates {
+		if item.GroupID <= 0 {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "group_id is required")
 		}
-		if _, exists := seen[model]; exists {
-			return nil, infraerrors.BadRequest("INVALID_MODEL_RATES", "duplicate model: "+model)
+		if _, exists := seen[item.GroupID]; exists {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "duplicate group_id")
 		}
-		if item.Multiplier <= 0 || math.IsNaN(item.Multiplier) || math.IsInf(item.Multiplier, 0) {
-			return nil, infraerrors.BadRequest("INVALID_MODEL_RATES", "multiplier must be greater than 0")
+		if item.RateMultiplier <= 0 || math.IsNaN(item.RateMultiplier) || math.IsInf(item.RateMultiplier, 0) {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "rate_multiplier must be greater than 0")
 		}
-		seen[model] = struct{}{}
-		rates = append(rates, service.AgentModelRateInput{
-			Model:      model,
-			Multiplier: item.Multiplier,
+		seen[item.GroupID] = struct{}{}
+		rates = append(rates, service.AgentGroupRateInput{
+			GroupID:        item.GroupID,
+			RateMultiplier: item.RateMultiplier,
 		})
 	}
 	return rates, nil
@@ -322,11 +480,80 @@ func parseAdminPositiveInt64(raw, field string) (int64, error) {
 	return value, nil
 }
 
-func (h *AffiliateHandler) requireRootAdmin(ctx context.Context, operatorUserID int64) error {
+func decodeOptionalInt64(raw json.RawMessage, field string) (*int64, error) {
+	if strings.EqualFold(strings.TrimSpace(string(raw)), "null") {
+		return nil, nil
+	}
+
+	var value int64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_"+strings.ToUpper(field), "invalid "+field)
+	}
+	return &value, nil
+}
+
+func resolveUpstreamUserID(req updateUserUpstreamRequest) (*int64, error) {
+	if req.hasUpstreamUserID && req.hasInviterID {
+		return nil, infraerrors.BadRequest("AMBIGUOUS_UPSTREAM_REQUEST", "specify only one of upstream_user_id or inviter_id")
+	}
+	if req.hasClearUpstream {
+		if req.ClearUpstream == nil {
+			return nil, infraerrors.BadRequest("INVALID_CLEAR_UPSTREAM", "invalid clear_upstream")
+		}
+		if *req.ClearUpstream {
+			if req.hasUpstreamUserID || req.hasInviterID {
+				return nil, infraerrors.BadRequest("AMBIGUOUS_UPSTREAM_REQUEST", "cannot set upstream_user_id or inviter_id when clear_upstream is true")
+			}
+			return nil, nil
+		}
+		if !req.hasUpstreamUserID && !req.hasInviterID {
+			return nil, infraerrors.BadRequest("EXPLICIT_UPSTREAM_REQUIRED", "request must explicitly set or clear upstream")
+		}
+	}
+	if req.hasUpstreamUserID {
+		if req.UpstreamUserID == nil {
+			return nil, nil
+		}
+		if *req.UpstreamUserID <= 0 {
+			return nil, infraerrors.BadRequest("INVALID_UPSTREAM_USER_ID", "invalid upstream_user_id")
+		}
+		return req.UpstreamUserID, nil
+	}
+	if req.hasInviterID {
+		if req.InviterID == nil {
+			return nil, nil
+		}
+		if *req.InviterID <= 0 {
+			return nil, infraerrors.BadRequest("INVALID_INVITER_ID", "invalid inviter_id")
+		}
+		return req.InviterID, nil
+	}
+	return nil, infraerrors.BadRequest("EXPLICIT_UPSTREAM_REQUIRED", "request must explicitly set upstream_user_id, inviter_id, or clear_upstream")
+}
+
+func rejectAdminAPIKey(c *gin.Context, reason, message string) error {
+	if c == nil {
+		return nil
+	}
+	authMethod, exists := c.Get("auth_method")
+	if !exists {
+		return nil
+	}
+	method, ok := authMethod.(string)
+	if ok && method == "admin_api_key" {
+		return infraerrors.Forbidden(reason, message)
+	}
+	return nil
+}
+
+func (h *AffiliateHandler) requireRootAdmin(c *gin.Context, operatorUserID int64) error {
+	if err := rejectAdminAPIKey(c, "ROOT_ADMIN_JWT_REQUIRED", "root admin JWT required for this operation"); err != nil {
+		return err
+	}
 	if h.firstAdminLookup == nil {
 		return infraerrors.Forbidden("ROOT_ADMIN_REQUIRED", "root admin access required")
 	}
-	firstAdmin, err := h.firstAdminLookup.GetFirstAdmin(ctx)
+	firstAdmin, err := h.firstAdminLookup.GetFirstAdmin(c.Request.Context())
 	if err != nil {
 		return err
 	}

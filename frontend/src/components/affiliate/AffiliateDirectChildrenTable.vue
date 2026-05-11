@@ -7,7 +7,7 @@
           {{ description }}
         </p>
       </div>
-      <span class="inline-flex items-center rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-200">
+      <span class="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-600 dark:bg-dark-700 dark:text-dark-300">
         {{ countLabel }}
       </span>
     </div>
@@ -68,19 +68,21 @@
         </div>
 
         <div v-if="expandedId === child.user_id" class="mt-4">
-          <AffiliateModelRateEditor
+          <AffiliateGroupRateEditor
             :title="childRateTitle"
             :description="childRateDescription"
-            :model-rates="child.model_rates"
+            :group-rates="child.group_rates"
+            :group-options="groupOptions"
             :saving="savingUserId === child.user_id"
             :empty-text="emptyRatesText"
             :add-label="addRateLabel"
             :save-label="saveRateLabel"
             :saving-label="savingRateLabel"
-            :model-label="modelLabel"
+            :group-label="groupLabel"
             :multiplier-label="multiplierLabel"
             :remove-label="removeLabel"
-            :model-placeholder="modelPlaceholder"
+            :group-placeholder="groupPlaceholder"
+            :duplicate-group-text="duplicateGroupText"
             @save="emit('save-child-rates', child.user_id, $event)"
           />
         </div>
@@ -92,12 +94,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import Icon from '@/components/icons/Icon.vue'
-import AffiliateModelRateEditor from './AffiliateModelRateEditor.vue'
-import type { AffiliateDirectChild, AffiliateModelRate } from './types'
+import AffiliateGroupRateEditor from './AffiliateGroupRateEditor.vue'
+import type { AffiliateDirectChild, AffiliateGroupOption, AffiliateGroupRate } from './types'
 import { formatCurrency, formatDateTime } from '@/utils/format'
 
 interface Props {
   children: AffiliateDirectChild[]
+  groupOptions: AffiliateGroupOption[]
   savingUserId?: number | null
   title: string
   description?: string
@@ -115,10 +118,11 @@ interface Props {
   addRateLabel: string
   saveRateLabel: string
   savingRateLabel: string
-  modelLabel: string
+  groupLabel: string
   multiplierLabel: string
   removeLabel: string
-  modelPlaceholder: string
+  groupPlaceholder: string
+  duplicateGroupText: string
   agentRoleLabel: string
   userRoleLabel: string
 }
@@ -129,7 +133,7 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
-  (e: 'save-child-rates', userId: number, value: AffiliateModelRate[]): void
+  (e: 'save-child-rates', userId: number, value: AffiliateGroupRate[]): void
 }>()
 
 const expandedId = ref<number | null>(null)

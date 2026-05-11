@@ -246,13 +246,7 @@ function normalizePermissionsResponse(
 export async function getAffiliateAgentPermissions(
   userId: number,
 ): Promise<AffiliateAgentPermissions> {
-  const data = await getWithFallback<AffiliateAgentPermissions | { permissions?: AffiliateAgentPermissions; user_id?: number }>(
-    [
-      `/admin/affiliates/users/${userId}/permissions`,
-      `/admin/affiliates/users/${userId}/agent-permissions`,
-    ],
-    {},
-  )
+  const { data } = await apiClient.get<AffiliateAgentPermissions | { permissions?: AffiliateAgentPermissions; user_id?: number }>(`/admin/affiliates/users/${userId}/permissions`)
   return normalizePermissionsResponse(data, userId)
 }
 
@@ -260,20 +254,6 @@ export async function updateAffiliateAgentPermissions(
   userId: number,
   payload: UpdateAffiliateAgentPermissionsPayload,
 ): Promise<AffiliateAgentPermissions> {
-  let lastError: unknown
-  for (const path of [
-    `/admin/affiliates/users/${userId}/permissions`,
-    `/admin/affiliates/users/${userId}/agent-permissions`,
-  ]) {
-    try {
-      const { data } = await apiClient.put<AffiliateAgentPermissions | { permissions?: AffiliateAgentPermissions; user_id?: number }>(path, payload)
-      return normalizePermissionsResponse(data, userId)
-    } catch (error: any) {
-      lastError = error
-      if (error?.status !== 404) {
-        throw error
-      }
-    }
-  }
-  throw lastError
+  const { data } = await apiClient.put<AffiliateAgentPermissions | { permissions?: AffiliateAgentPermissions; user_id?: number }>(`/admin/affiliates/users/${userId}/permissions`, payload)
+  return normalizePermissionsResponse(data, userId)
 }

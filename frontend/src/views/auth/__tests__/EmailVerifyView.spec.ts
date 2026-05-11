@@ -10,6 +10,8 @@ const {
   setTokenMock,
   setPendingAuthSessionMock,
   clearPendingAuthSessionMock,
+  setPendingRegistrationChallengeMock,
+  clearPendingRegistrationChallengeMock,
   getPublicSettingsMock,
   sendVerifyCodeMock,
   sendPendingOAuthVerifyCodeMock,
@@ -24,6 +26,8 @@ const {
   setTokenMock: vi.fn(),
   setPendingAuthSessionMock: vi.fn(),
   clearPendingAuthSessionMock: vi.fn(),
+  setPendingRegistrationChallengeMock: vi.fn(),
+  clearPendingRegistrationChallengeMock: vi.fn(),
   getPublicSettingsMock: vi.fn(),
   sendVerifyCodeMock: vi.fn(),
   sendPendingOAuthVerifyCodeMock: vi.fn(),
@@ -38,6 +42,23 @@ const {
       adoption_required?: boolean
       suggested_display_name?: string
       suggested_avatar_url?: string
+    }
+    ,
+    pendingRegistrationPayload: null as null | {
+      ticket: string
+      email: string
+      password: string
+      turnstile_token?: string
+      invitation_code?: string
+      aff_code?: string
+      pending_auth_token?: string
+      pending_auth_token_field?: 'pending_auth_token' | 'pending_oauth_token'
+      pending_provider?: string
+      pending_redirect?: string
+      pending_adoption_decision?: {
+        adoptDisplayName?: boolean
+        adoptAvatar?: boolean
+      }
     }
   },
 }))
@@ -68,10 +89,13 @@ vi.mock('vue-i18n', () => ({
 vi.mock('@/stores', () => ({
   useAuthStore: () => ({
     pendingAuthSession: authStoreState.pendingAuthSession,
+    getPendingRegistrationChallengePayload: () => authStoreState.pendingRegistrationPayload,
     register: (...args: any[]) => registerMock(...args),
     setToken: (...args: any[]) => setTokenMock(...args),
     setPendingAuthSession: (...args: any[]) => setPendingAuthSessionMock(...args),
     clearPendingAuthSession: (...args: any[]) => clearPendingAuthSessionMock(...args),
+    setPendingRegistrationChallenge: (...args: any[]) => setPendingRegistrationChallengeMock(...args),
+    clearPendingRegistrationChallenge: (...args: any[]) => clearPendingRegistrationChallengeMock(...args),
   }),
   useAppStore: () => ({
     showSuccess: (...args: any[]) => showSuccessMock(...args),
@@ -89,7 +113,6 @@ vi.mock('@/api/auth', async () => {
     persistOAuthTokenContext: (...args: any[]) => persistOAuthTokenContextMock(...args),
   }
 })
-
 vi.mock('@/api/client', () => ({
   apiClient: {
     post: (...args: any[]) => apiClientPostMock(...args),
@@ -105,12 +128,15 @@ describe('EmailVerifyView', () => {
     setTokenMock.mockReset()
     setPendingAuthSessionMock.mockReset()
     clearPendingAuthSessionMock.mockReset()
+    setPendingRegistrationChallengeMock.mockReset()
+    clearPendingRegistrationChallengeMock.mockReset()
     getPublicSettingsMock.mockReset()
     sendVerifyCodeMock.mockReset()
     sendPendingOAuthVerifyCodeMock.mockReset()
     persistOAuthTokenContextMock.mockReset()
     apiClientPostMock.mockReset()
     authStoreState.pendingAuthSession = null
+    authStoreState.pendingRegistrationPayload = null
     sessionStorage.clear()
     localStorage.clear()
 
@@ -123,6 +149,15 @@ describe('EmailVerifyView', () => {
     sendVerifyCodeMock.mockResolvedValue({ countdown: 60 })
     sendPendingOAuthVerifyCodeMock.mockResolvedValue({ countdown: 60 })
     setTokenMock.mockResolvedValue({})
+    setPendingRegistrationChallengeMock.mockImplementation((payload: any) => {
+      authStoreState.pendingRegistrationPayload = {
+        ticket: 'challenge-ticket-1',
+        ...payload,
+      }
+    })
+    clearPendingRegistrationChallengeMock.mockImplementation(() => {
+      authStoreState.pendingRegistrationPayload = null
+    })
   })
 
   it('uses the pending oauth verify-code endpoint when register data carries a pending auth session', async () => {
@@ -158,6 +193,7 @@ describe('EmailVerifyView', () => {
       email: 'fresh@example.com',
       pending_auth_token: 'pending-token-1',
     })
+    expect(sessionStorage.getItem('register_data')).toBeNull()
     expect(sendVerifyCodeMock).not.toHaveBeenCalled()
   })
 
@@ -336,7 +372,9 @@ describe('EmailVerifyView', () => {
       email: 'fresh@example.com',
       password: 'secret-123',
       verify_code: '123456',
-      aff_code: 'AFF123',
+      invitation_code: undefined,
+      adopt_display_name: undefined,
+      adopt_avatar: undefined,
     })
     expect(persistOAuthTokenContextMock).toHaveBeenCalledWith({
       access_token: 'oauth-access-token',
@@ -420,7 +458,7 @@ describe('EmailVerifyView', () => {
       JSON.stringify({
         email: 'normal@example.com',
         password: 'secret-456',
-        promo_code: 'PROMO',
+        aff_code: 'AFF-CODE',
         invitation_code: 'INVITE',
       })
     )
@@ -447,7 +485,7 @@ describe('EmailVerifyView', () => {
       password: 'secret-456',
       verify_code: '654321',
       turnstile_token: undefined,
-      promo_code: 'PROMO',
+      aff_code: 'AFF-CODE',
       invitation_code: 'INVITE',
     })
     expect(apiClientPostMock).not.toHaveBeenCalled()

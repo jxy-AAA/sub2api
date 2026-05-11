@@ -5,12 +5,19 @@ import (
 	"strings"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+)
+
+var ErrAffiliateDistributionGroupIDRequired = infraerrors.ServiceUnavailable(
+	"AFFILIATE_DISTRIBUTION_GROUP_ID_REQUIRED",
+	"usage group id unavailable for settlement",
 )
 
 type AffiliateDistributionUsageSettlementCommand struct {
 	UsageLogID     int64
 	UserID         int64
+	GroupID        int64
 	Model          string
 	RequestedModel string
 	TotalCost      float64
@@ -89,6 +96,9 @@ func settleAffiliateDistributionUsageBestEffort(
 	if settlementService == nil || usageLog == nil || usageLog.ID <= 0 {
 		return
 	}
+	if usageLog.GroupID == nil || *usageLog.GroupID <= 0 {
+		return
+	}
 
 	settlementCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
@@ -96,13 +106,13 @@ func settleAffiliateDistributionUsageBestEffort(
 	cmd := AffiliateDistributionUsageSettlementCommand{
 		UsageLogID:     usageLog.ID,
 		UserID:         usageLog.UserID,
+		GroupID:        *usageLog.GroupID,
 		Model:          strings.TrimSpace(usageLog.Model),
 		RequestedModel: strings.TrimSpace(usageLog.RequestedModel),
 		TotalCost:      usageLog.TotalCost,
 		ActualCost:     usageLog.ActualCost,
 		UsageCreatedAt: usageLog.CreatedAt,
 	}
-
 	if _, err := settlementService.SettleUsage(settlementCtx, cmd); err != nil {
 		logger.LegacyPrintf(logKey, "Affiliate distribution usage settlement failed: usage_log_id=%d err=%v", usageLog.ID, err)
 	}

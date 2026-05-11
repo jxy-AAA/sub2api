@@ -4,16 +4,17 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed, readonly } from 'vue'
+import { computed, readonly, ref } from 'vue'
 import { authAPI, isTotp2FARequired, type LoginResponse } from '@/api'
 import { clearAccessToken, getAccessToken, setAccessToken } from '@/api/tokenStorage'
-import type { User, LoginRequest, RegisterRequest, AuthResponse } from '@/types'
+import type { AuthResponse, LoginRequest, RegisterRequest, User } from '@/types'
 
 const AUTH_USER_KEY = 'auth_user'
-const TOKEN_EXPIRES_AT_KEY = 'token_expires_at' // 存储过期时间戳而非有效期
+const TOKEN_EXPIRES_AT_KEY = 'token_expires_at'
 const PENDING_AUTH_SESSION_KEY = 'pending_auth_session'
-const AUTO_REFRESH_INTERVAL = 60 * 1000 // 60 seconds for user data refresh
-const TOKEN_REFRESH_BUFFER = 120 * 1000 // 120 seconds before expiry to refresh token
+const PENDING_REGISTRATION_CHALLENGE_KEY = 'pending_registration_challenge'
+const AUTO_REFRESH_INTERVAL = 60 * 1000
+const TOKEN_REFRESH_BUFFER = 120 * 1000
 
 type PendingAuthTokenField = 'pending_auth_token' | 'pending_oauth_token'
 
@@ -27,25 +28,126 @@ interface PendingAuthSessionSummary {
   suggested_avatar_url?: string
 }
 
+type PersistedPendingAuthSessionSummary = Omit<PendingAuthSessionSummary, 'token'>
+
+interface PendingRegistrationAdoptionDecision {
+  adoptDisplayName?: boolean
+  adoptAvatar?: boolean
+}
+
+interface PendingRegistrationChallengeSummary {
+  ticket: string
+  email: string
+  turnstile_token?: string
+  invitation_code?: string
+  aff_code?: string
+  pending_auth_token?: string
+  pending_auth_token_field?: PendingAuthTokenField
+  pending_provider?: string
+  pending_redirect?: string
+  pending_adoption_decision?: PendingRegistrationAdoptionDecision
+}
+
+interface PendingRegistrationChallengeInput {
+  email: string
+  password: string
+  turnstile_token?: string
+  invitation_code?: string
+  aff_code?: string
+  pending_auth_token?: string
+  pending_auth_token_field?: PendingAuthTokenField
+  pending_provider?: string
+  pending_redirect?: string
+  pending_adoption_decision?: PendingRegistrationAdoptionDecision
+}
+
+interface PendingRegistrationChallengePayload extends PendingRegistrationChallengeSummary {
+  password: string
+}
+
+type PersistedPendingRegistrationChallengeSummary = Omit<
+  PendingRegistrationChallengeSummary,
+  'pending_auth_token'
+>
+
+let pendingRegistrationPassword: string | null = null
+
 function normalizePendingAuthTokenField(value: unknown): PendingAuthTokenField {
   return value === 'pending_oauth_token' ? 'pending_oauth_token' : 'pending_auth_token'
 }
 
+function normalizePendingRegistrationAdoptionDecision(
+  value: unknown
+): PendingRegistrationAdoptionDecision | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+
+  const parsed = value as {
+    adoptDisplayName?: unknown
+    adoptAvatar?: unknown
+    adopt_display_name?: unknown
+    adopt_avatar?: unknown
+  }
+  const decision: PendingRegistrationAdoptionDecision = {}
+
+  if (typeof parsed.adoptDisplayName === 'boolean') {
+    decision.adoptDisplayName = parsed.adoptDisplayName
+  } else if (typeof parsed.adopt_display_name === 'boolean') {
+    decision.adoptDisplayName = parsed.adopt_display_name
+  }
+
+  if (typeof parsed.adoptAvatar === 'boolean') {
+    decision.adoptAvatar = parsed.adoptAvatar
+  } else if (typeof parsed.adopt_avatar === 'boolean') {
+    decision.adoptAvatar = parsed.adopt_avatar
+  }
+
+  return Object.keys(decision).length > 0 ? decision : undefined
+}
+
+function sanitizePendingRegistrationChallengeSummary(
+  value: Partial<PendingRegistrationChallengeSummary> | null | undefined
+): PendingRegistrationChallengeSummary | null {
+  const ticket = typeof value?.ticket === 'string' ? value.ticket.trim() : ''
+  const email = typeof value?.email === 'string' ? value.email.trim() : ''
+
+  if (!ticket || !email) {
+    return null
+  }
+
+    return {
+      ticket,
+      email,
+      turnstile_token: typeof value?.turnstile_token === 'string' ? value.turnstile_token : undefined,
+      invitation_code: typeof value?.invitation_code === 'string' ? value.invitation_code : undefined,
+      aff_code: typeof value?.aff_code === 'string' ? value.aff_code : undefined,
+      pending_auth_token: undefined,
+      pending_auth_token_field: value?.pending_auth_token_field
+        ? normalizePendingAuthTokenField(value.pending_auth_token_field)
+        : undefined,
+    pending_provider: typeof value?.pending_provider === 'string' ? value.pending_provider : undefined,
+    pending_redirect: typeof value?.pending_redirect === 'string' ? value.pending_redirect : undefined,
+    pending_adoption_decision: normalizePendingRegistrationAdoptionDecision(value?.pending_adoption_decision)
+  }
+}
+
 function getPersistedPendingAuthSession(): PendingAuthSessionSummary | null {
-  const raw = localStorage.getItem(PENDING_AUTH_SESSION_KEY)
+  const raw = sessionStorage.getItem(PENDING_AUTH_SESSION_KEY)
   if (!raw) {
     return null
   }
 
   try {
-    const parsed = JSON.parse(raw) as Partial<PendingAuthSessionSummary> | null
+    const parsed = JSON.parse(raw) as Partial<PersistedPendingAuthSessionSummary> | null
     const provider = typeof parsed?.provider === 'string' ? parsed.provider.trim() : ''
     if (!provider) {
-      localStorage.removeItem(PENDING_AUTH_SESSION_KEY)
+      sessionStorage.removeItem(PENDING_AUTH_SESSION_KEY)
       return null
     }
+
     return {
-      token: typeof parsed?.token === 'string' ? parsed.token : '',
+      token: '',
       token_field: normalizePendingAuthTokenField(parsed?.token_field),
       provider,
       redirect: typeof parsed?.redirect === 'string' ? parsed.redirect : undefined,
@@ -54,56 +156,121 @@ function getPersistedPendingAuthSession(): PendingAuthSessionSummary | null {
       suggested_avatar_url: typeof parsed?.suggested_avatar_url === 'string' ? parsed.suggested_avatar_url : undefined
     }
   } catch {
-    localStorage.removeItem(PENDING_AUTH_SESSION_KEY)
+    sessionStorage.removeItem(PENDING_AUTH_SESSION_KEY)
     return null
   }
 }
 
 function persistPendingAuthSession(session: PendingAuthSessionSummary): void {
-  localStorage.setItem(PENDING_AUTH_SESSION_KEY, JSON.stringify(session))
+  const safeSession: PersistedPendingAuthSessionSummary = {
+    token_field: session.token_field,
+    provider: session.provider,
+    redirect: session.redirect,
+    adoption_required: session.adoption_required,
+    suggested_display_name: session.suggested_display_name,
+    suggested_avatar_url: session.suggested_avatar_url
+  }
+  sessionStorage.setItem(PENDING_AUTH_SESSION_KEY, JSON.stringify(safeSession))
 }
 
 function clearPendingAuthSessionStorage(): void {
-  localStorage.removeItem(PENDING_AUTH_SESSION_KEY)
+  sessionStorage.removeItem(PENDING_AUTH_SESSION_KEY)
+}
+
+function getPersistedPendingRegistrationChallenge(): PendingRegistrationChallengeSummary | null {
+  const raw = sessionStorage.getItem(PENDING_REGISTRATION_CHALLENGE_KEY)
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingRegistrationChallengeSummary> | null
+    const summary = sanitizePendingRegistrationChallengeSummary(parsed)
+    if (!summary) {
+      sessionStorage.removeItem(PENDING_REGISTRATION_CHALLENGE_KEY)
+      return null
+    }
+    return summary
+  } catch {
+    sessionStorage.removeItem(PENDING_REGISTRATION_CHALLENGE_KEY)
+    return null
+  }
+}
+
+function persistPendingRegistrationChallenge(summary: PendingRegistrationChallengeSummary): void {
+  const safeSummary: PersistedPendingRegistrationChallengeSummary = {
+    ticket: summary.ticket,
+    email: summary.email,
+    turnstile_token: summary.turnstile_token,
+    invitation_code: summary.invitation_code,
+    aff_code: summary.aff_code,
+    pending_auth_token_field: summary.pending_auth_token_field,
+    pending_provider: summary.pending_provider,
+    pending_redirect: summary.pending_redirect,
+    pending_adoption_decision: summary.pending_adoption_decision
+  }
+  sessionStorage.setItem(PENDING_REGISTRATION_CHALLENGE_KEY, JSON.stringify(safeSummary))
+}
+
+function clearPendingRegistrationChallengeStorage(): void {
+  sessionStorage.removeItem(PENDING_REGISTRATION_CHALLENGE_KEY)
+}
+
+function createPendingRegistrationTicket(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `reg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  // ==================== State ====================
-
   const user = ref<User | null>(null)
   const token = ref<string | null>(null)
   const refreshTokenValue = ref<string | null>(null)
-  const tokenExpiresAt = ref<number | null>(null) // 过期时间戳（毫秒）
+  const tokenExpiresAt = ref<number | null>(null)
   const runMode = ref<'standard' | 'simple'>('standard')
   const pendingAuthSession = ref<PendingAuthSessionSummary | null>(null)
+  const pendingRegistrationChallenge = ref<PendingRegistrationChallengeSummary | null>(null)
+
   let refreshIntervalId: ReturnType<typeof setInterval> | null = null
   let tokenRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
 
-  // ==================== Computed ====================
-
-  const isAuthenticated = computed(() => {
-    return !!token.value && !!user.value
-  })
-
-  const isAdmin = computed(() => {
-    return user.value?.role === 'admin'
-  })
-
+  const isAuthenticated = computed(() => !!token.value && !!user.value)
+  const isAdmin = computed(() => user.value?.role === 'admin')
   const isSimpleMode = computed(() => runMode.value === 'simple')
   const hasPendingAuthSession = computed(() => pendingAuthSession.value !== null)
+  const hasPendingRegistrationChallenge = computed(
+    () => pendingRegistrationChallenge.value !== null
+  )
 
-  // ==================== Actions ====================
+  function keepPendingAuthSessionIfRequested(shouldPreserve: boolean): void {
+    if (shouldPreserve) {
+      pendingAuthSession.value = pendingAuthSession.value ?? getPersistedPendingAuthSession()
+      return
+    }
 
-  /**
-   * Initialize auth state from localStorage
-   * Call this on app startup to restore session
-   * Also starts auto-refresh and immediately fetches latest user data
-   */
+    pendingAuthSession.value = null
+    clearPendingAuthSessionStorage()
+  }
+
+  function keepPendingRegistrationChallengeIfRequested(shouldPreserve: boolean): void {
+    if (shouldPreserve) {
+      pendingRegistrationChallenge.value =
+        pendingRegistrationChallenge.value ?? getPersistedPendingRegistrationChallenge()
+      return
+    }
+
+    pendingRegistrationChallenge.value = null
+    pendingRegistrationPassword = null
+    clearPendingRegistrationChallengeStorage()
+  }
+
   function checkAuth(): void {
     const savedUser = localStorage.getItem(AUTH_USER_KEY)
     const savedExpiresAt = localStorage.getItem(TOKEN_EXPIRES_AT_KEY)
     const savedAccessToken = getAccessToken()
     pendingAuthSession.value = getPersistedPendingAuthSession()
+    pendingRegistrationChallenge.value = getPersistedPendingRegistrationChallenge()
 
     if (savedAccessToken) {
       token.value = savedAccessToken
@@ -113,33 +280,28 @@ export const useAuthStore = defineStore('auth', () => {
       try {
         user.value = JSON.parse(savedUser)
         tokenExpiresAt.value = savedExpiresAt ? parseInt(savedExpiresAt, 10) : null
+        clearPendingAuthSession()
+        clearPendingRegistrationChallenge()
 
-        // Immediately refresh user data from backend (async, don't block)
         refreshUser().catch((error) => {
           console.error('Failed to refresh user on init:', error)
         })
-
-        // Start auto-refresh interval for user data
         startAutoRefresh()
 
-        // Start proactive token refresh if we have refresh token and expiry info
-        // Note: use !== null to handle case when tokenExpiresAt.value is 0 (expired)
         if (tokenExpiresAt.value !== null) {
           scheduleTokenRefreshAt(tokenExpiresAt.value)
         }
       } catch (error) {
         console.error('Failed to parse saved user data:', error)
-        clearAuth({ preservePendingAuthSession: true })
+        clearAuth({
+          preservePendingAuthSession: true,
+          preservePendingRegistrationChallenge: true
+        })
       }
     }
   }
 
-  /**
-   * Start auto-refresh interval for user data
-   * Refreshes user data every 60 seconds
-   */
   function startAutoRefresh(): void {
-    // Clear existing interval if any
     stopAutoRefresh()
 
     refreshIntervalId = setInterval(() => {
@@ -151,9 +313,6 @@ export const useAuthStore = defineStore('auth', () => {
     }, AUTO_REFRESH_INTERVAL)
   }
 
-  /**
-   * Stop auto-refresh interval
-   */
   function stopAutoRefresh(): void {
     if (refreshIntervalId) {
       clearInterval(refreshIntervalId)
@@ -161,36 +320,25 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  /**
-   * Schedule proactive token refresh before expiry (based on expiry timestamp)
-   * @param expiresAtMs - Token expiry timestamp in milliseconds
-   */
   function scheduleTokenRefreshAt(expiresAtMs: number): void {
-    // Clear any existing timeout
     if (tokenRefreshTimeoutId) {
       clearTimeout(tokenRefreshTimeoutId)
       tokenRefreshTimeoutId = null
     }
 
-    // Calculate remaining time until refresh (buffer time before expiry)
     const now = Date.now()
     const refreshInMs = Math.max(0, expiresAtMs - now - TOKEN_REFRESH_BUFFER)
 
     if (refreshInMs <= 0) {
-      // Token is about to expire or already expired, refresh immediately
-      performTokenRefresh()
+      void performTokenRefresh()
       return
     }
 
     tokenRefreshTimeoutId = setTimeout(() => {
-      performTokenRefresh()
+      void performTokenRefresh()
     }, refreshInMs)
   }
 
-  /**
-   * Schedule proactive token refresh before expiry (based on expires_in seconds)
-   * @param expiresInSeconds - Token expiry time in seconds from now
-   */
   function scheduleTokenRefresh(expiresInSeconds: number): void {
     const expiresAtMs = Date.now() + expiresInSeconds * 1000
     tokenExpiresAt.value = expiresAtMs
@@ -198,30 +346,19 @@ export const useAuthStore = defineStore('auth', () => {
     scheduleTokenRefreshAt(expiresAtMs)
   }
 
-  /**
-   * Perform the actual token refresh
-   */
   async function performTokenRefresh(): Promise<void> {
     try {
       const response = await authAPI.refreshToken()
-
-      // Update state
       token.value = response.access_token
       if (response.refresh_token) {
         refreshTokenValue.value = response.refresh_token
       }
-
-      // Schedule next refresh (this also updates tokenExpiresAt and localStorage)
       scheduleTokenRefresh(response.expires_in)
     } catch (error) {
       console.error('Token refresh failed:', error)
-      // Don't clear auth here - the interceptor will handle 401 errors
     }
   }
 
-  /**
-   * Stop token refresh timeout
-   */
   function stopTokenRefresh(): void {
     if (tokenRefreshTimeoutId) {
       clearTimeout(tokenRefreshTimeoutId)
@@ -229,114 +366,79 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  /**
-   * User login
-   * @param credentials - Login credentials (email and password)
-   * @returns Promise resolving to the login response (may require 2FA)
-   * @throws Error if login fails
-   */
   async function login(credentials: LoginRequest): Promise<LoginResponse> {
     try {
       const response = await authAPI.login(credentials)
 
-      // If 2FA is required, return the response without setting auth state
       if (isTotp2FARequired(response)) {
         return response
       }
 
-      // Set auth state from the response
       setAuthFromResponse(response)
-
       return response
     } catch (error) {
-      // Clear any partial state on error
-      clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
+      clearAuth({
+        preservePendingAuthSession: pendingAuthSession.value !== null,
+        preservePendingRegistrationChallenge: pendingRegistrationChallenge.value !== null
+      })
       throw error
     }
   }
 
-  /**
-   * Complete login with 2FA code
-   * @param tempToken - Temporary token from initial login
-   * @param totpCode - 6-digit TOTP code
-   * @returns Promise resolving to the authenticated user
-   * @throws Error if 2FA verification fails
-   */
   async function login2FA(tempToken: string, totpCode: string): Promise<User> {
     try {
       const response = await authAPI.login2FA({ temp_token: tempToken, totp_code: totpCode })
       setAuthFromResponse(response)
       return user.value!
     } catch (error) {
-      clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
+      clearAuth({
+        preservePendingAuthSession: pendingAuthSession.value !== null,
+        preservePendingRegistrationChallenge: pendingRegistrationChallenge.value !== null
+      })
       throw error
     }
   }
 
-  /**
-   * Set auth state from an AuthResponse
-   * Internal helper function
-   */
   function setAuthFromResponse(response: AuthResponse): void {
-    // Store token and user
     token.value = response.access_token
 
-    // Store refresh token if present
     if (response.refresh_token) {
       refreshTokenValue.value = response.refresh_token
     }
 
-    // Extract run_mode if present
     if (response.user.run_mode) {
       runMode.value = response.user.run_mode
     }
+
     const { run_mode: _run_mode, ...userData } = response.user
     user.value = userData
 
-    // Persist to localStorage
     setAccessToken(response.access_token)
     localStorage.setItem(AUTH_USER_KEY, JSON.stringify(userData))
     clearPendingAuthSession()
-
-    // Start auto-refresh interval for user data
+    clearPendingRegistrationChallenge()
     startAutoRefresh()
 
-    // Start proactive token refresh if we have refresh token and expiry info
-    // scheduleTokenRefresh will also store the expiry timestamp
     if (response.expires_in) {
       scheduleTokenRefresh(response.expires_in)
     }
   }
 
-  /**
-   * User registration
-   * @param userData - Registration data (username, email, password)
-   * @returns Promise resolving to the newly registered and authenticated user
-   * @throws Error if registration fails
-   */
   async function register(userData: RegisterRequest): Promise<User> {
     try {
       const response = await authAPI.register(userData)
-
-      // Use the common helper to set auth state
       setAuthFromResponse(response)
-
       return user.value!
     } catch (error) {
-      // Clear any partial state on error
-      clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
+      clearAuth({
+        preservePendingAuthSession: pendingAuthSession.value !== null,
+        preservePendingRegistrationChallenge: pendingRegistrationChallenge.value !== null
+      })
       throw error
     }
   }
 
-  /**
-   * 直接设置 token（用于 OAuth/SSO 回调），并加载当前用户信息。
-   * 会自动读取 localStorage 中已设置的 refresh_token 和 token_expires_in
-   * @param newToken - 后端签发的 JWT access token
-   */
   async function setToken(newToken: string): Promise<User> {
-    // Clear any previous state first (avoid mixing sessions)
-    // Note: Don't clear localStorage here as OAuth callback may have set refresh_token
     stopAutoRefresh()
     stopTokenRefresh()
     token.value = null
@@ -345,9 +447,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = newToken
     setAccessToken(newToken)
 
-    // Read expires_at from localStorage if set by OAuth callback
     const savedExpiresAt = localStorage.getItem(TOKEN_EXPIRES_AT_KEY)
-
     if (savedExpiresAt) {
       tokenExpiresAt.value = parseInt(savedExpiresAt, 10)
     }
@@ -356,16 +456,18 @@ export const useAuthStore = defineStore('auth', () => {
       const userData = await refreshUser()
       startAutoRefresh()
 
-      // Start proactive token refresh if we have refresh token and expiry info
-      // Note: use !== null to handle case when tokenExpiresAt.value is 0 (expired)
       if (tokenExpiresAt.value !== null) {
         scheduleTokenRefreshAt(tokenExpiresAt.value)
       }
 
       clearPendingAuthSession()
+      clearPendingRegistrationChallenge()
       return userData
     } catch (error) {
-      clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
+      clearAuth({
+        preservePendingAuthSession: pendingAuthSession.value !== null,
+        preservePendingRegistrationChallenge: pendingRegistrationChallenge.value !== null
+      })
       throw error
     }
   }
@@ -385,24 +487,52 @@ export const useAuthStore = defineStore('auth', () => {
     setPendingAuthSession(null)
   }
 
-  /**
-   * User logout
-   * Clears all authentication state and persisted data
-   */
-  async function logout(): Promise<void> {
-    // Call API logout (revokes refresh token on server)
-    await authAPI.logout()
+  function setPendingRegistrationChallenge(
+    input: PendingRegistrationChallengeInput
+  ): PendingRegistrationChallengeSummary {
+    const summary: PendingRegistrationChallengeSummary = {
+      ticket: createPendingRegistrationTicket(),
+      email: input.email.trim(),
+      turnstile_token: input.turnstile_token,
+      invitation_code: input.invitation_code,
+      aff_code: input.aff_code,
+      pending_auth_token: input.pending_auth_token,
+      pending_auth_token_field: input.pending_auth_token_field,
+      pending_provider: input.pending_provider,
+      pending_redirect: input.pending_redirect,
+      pending_adoption_decision: input.pending_adoption_decision
+    }
 
-    // Clear state
+    pendingRegistrationChallenge.value = summary
+    pendingRegistrationPassword = input.password
+    persistPendingRegistrationChallenge(summary)
+    return summary
+  }
+
+  function getPendingRegistrationChallengePayload():
+    | PendingRegistrationChallengePayload
+    | null {
+    if (!pendingRegistrationChallenge.value || !pendingRegistrationPassword) {
+      return null
+    }
+
+    return {
+      ...pendingRegistrationChallenge.value,
+      password: pendingRegistrationPassword
+    }
+  }
+
+  function clearPendingRegistrationChallenge(): void {
+    pendingRegistrationChallenge.value = null
+    pendingRegistrationPassword = null
+    clearPendingRegistrationChallengeStorage()
+  }
+
+  async function logout(): Promise<void> {
+    await authAPI.logout()
     clearAuth()
   }
 
-  /**
-   * Refresh current user data
-   * Fetches latest user info from the server
-   * @returns Promise resolving to the updated user
-   * @throws Error if not authenticated or request fails
-   */
   async function refreshUser(): Promise<User> {
     if (!token.value) {
       throw new Error('Not authenticated')
@@ -415,28 +545,24 @@ export const useAuthStore = defineStore('auth', () => {
       }
       const { run_mode: _run_mode, ...userData } = response.data
       user.value = userData
-
-      // Update localStorage
       localStorage.setItem(AUTH_USER_KEY, JSON.stringify(userData))
-
       return userData
     } catch (error) {
-      // If refresh fails with 401, clear auth state
       if ((error as { status?: number }).status === 401) {
-        clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
+        clearAuth({
+          preservePendingAuthSession: pendingAuthSession.value !== null,
+          preservePendingRegistrationChallenge: pendingRegistrationChallenge.value !== null
+        })
       }
       throw error
     }
   }
 
-  /**
-   * Clear all authentication state
-   * Internal helper function
-   */
-  function clearAuth(options?: { preservePendingAuthSession?: boolean }): void {
-    // Stop auto-refresh
+  function clearAuth(options?: {
+    preservePendingAuthSession?: boolean
+    preservePendingRegistrationChallenge?: boolean
+  }): void {
     stopAutoRefresh()
-    // Stop token refresh
     stopTokenRefresh()
 
     token.value = null
@@ -448,31 +574,25 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('refresh_token')
     localStorage.removeItem(TOKEN_EXPIRES_AT_KEY)
 
-    if (options?.preservePendingAuthSession) {
-      pendingAuthSession.value = getPersistedPendingAuthSession()
-      return
-    }
-
-    pendingAuthSession.value = null
-    clearPendingAuthSessionStorage()
+    keepPendingAuthSessionIfRequested(options?.preservePendingAuthSession === true)
+    keepPendingRegistrationChallengeIfRequested(
+      options?.preservePendingRegistrationChallenge === true
+    )
   }
 
-  // ==================== Return Store API ====================
-
   return {
-    // State
     user,
     token,
     runMode: readonly(runMode),
     pendingAuthSession: readonly(pendingAuthSession),
+    pendingRegistrationChallenge: readonly(pendingRegistrationChallenge),
 
-    // Computed
     isAuthenticated,
     isAdmin,
     isSimpleMode,
     hasPendingAuthSession,
+    hasPendingRegistrationChallenge,
 
-    // Actions
     login,
     login2FA,
     register,
@@ -481,6 +601,9 @@ export const useAuthStore = defineStore('auth', () => {
     checkAuth,
     refreshUser,
     setPendingAuthSession,
-    clearPendingAuthSession
+    clearPendingAuthSession,
+    setPendingRegistrationChallenge,
+    getPendingRegistrationChallengePayload,
+    clearPendingRegistrationChallenge
   }
 })

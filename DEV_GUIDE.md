@@ -344,3 +344,13 @@ sub2api-bmai/
 - [Ent 文档](https://entgo.io/docs/getting-started)
 - [Vue3 文档](https://vuejs.org/)
 - [pnpm 文档](https://pnpm.io/)
+
+
+## Deployment & Test Guardrails
+
+- Keep runtime-only artifacts under `.runtime/`; only the checked-in helpers there remain allowlisted.
+- Treat `deploy/.env` and `/etc/sub2api/sub2api.env` as secret stores with mode `0600`; never print generated secrets to logs or terminals.
+- Keep Docker bind defaults on `127.0.0.1`; use `deploy/Caddyfile` or another TLS reverse proxy before exposing `8080`.
+- Keep PostgreSQL and Redis out of deployment archives; `deploy/docker-compose.local.yml` now uses named volumes for both services.
+- Use pinned image refs via `SUB2API_IMAGE_REF`; do not switch docs or compose examples back to `:latest`.
+- Run `make test-frontend-affiliate-auth-admin` when touching affiliate/auth/admin frontend flows.

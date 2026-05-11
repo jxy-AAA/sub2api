@@ -144,56 +144,65 @@ Nginx drops headers containing underscores by default (e.g. `session_id`), which
 
 ## Deployment
 
-### Method 1: Script Installation (Recommended)
+### Method 1: Verified Binary Install (Recommended)
 
-One-click installation script that downloads pre-built binaries from GitHub Releases.
+Download a fixed release bundle, verify it, then run the bundled installer locally.
 
 #### Prerequisites
 
-- Linux server (amd64 or arm64)
+- Linux server (`amd64` or `arm64`)
 - PostgreSQL 15+ (installed and running)
 - Redis 7+ (installed and running)
+- `curl`, `tar`, and `sha256sum` (or `shasum`)
 - Root privileges
 
 #### Installation Steps
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+VERSION=vX.Y.Z
+ARCH=amd64   # or arm64
+ARCHIVE="sub2api_${VERSION#v}_linux_${ARCH}.tar.gz"
+
+curl -fsSLO "https://github.com/Wei-Shaw/sub2api/releases/download/${VERSION}/${ARCHIVE}"
+curl -fsSLO "https://github.com/Wei-Shaw/sub2api/releases/download/${VERSION}/checksums.txt"
+grep " ${ARCHIVE}$" checksums.txt > "${ARCHIVE}.sha256"
+test -s "${ARCHIVE}.sha256"
+sha256sum -c "${ARCHIVE}.sha256"
+tar -xzf "${ARCHIVE}"
+sudo ./deploy/install.sh
 ```
 
-The script will:
-1. Detect your system architecture
-2. Download the latest release
-3. Install binary to `/opt/sub2api`
-4. Create systemd service
-5. Configure system user and permissions
+The installer:
+1. Installs the binary to `/opt/sub2api`
+2. Writes server defaults to `/etc/sub2api/sub2api.env` with mode `0600`
+3. Creates a hardened systemd unit
+4. Keeps the default bind address on `127.0.0.1` so you can publish via Caddy/Nginx/TLS
 
 #### Post-Installation
 
 ```bash
-# 1. Start the service
+# Start the service
 sudo systemctl start sub2api
 
-# 2. Enable auto-start on boot
+# Enable auto-start on boot
 sudo systemctl enable sub2api
 
-# 3. Open Setup Wizard in browser
-# http://YOUR_SERVER_IP:8080
+# View logs
+sudo journalctl -u sub2api -f
 ```
 
-The Setup Wizard will guide you through:
+The Setup Wizard still guides you through:
 - Database configuration
 - Redis configuration
 - Admin account creation
 
 #### Upgrade
 
-You can upgrade directly from the **Admin Dashboard** by clicking the **Check for Updates** button in the top-left corner.
+You can still upgrade from the **Admin Dashboard**, or install a verified bundle for a specific version and re-run:
 
-The web interface will:
-- Check for new versions automatically
-- Download and apply updates with one click
-- Support rollback if needed
+```bash
+sudo ./deploy/install.sh upgrade -v vX.Y.Z
+```
 
 #### Useful Commands
 
@@ -201,162 +210,117 @@ The web interface will:
 # Check status
 sudo systemctl status sub2api
 
-# View logs
-sudo journalctl -u sub2api -f
-
 # Restart service
 sudo systemctl restart sub2api
 
-# Uninstall
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+# Uninstall (installer is copied into /opt/sub2api during setup)
+sudo /opt/sub2api/install.sh uninstall -y
 ```
 
 ---
 
 ### Method 2: Docker Compose (Recommended)
 
-Deploy with Docker Compose, including PostgreSQL and Redis containers.
+Deploy with Docker Compose, including PostgreSQL and Redis containers, while keeping secrets in a `0600` env file and keeping database/cache data out of release bundles.
 
 #### Prerequisites
 
 - Docker 20.10+
 - Docker Compose v2+
+- `curl`, `tar`, and `sha256sum` (or `shasum`)
 
-#### Quick Start (One-Click Deployment)
-
-Use the automated deployment script for easy setup:
+#### Quick Start (Pinned Release Bundle)
 
 ```bash
-# Create deployment directory
-mkdir -p sub2api-deploy && cd sub2api-deploy
+VERSION=vX.Y.Z
+ARCH=amd64   # or arm64
+ARCHIVE="sub2api_${VERSION#v}_linux_${ARCH}.tar.gz"
 
-# Download and run deployment preparation script
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -fsSLO "https://github.com/Wei-Shaw/sub2api/releases/download/${VERSION}/${ARCHIVE}"
+curl -fsSLO "https://github.com/Wei-Shaw/sub2api/releases/download/${VERSION}/checksums.txt"
+grep " ${ARCHIVE}$" checksums.txt > "${ARCHIVE}.sha256"
+test -s "${ARCHIVE}.sha256"
+sha256sum -c "${ARCHIVE}.sha256"
+tar -xzf "${ARCHIVE}"
 
-# Start services
+mkdir -p sub2api-deploy
+cd sub2api-deploy
+bash ../deploy/docker-deploy.sh
 docker compose up -d
-
-# View logs
 docker compose logs -f sub2api
 ```
 
-**What the script does:**
-- Downloads `docker-compose.local.yml` (saved as `docker-compose.yml`) and `.env.example`
-- Generates secure credentials (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
-- Creates `.env` file with auto-generated secrets
-- Creates data directories (uses local directories for easy backup/migration)
-- Displays generated credentials for your reference
+**What `docker-deploy.sh` does now:**
+- Copies the bundled `docker-compose.local.yml` and `.env.example` into the current directory
+- Pins `SUB2API_IMAGE_REF` to the bundle version when possible
+- Generates `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `ADMIN_PASSWORD`, `JWT_SECRET`, and `TOTP_ENCRYPTION_KEY`
+- Writes them only to `.env` with mode `0600`
+- Creates only `./data`; PostgreSQL and Redis use named volumes
 
 #### Manual Deployment
 
 If you prefer manual setup:
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/Wei-Shaw/sub2api.git
 cd sub2api/deploy
-
-# 2. Copy environment configuration
 cp .env.example .env
-
-# 3. Edit configuration (generate secure passwords)
+chmod 600 .env
 nano .env
+mkdir -p data
+docker compose -f docker-compose.local.yml up -d
 ```
 
 **Required configuration in `.env`:**
 
 ```bash
-# PostgreSQL password (REQUIRED)
-POSTGRES_PASSWORD=your_secure_password_here
-
-# JWT Secret (RECOMMENDED - keeps users logged in after restart)
-JWT_SECRET=your_jwt_secret_here
-
-# TOTP Encryption Key (RECOMMENDED - preserves 2FA after restart)
-TOTP_ENCRYPTION_KEY=your_totp_key_here
-
-# Optional: Admin account
+SUB2API_IMAGE_REF=weishaw/sub2api:vX.Y.Z
+POSTGRES_PASSWORD=your_secure_postgres_password
+REDIS_PASSWORD=your_secure_redis_password
 ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=your_admin_password
-
-# Optional: Custom port
+ADMIN_PASSWORD=your_secure_admin_password
+JWT_SECRET=your_jwt_secret_here
+TOTP_ENCRYPTION_KEY=your_totp_key_here
+BIND_HOST=127.0.0.1
 SERVER_PORT=8080
 ```
 
-**Generate secure secrets:**
-```bash
-# Generate JWT_SECRET
-openssl rand -hex 32
+#### Deployment Variants
 
-# Generate TOTP_ENCRYPTION_KEY
-openssl rand -hex 32
+| Version | Data Storage | Migration Posture | Best For |
+|---------|-------------|-------------------|----------|
+| **docker-compose.local.yml** | `./data` + named PostgreSQL/Redis volumes | Archive only allowlisted files; export DB/Redis separately | Production, repeatable upgrades |
+| **docker-compose.yml** | Named volumes for app + DB + Redis | Docker-managed volume workflow | Simple all-in-one setup |
 
-# Generate POSTGRES_PASSWORD
-openssl rand -hex 32
-```
-
-```bash
-# 4. Create data directories (for local version)
-mkdir -p data postgres_data redis_data
-
-# 5. Start all services
-# Option A: Local directory version (recommended - easy migration)
-docker compose -f docker-compose.local.yml up -d
-
-# Option B: Named volumes version (simple setup)
-docker compose up -d
-
-# 6. Check status
-docker compose -f docker-compose.local.yml ps
-
-# 7. View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
-```
-
-#### Deployment Versions
-
-| Version | Data Storage | Migration | Best For |
-|---------|-------------|-----------|----------|
-| **docker-compose.local.yml** | Local directories | ✅ Easy (tar entire directory) | Production, frequent backups |
-| **docker-compose.yml** | Named volumes | ⚠️ Requires docker commands | Simple setup |
-
-**Recommendation:** Use `docker-compose.local.yml` (deployed by script) for easier data management.
+**Recommendation:** Use `docker-compose.local.yml` for production. It keeps the editable app config/logs local while preventing `postgres_data` / `redis_data` from landing in release or migration bundles.
 
 #### Access
 
-Open `http://YOUR_SERVER_IP:8080` in your browser.
+The default bind address is `127.0.0.1`, so publish it through Caddy/Nginx/TLS before exposing it publicly. For local checks:
 
-If admin password was auto-generated, find it in logs:
 ```bash
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+curl http://127.0.0.1:8080/health
 ```
 
 #### Upgrade
 
+1. Edit `.env` and bump `SUB2API_IMAGE_REF` to the new pinned tag or digest.
+2. Recreate the containers:
+
 ```bash
-# Pull latest image and recreate container
 docker compose -f docker-compose.local.yml pull
 docker compose -f docker-compose.local.yml up -d
 ```
 
-#### Easy Migration (Local Directory Version)
+#### Migration Notes
 
-When using `docker-compose.local.yml`, migrate to a new server easily:
+Do **not** tar the whole deployment tree together with runtime state anymore. Archive only control-plane files such as:
 
-```bash
-# On source server
-docker compose -f docker-compose.local.yml down
-cd ..
-tar czf sub2api-complete.tar.gz sub2api-deploy/
+- `.env`
+- `docker-compose.yml` / `docker-compose.local.yml`
+- `data/`
 
-# Transfer to new server
-scp sub2api-complete.tar.gz user@new-server:/path/
-
-# On new server
-tar xzf sub2api-complete.tar.gz
-cd sub2api-deploy/
-docker compose -f docker-compose.local.yml up -d
-```
+Then export PostgreSQL and Redis separately using your normal backup tooling (for example `pg_dump` and an RDB/AOF snapshot) before restoring them on the target host.
 
 #### Useful Commands
 
@@ -370,9 +334,8 @@ docker compose -f docker-compose.local.yml restart
 # View all logs
 docker compose -f docker-compose.local.yml logs -f
 
-# Remove all data (caution!)
-docker compose -f docker-compose.local.yml down
-rm -rf data/ postgres_data/ redis_data/
+# Inspect named volumes before any backup or cleanup
+docker volume ls | grep sub2api
 ```
 
 ---
@@ -421,7 +384,7 @@ nano config.yaml
 
 ```yaml
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 8080
   mode: "release"
 

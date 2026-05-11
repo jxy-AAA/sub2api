@@ -214,8 +214,8 @@ describe('oauth adoption auth api', () => {
   })
 
   it('requests an HttpOnly oauth bind cookie before redirect binding', async () => {
-    localStorage.setItem('auth_token', 'access-token-value')
-    const { prepareOAuthBindAccessTokenCookie } = await import('@/api/auth')
+    const { prepareOAuthBindAccessTokenCookie, setAuthToken } = await import('@/api/auth')
+    setAuthToken('access-token-value')
 
     await prepareOAuthBindAccessTokenCookie()
 

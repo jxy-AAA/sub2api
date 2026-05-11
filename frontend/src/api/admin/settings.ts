@@ -36,6 +36,9 @@ export type AuthSourceDefaultsState = Record<
   AuthSourceType,
   AuthSourceDefaultsValue
 >;
+export type AuthSourceDefaultsUpdateState = Partial<
+  Record<AuthSourceType, Partial<AuthSourceDefaultsValue>>
+>;
 export type PaymentVisibleMethod = "alipay" | "wxpay";
 export type PaymentVisibleMethodSource =
   | ""
@@ -198,26 +201,31 @@ export function buildAuthSourceDefaultsState(
 
 export function appendAuthSourceDefaultsToUpdateRequest(
   payload: UpdateSettingsRequest,
-  authSourceDefaults: AuthSourceDefaultsState,
+  authSourceDefaults: AuthSourceDefaultsUpdateState,
 ): UpdateSettingsRequest {
   const target = payload as Record<string, unknown>;
+  const defaults = buildAuthSourceDefaultsState({});
 
   for (const source of AUTH_SOURCE_TYPES) {
-    const current = authSourceDefaults[source];
+    const fallback = defaults[source];
+    const current = authSourceDefaults[source] ?? fallback;
     target[`auth_source_default_${source}_balance`] =
-      Number(current.balance) || 0;
+      Number(current.balance ?? fallback.balance) || 0;
     target[`auth_source_default_${source}_concurrency`] = Math.max(
       1,
       Math.floor(
-        Number(current.concurrency) || AUTH_SOURCE_DEFAULT_CONCURRENCY,
+        Number(current.concurrency ?? fallback.concurrency) ||
+          AUTH_SOURCE_DEFAULT_CONCURRENCY,
       ),
     );
     target[`auth_source_default_${source}_subscriptions`] =
-      normalizeDefaultSubscriptionSettings(current.subscriptions);
+      normalizeDefaultSubscriptionSettings(
+        current.subscriptions ?? fallback.subscriptions,
+      );
     target[`auth_source_default_${source}_grant_on_signup`] =
-      current.grant_on_signup;
+      current.grant_on_signup === true;
     target[`auth_source_default_${source}_grant_on_first_bind`] =
-      current.grant_on_first_bind;
+      current.grant_on_first_bind === true;
   }
 
   return payload;

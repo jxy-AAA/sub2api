@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"strings"
 	"time"
 
@@ -10,29 +11,43 @@ import (
 
 var ErrAffiliateDistributionUnavailable = infraerrors.ServiceUnavailable("AFFILIATE_DISTRIBUTION_UNAVAILABLE", "affiliate distribution service unavailable")
 
-type AgentModelRate struct {
-	Model      string  `json:"model"`
-	Multiplier float64 `json:"multiplier"`
+const affiliateDistributionRateMultiplierMax = 100.0
+
+type AgentGroupRate struct {
+	GroupID                    int64      `json:"group_id"`
+	GroupName                  string     `json:"group_name"`
+	GroupPlatform              string     `json:"group_platform,omitempty"`
+	GroupDefaultRateMultiplier float64    `json:"group_rate_multiplier"`
+	RateMultiplier             float64    `json:"rate_multiplier"`
+	SourceType                 string     `json:"source_type,omitempty"`
+	SourceAffCode              string     `json:"source_aff_code,omitempty"`
+	UpstreamUserID             *int64     `json:"upstream_user_id,omitempty"`
+	UpdatedAt                  *time.Time `json:"updated_at,omitempty"`
 }
 
-type AgentModelRateInput struct {
-	Model      string  `json:"model"`
-	Multiplier float64 `json:"multiplier"`
+type AgentGroupRateInput struct {
+	GroupID        int64   `json:"group_id"`
+	RateMultiplier float64 `json:"rate_multiplier"`
 }
 
 type AgentDistributionOverview struct {
-	UserID                  int64            `json:"user_id"`
-	InviteCode              string           `json:"invite_code"`
-	InviterID               *int64           `json:"inviter_id,omitempty"`
-	IsAdmin                 bool             `json:"is_admin"`
-	DirectMemberCount       int              `json:"direct_member_count"`
-	TodayBusinessUSD        float64          `json:"today_business_usd"`
-	TodayRebateRMB          float64          `json:"today_rebate_rmb"`
-	CurrentRebateBalanceRMB float64          `json:"current_rebate_balance_rmb"`
-	InviteModelRates        []AgentModelRate `json:"invite_model_rates"`
-	CanEditSubordinates     bool             `json:"can_edit_subordinates"`
-	CanAdjustOwnRebate      bool             `json:"can_adjust_own_rebate"`
-	MonthlyResetDayOfUTC    int              `json:"monthly_reset_day_of_utc"`
+	UserID                  int64               `json:"user_id"`
+	InviteCode              string              `json:"invite_code"`
+	InviterID               *int64              `json:"inviter_id,omitempty"`
+	IsAdmin                 bool                `json:"is_admin"`
+	IsRootAdmin             bool                `json:"is_root_admin"`
+	DirectMemberCount       int                 `json:"direct_member_count"`
+	DirectChildrenCount     int                 `json:"direct_children_count"`
+	DirectChildren          []AgentDirectMember `json:"direct_children"`
+	TodayBusinessUSD        float64             `json:"today_business_usd"`
+	TodayRebateRMB          float64             `json:"today_rebate_rmb"`
+	CurrentRebateBalanceRMB float64             `json:"current_rebate_balance_rmb"`
+	InviteGroupRates        []AgentGroupRate    `json:"invite_group_rates"`
+	CurrentGroupRates       []AgentGroupRate    `json:"current_group_rates"`
+	MyGroupRates            []AgentGroupRate    `json:"my_group_rates,omitempty"`
+	CanEditSubordinates     bool                `json:"can_edit_subordinates"`
+	CanAdjustOwnRebate      bool                `json:"can_adjust_own_rebate"`
+	MonthlyResetDayOfUTC    int                 `json:"monthly_reset_day_of_utc"`
 }
 
 type AgentDirectMember struct {
@@ -44,7 +59,7 @@ type AgentDirectMember struct {
 	TodayBusinessUSD        float64          `json:"today_business_usd"`
 	TodayRebateRMB          float64          `json:"today_rebate_rmb"`
 	CurrentRebateBalanceRMB float64          `json:"current_rebate_balance_rmb"`
-	CurrentModelRates       []AgentModelRate `json:"current_model_rates"`
+	CurrentGroupRates       []AgentGroupRate `json:"current_group_rates"`
 	ParentCanEditRates      bool             `json:"parent_can_edit_rates"`
 }
 
@@ -141,9 +156,10 @@ type AgentTreeNode struct {
 	InviteCode              string           `json:"invite_code"`
 	Depth                   int              `json:"depth"`
 	IsAdmin                 bool             `json:"is_admin"`
+	IsRootAdmin             bool             `json:"is_root_admin"`
 	CurrentRebateBalanceRMB float64          `json:"current_rebate_balance_rmb"`
-	InviteModelRates        []AgentModelRate `json:"invite_model_rates,omitempty"`
-	CurrentModelRates       []AgentModelRate `json:"current_model_rates,omitempty"`
+	InviteGroupRates        []AgentGroupRate `json:"invite_group_rates,omitempty"`
+	CurrentGroupRates       []AgentGroupRate `json:"current_group_rates,omitempty"`
 }
 
 type AgentMonthlyArchiveFilter struct {
@@ -162,12 +178,19 @@ type AgentMonthlyArchiveItem struct {
 	ArchivedAt        time.Time `json:"archived_at"`
 }
 
+type AgentUserUpstream struct {
+	UserID         int64      `json:"user_id"`
+	UpstreamUserID *int64     `json:"upstream_user_id,omitempty"`
+	InviterID      *int64     `json:"inviter_id,omitempty"`
+	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
+}
+
 type AffiliateDistributionRepository interface {
 	GetDistributionOverview(ctx context.Context, userID int64) (*AgentDistributionOverview, error)
-	ListInviteModelRates(ctx context.Context, userID int64) ([]AgentModelRate, error)
-	SaveInviteModelRates(ctx context.Context, userID int64, rates []AgentModelRateInput) ([]AgentModelRate, error)
+	ListInviteGroupRates(ctx context.Context, userID int64) ([]AgentGroupRate, error)
+	SaveInviteGroupRates(ctx context.Context, userID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error)
 	ListDirectSubordinates(ctx context.Context, userID int64) ([]AgentDirectMember, error)
-	UpdateDirectSubordinateModelRates(ctx context.Context, userID, subordinateUserID int64, rates []AgentModelRateInput) ([]AgentModelRate, error)
+	UpdateDirectSubordinateGroupRates(ctx context.Context, userID, subordinateUserID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error)
 	ListUserDistributionHistory(ctx context.Context, userID int64, filter AgentHistoryFilter) ([]AgentHistoryItem, int64, error)
 	ListDailyBusinessRanking(ctx context.Context, filter AgentRankingFilter) ([]AgentDailyBusinessRankingItem, int64, error)
 	ListRebateBalanceRanking(ctx context.Context, filter AgentRankingFilter) ([]AgentRebateBalanceRankingItem, int64, error)
@@ -175,8 +198,8 @@ type AffiliateDistributionRepository interface {
 	UpdateAgentDistributionPermissions(ctx context.Context, operatorUserID, userID int64, input UpdateAgentDistributionPermissionInput) (*AgentDistributionPermission, error)
 	AdminSetRebateBalance(ctx context.Context, operatorUserID, userID int64, amount float64, note string) (*AgentRebateBalanceAdjustment, error)
 	GetDistributionTree(ctx context.Context, filter AgentTreeFilter) ([]AgentTreeNode, error)
-	GetUserDistributionPricing(ctx context.Context, userID int64) ([]AgentModelRate, error)
-	AdminUpdateUserDistributionPricing(ctx context.Context, operatorUserID, userID int64, rates []AgentModelRateInput) ([]AgentModelRate, error)
+	GetUserDistributionGroupRates(ctx context.Context, userID int64) ([]AgentGroupRate, error)
+	AdminUpdateUserDistributionGroupRates(ctx context.Context, operatorUserID, userID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error)
 	ListMonthlyRebateArchives(ctx context.Context, filter AgentMonthlyArchiveFilter) ([]AgentMonthlyArchiveItem, int64, error)
 	ArchiveMonthlyRebateBalances(ctx context.Context, archiveMonth time.Time, operatorUserID *int64, operatorName string) (int64, error)
 }
@@ -185,8 +208,17 @@ type affiliateDistributionScopedRepository interface {
 	ListDailyBusinessRankingScoped(ctx context.Context, operatorUserID int64, filter AgentRankingFilter) ([]AgentDailyBusinessRankingItem, int64, error)
 	ListRebateBalanceRankingScoped(ctx context.Context, operatorUserID int64, filter AgentRankingFilter) ([]AgentRebateBalanceRankingItem, int64, error)
 	GetDistributionTreeScoped(ctx context.Context, operatorUserID int64, filter AgentTreeFilter) ([]AgentTreeNode, error)
-	GetUserDistributionPricingScoped(ctx context.Context, operatorUserID, userID int64) ([]AgentModelRate, error)
-	UpdateUserDistributionPricingScoped(ctx context.Context, operatorUserID, userID int64, rates []AgentModelRateInput) ([]AgentModelRate, error)
+	GetUserDistributionGroupRatesScoped(ctx context.Context, operatorUserID, userID int64) ([]AgentGroupRate, error)
+	UpdateUserDistributionGroupRatesScoped(ctx context.Context, operatorUserID, userID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error)
+}
+
+type affiliateDistributionDefaultPricingRepository interface {
+	ListDefaultUserGroupRates(ctx context.Context) ([]AgentGroupRate, error)
+	SaveDefaultUserGroupRates(ctx context.Context, rates []AgentGroupRateInput) ([]AgentGroupRate, error)
+}
+
+type affiliateDistributionUpstreamRepository interface {
+	AdminUpdateUserUpstream(ctx context.Context, operatorUserID, userID int64, upstreamUserID *int64) (*AgentUserUpstream, error)
 }
 
 func (s *AffiliateService) distributionRepo() (AffiliateDistributionRepository, error) {
@@ -205,23 +237,52 @@ func (s *AffiliateService) GetDistributionOverview(ctx context.Context, userID i
 	if err != nil {
 		return nil, err
 	}
-	return repo.GetDistributionOverview(ctx, userID)
+	overview, err := repo.GetDistributionOverview(ctx, userID)
+	if err != nil || overview == nil {
+		return overview, err
+	}
+
+	directChildren, err := repo.ListDirectSubordinates(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentDistributionOverview(overview, directChildren), nil
 }
 
-func (s *AffiliateService) ListInviteModelRates(ctx context.Context, userID int64) ([]AgentModelRate, error) {
+func (s *AffiliateService) ListInviteGroupRates(ctx context.Context, userID int64) ([]AgentGroupRate, error) {
 	repo, err := s.distributionRepo()
 	if err != nil {
 		return nil, err
 	}
-	return repo.ListInviteModelRates(ctx, userID)
+	rates, err := repo.ListInviteGroupRates(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(rates), nil
 }
 
-func (s *AffiliateService) SaveInviteModelRates(ctx context.Context, userID int64, rates []AgentModelRateInput) ([]AgentModelRate, error) {
+func (s *AffiliateService) SaveInviteGroupRates(ctx context.Context, userID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error) {
 	repo, err := s.distributionRepo()
 	if err != nil {
 		return nil, err
 	}
-	return repo.SaveInviteModelRates(ctx, userID, normalizeAgentModelRateInputs(rates))
+	normalized, err := validateAndNormalizeAgentGroupRateInputs(rates)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := repo.SaveInviteGroupRates(ctx, userID, normalized)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(updated), nil
+}
+
+func (s *AffiliateService) ListUserInviteGroupRates(ctx context.Context, userID int64) ([]AgentGroupRate, error) {
+	return s.ListInviteGroupRates(ctx, userID)
+}
+
+func (s *AffiliateService) SaveUserInviteGroupRates(ctx context.Context, userID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error) {
+	return s.SaveInviteGroupRates(ctx, userID, rates)
 }
 
 func (s *AffiliateService) ListDirectSubordinates(ctx context.Context, userID int64) ([]AgentDirectMember, error) {
@@ -229,15 +290,27 @@ func (s *AffiliateService) ListDirectSubordinates(ctx context.Context, userID in
 	if err != nil {
 		return nil, err
 	}
-	return repo.ListDirectSubordinates(ctx, userID)
+	members, err := repo.ListDirectSubordinates(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentDirectMembers(members), nil
 }
 
-func (s *AffiliateService) UpdateDirectSubordinateModelRates(ctx context.Context, userID, subordinateUserID int64, rates []AgentModelRateInput) ([]AgentModelRate, error) {
+func (s *AffiliateService) UpdateDirectSubordinateGroupRates(ctx context.Context, userID, subordinateUserID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error) {
 	repo, err := s.distributionRepo()
 	if err != nil {
 		return nil, err
 	}
-	return repo.UpdateDirectSubordinateModelRates(ctx, userID, subordinateUserID, normalizeAgentModelRateInputs(rates))
+	normalized, err := validateAndNormalizeAgentGroupRateInputs(rates)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := repo.UpdateDirectSubordinateGroupRates(ctx, userID, subordinateUserID, normalized)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(updated), nil
 }
 
 func (s *AffiliateService) ListUserDistributionHistory(ctx context.Context, userID int64, filter AgentHistoryFilter) ([]AgentHistoryItem, int64, error) {
@@ -332,15 +405,23 @@ func (s *AffiliateService) GetDistributionTreeScoped(ctx context.Context, operat
 	return scopedRepo.GetDistributionTreeScoped(ctx, operatorUserID, filter)
 }
 
-func (s *AffiliateService) GetUserDistributionPricing(ctx context.Context, userID int64) ([]AgentModelRate, error) {
+func (s *AffiliateService) GetUserDistributionGroupRates(ctx context.Context, userID int64) ([]AgentGroupRate, error) {
 	repo, err := s.distributionRepo()
 	if err != nil {
 		return nil, err
 	}
-	return repo.GetUserDistributionPricing(ctx, userID)
+	rates, err := repo.GetUserDistributionGroupRates(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(rates), nil
 }
 
-func (s *AffiliateService) GetUserDistributionPricingScoped(ctx context.Context, operatorUserID, userID int64) ([]AgentModelRate, error) {
+func (s *AffiliateService) GetUserCurrentGroupRates(ctx context.Context, userID int64) ([]AgentGroupRate, error) {
+	return s.GetUserDistributionGroupRates(ctx, userID)
+}
+
+func (s *AffiliateService) GetUserDistributionGroupRatesScoped(ctx context.Context, operatorUserID, userID int64) ([]AgentGroupRate, error) {
 	repo, err := s.distributionRepo()
 	if err != nil {
 		return nil, err
@@ -349,18 +430,34 @@ func (s *AffiliateService) GetUserDistributionPricingScoped(ctx context.Context,
 	if !ok {
 		return nil, ErrAffiliateDistributionUnavailable
 	}
-	return scopedRepo.GetUserDistributionPricingScoped(ctx, operatorUserID, userID)
+	rates, err := scopedRepo.GetUserDistributionGroupRatesScoped(ctx, operatorUserID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(rates), nil
 }
 
-func (s *AffiliateService) AdminUpdateUserDistributionPricing(ctx context.Context, operatorUserID, userID int64, rates []AgentModelRateInput) ([]AgentModelRate, error) {
+func (s *AffiliateService) AdminUpdateUserDistributionGroupRates(ctx context.Context, operatorUserID, userID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error) {
 	repo, err := s.distributionRepo()
 	if err != nil {
 		return nil, err
 	}
-	return repo.AdminUpdateUserDistributionPricing(ctx, operatorUserID, userID, normalizeAgentModelRateInputs(rates))
+	normalized, err := validateAndNormalizeAgentGroupRateInputs(rates)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := repo.AdminUpdateUserDistributionGroupRates(ctx, operatorUserID, userID, normalized)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(updated), nil
 }
 
-func (s *AffiliateService) UpdateUserDistributionPricingScoped(ctx context.Context, operatorUserID, userID int64, rates []AgentModelRateInput) ([]AgentModelRate, error) {
+func (s *AffiliateService) SaveUserCurrentGroupRates(ctx context.Context, operatorUserID, userID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error) {
+	return s.AdminUpdateUserDistributionGroupRates(ctx, operatorUserID, userID, rates)
+}
+
+func (s *AffiliateService) UpdateUserDistributionGroupRatesScoped(ctx context.Context, operatorUserID, userID int64, rates []AgentGroupRateInput) ([]AgentGroupRate, error) {
 	repo, err := s.distributionRepo()
 	if err != nil {
 		return nil, err
@@ -369,7 +466,15 @@ func (s *AffiliateService) UpdateUserDistributionPricingScoped(ctx context.Conte
 	if !ok {
 		return nil, ErrAffiliateDistributionUnavailable
 	}
-	return scopedRepo.UpdateUserDistributionPricingScoped(ctx, operatorUserID, userID, normalizeAgentModelRateInputs(rates))
+	normalized, err := validateAndNormalizeAgentGroupRateInputs(rates)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := scopedRepo.UpdateUserDistributionGroupRatesScoped(ctx, operatorUserID, userID, normalized)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(updated), nil
 }
 
 func (s *AffiliateService) ListMonthlyRebateArchives(ctx context.Context, filter AgentMonthlyArchiveFilter) ([]AgentMonthlyArchiveItem, int64, error) {
@@ -388,20 +493,127 @@ func (s *AffiliateService) ArchiveMonthlyRebateBalances(ctx context.Context, arc
 	return repo.ArchiveMonthlyRebateBalances(ctx, archiveMonth, operatorUserID, operatorName)
 }
 
-func normalizeAgentModelRateInputs(rates []AgentModelRateInput) []AgentModelRateInput {
-	if len(rates) == 0 {
-		return []AgentModelRateInput{}
+func (s *AffiliateService) ListDefaultUserGroupRates(ctx context.Context) ([]AgentGroupRate, error) {
+	if s == nil || s.repo == nil {
+		return nil, ErrAffiliateDistributionUnavailable
 	}
-	result := make([]AgentModelRateInput, 0, len(rates))
+	repo, ok := s.repo.(affiliateDistributionDefaultPricingRepository)
+	if !ok {
+		return nil, ErrAffiliateDistributionUnavailable
+	}
+	rates, err := repo.ListDefaultUserGroupRates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(rates), nil
+}
+
+func (s *AffiliateService) SaveDefaultUserGroupRates(ctx context.Context, rates []AgentGroupRateInput) ([]AgentGroupRate, error) {
+	if s == nil || s.repo == nil {
+		return nil, ErrAffiliateDistributionUnavailable
+	}
+	repo, ok := s.repo.(affiliateDistributionDefaultPricingRepository)
+	if !ok {
+		return nil, ErrAffiliateDistributionUnavailable
+	}
+	normalized, err := validateAndNormalizeAgentGroupRateInputs(rates)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := repo.SaveDefaultUserGroupRates(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAgentGroupRates(updated), nil
+}
+
+func validateAndNormalizeAgentGroupRateInputs(rates []AgentGroupRateInput) ([]AgentGroupRateInput, error) {
+	if len(rates) == 0 {
+		return []AgentGroupRateInput{}, nil
+	}
+	result := make([]AgentGroupRateInput, 0, len(rates))
 	for _, rate := range rates {
-		model := strings.TrimSpace(rate.Model)
-		if model == "" {
+		if rate.GroupID <= 0 {
+			return nil, infraerrors.BadRequest("INVALID_GROUP_RATES", "group_id must be greater than 0")
+		}
+		if err := validateAffiliateDistributionRateMultiplier(rate.RateMultiplier); err != nil {
+			return nil, err
+		}
+		result = append(result, AgentGroupRateInput{
+			GroupID:        rate.GroupID,
+			RateMultiplier: rate.RateMultiplier,
+		})
+	}
+	return result, nil
+}
+
+func validateAffiliateDistributionRateMultiplier(multiplier float64) error {
+	if math.IsNaN(multiplier) || math.IsInf(multiplier, 0) || multiplier <= 0 || multiplier > affiliateDistributionRateMultiplierMax {
+		return infraerrors.BadRequest("INVALID_GROUP_RATES", "rate_multiplier must be a finite number greater than 0 and at most 100")
+	}
+	return nil
+}
+
+func (s *AffiliateService) AdminUpdateUserUpstream(ctx context.Context, operatorUserID, userID int64, upstreamUserID *int64) (*AgentUserUpstream, error) {
+	if s == nil || s.repo == nil {
+		return nil, ErrAffiliateDistributionUnavailable
+	}
+	repo, ok := s.repo.(affiliateDistributionUpstreamRepository)
+	if !ok {
+		return nil, ErrAffiliateDistributionUnavailable
+	}
+	return repo.AdminUpdateUserUpstream(ctx, operatorUserID, userID, upstreamUserID)
+}
+
+func normalizeAgentGroupRateInputs(rates []AgentGroupRateInput) []AgentGroupRateInput {
+	if len(rates) == 0 {
+		return []AgentGroupRateInput{}
+	}
+	result := make([]AgentGroupRateInput, 0, len(rates))
+	for _, rate := range rates {
+		if rate.GroupID <= 0 {
 			continue
 		}
-		result = append(result, AgentModelRateInput{
-			Model:      model,
-			Multiplier: rate.Multiplier,
+		result = append(result, AgentGroupRateInput{
+			GroupID:        rate.GroupID,
+			RateMultiplier: rate.RateMultiplier,
 		})
 	}
 	return result
+}
+
+func normalizeAgentGroupRates(rates []AgentGroupRate) []AgentGroupRate {
+	if len(rates) == 0 {
+		return []AgentGroupRate{}
+	}
+	return append([]AgentGroupRate(nil), rates...)
+}
+
+func normalizeAgentDirectMembers(members []AgentDirectMember) []AgentDirectMember {
+	if len(members) == 0 {
+		return []AgentDirectMember{}
+	}
+
+	result := append([]AgentDirectMember(nil), members...)
+	for index := range result {
+		result[index].CurrentGroupRates = normalizeAgentGroupRates(result[index].CurrentGroupRates)
+	}
+	return result
+}
+
+func normalizeAgentDistributionOverview(overview *AgentDistributionOverview, directChildren []AgentDirectMember) *AgentDistributionOverview {
+	if overview == nil {
+		return nil
+	}
+
+	result := *overview
+	result.InviteGroupRates = normalizeAgentGroupRates(result.InviteGroupRates)
+	result.CurrentGroupRates = normalizeAgentGroupRates(result.CurrentGroupRates)
+	result.MyGroupRates = normalizeAgentGroupRates(result.MyGroupRates)
+	result.DirectChildren = normalizeAgentDirectMembers(directChildren)
+	result.DirectChildrenCount = len(result.DirectChildren)
+	if result.DirectMemberCount == 0 {
+		result.DirectMemberCount = result.DirectChildrenCount
+	}
+	return &result
 }

@@ -1,11 +1,31 @@
-﻿/**
+/**
  * Admin affiliate distribution API endpoints.
- * Covers agent hierarchy management, daily revenue rankings,
- * rebate balance rankings and monthly archives.
+ * Covers agent hierarchy management, pricing, permissions and rankings.
  */
 
 import { apiClient } from '../client'
 import type { PaginatedResponse } from '@/types'
+import type {
+  AffiliateDefaultPricingResponse,
+  AffiliateGroupRate,
+  AffiliateGroupRateInput,
+  AffiliatePricingResponse,
+  AffiliateUserUpstreamRequest,
+  AffiliateUserUpstreamResponse,
+} from '@/components/affiliate/types'
+
+export type {
+  AffiliateDefaultPricingResponse as DefaultDistributionPricingResponse,
+  AffiliateGroupRate,
+  AffiliateGroupRateInput,
+  AffiliatePricingResponse,
+  AffiliateUserUpstreamRequest as UpdateUserUpstreamRequest,
+  AffiliateUserUpstreamResponse as UserUpstreamResponse,
+} from '@/components/affiliate/types'
+
+type DefaultDistributionPricingResponse = AffiliateDefaultPricingResponse
+type UpdateUserUpstreamRequest = AffiliateUserUpstreamRequest
+type UserUpstreamResponse = AffiliateUserUpstreamResponse
 
 export interface AffiliateAdminEntry {
   user_id: number
@@ -18,7 +38,6 @@ export interface AffiliateAdminEntry {
   inviter_username?: string | null
   aff_count: number
   today_revenue_usd?: number
-  today_rebate_amount?: number
   current_rebate_balance?: number
   rank?: number
 }
@@ -40,15 +59,14 @@ export interface AffiliateDistributionTreeNode {
   today_business_usd?: number | null
   today_revenue_rmb?: number | null
   today_business_rmb?: number | null
-  today_rebate_amount?: number | null
   today_rebate_rmb?: number | null
   direct_children_count?: number | null
   direct_member_count?: number | null
   direct_user_count?: number | null
   direct_agent_count?: number | null
   direct_count?: number | null
-  invite_model_rates?: AffiliateModelRate[]
-  current_model_rates?: AffiliateModelRate[]
+  invite_group_rates?: AffiliateGroupRate[]
+  current_group_rates?: AffiliateGroupRate[]
 }
 
 export interface ListAffiliateUsersParams {
@@ -70,18 +88,9 @@ export interface ListAffiliateRecordsParams {
   timezone?: string
 }
 
-export interface AffiliateModelRate {
-  model?: string
-  model_name: string
-  multiplier: number
-  parent_multiplier?: number | null
-  source?: 'invite_code' | 'user_override' | 'default' | string
-  updated_at?: string | null
-}
-
 export interface AffiliateInviteCodeRateConfig {
   invite_code: string
-  model_rates: AffiliateModelRate[]
+  group_rates: AffiliateGroupRate[]
   created_at?: string | null
   updated_at?: string | null
 }
@@ -93,9 +102,8 @@ export interface AffiliateChildAgent {
   inviter_id?: number | null
   role?: 'agent' | 'user' | string
   today_revenue_usd?: number
-  today_rebate_amount?: number
   current_rebate_balance?: number
-  model_rates?: AffiliateModelRate[]
+  group_rates?: AffiliateGroupRate[]
   created_at?: string | null
   updated_at?: string | null
 }
@@ -155,7 +163,6 @@ export interface AffiliateUserOverview {
   direct_children?: AffiliateChildAgent[]
   invited_count: number
   today_revenue_usd?: number
-  today_rebate_amount?: number
   current_rebate_balance?: number
   monthly_rebate_amount?: number
 }
@@ -163,14 +170,8 @@ export interface AffiliateUserOverview {
 export interface UpdateAffiliateUserRequest {
   aff_code?: string
   inviter_id?: number | null
-  invite_code_rates?: Array<{
-    model_name: string
-    multiplier: number
-  }>
-  model_rates?: Array<{
-    model_name: string
-    multiplier: number
-  }>
+  invite_code_rates?: AffiliateGroupRateInput[]
+  group_rates?: AffiliateGroupRateInput[]
 }
 
 export interface SetAffiliateRebateBalanceRequest {
@@ -220,42 +221,120 @@ function normalizePermissionsResponse(
   }
 }
 
-async function getWithFallback<T>(paths: string[]): Promise<T> {
-  let lastError: unknown
-  for (const path of paths) {
-    try {
-      const { data } = await apiClient.get<T>(path)
-      return data
-    } catch (error: any) {
-      lastError = error
-      if (!isRouteFallback404(error)) {
-        throw error
-      }
-    }
-  }
-  throw lastError
+function normalizeGroupRates(data: unknown): AffiliateGroupRate[] {
+  const rawRates = Array.isArray(data)
+    ? data
+    : Array.isArray((data as any)?.group_rates)
+      ? (data as any).group_rates
+      : Array.isArray((data as any)?.current_group_rates)
+        ? (data as any).current_group_rates
+        : Array.isArray((data as any)?.invite_group_rates)
+          ? (data as any).invite_group_rates
+          : Array.isArray((data as any)?.default_group_rates)
+            ? (data as any).default_group_rates
+            : []
+
+  return rawRates
+    .map((raw: any) => {
+      const groupID = Number(raw?.group_id)
+      const rateMultiplier = Number(raw?.rate_multiplier ?? NaN)
+      if (!Number.isInteger(groupID) || groupID <= 0 || !Number.isFinite(rateMultiplier)) return null
+      return {
+        group_id: groupID,
+        group_name: typeof raw?.group_name === 'string' ? raw.group_name : undefined,
+        group_platform: typeof raw?.group_platform === 'string' ? raw.group_platform : undefined,
+        group_rate_multiplier: raw?.group_rate_multiplier != null && Number.isFinite(Number(raw.group_rate_multiplier))
+          ? Number(raw.group_rate_multiplier)
+          : undefined,
+        rate_multiplier: rateMultiplier,
+        source_type: typeof raw?.source_type === 'string' ? raw.source_type : undefined,
+        source_aff_code: typeof raw?.source_aff_code === 'string' ? raw.source_aff_code : undefined,
+        upstream_user_id: raw?.upstream_user_id != null && Number.isInteger(Number(raw.upstream_user_id)) && Number(raw.upstream_user_id) > 0
+          ? Number(raw.upstream_user_id)
+          : null,
+        updated_at: typeof raw?.updated_at === 'string' ? raw.updated_at : null,
+      } satisfies AffiliateGroupRate
+    })
+    .filter((item: AffiliateGroupRate | null): item is AffiliateGroupRate => item !== null)
 }
 
-async function putWithFallback<T>(paths: string[], payload: object): Promise<T> {
-  let lastError: unknown
-  for (const path of paths) {
-    try {
-      const { data } = await apiClient.put<T>(path, payload)
-      return data
-    } catch (error: any) {
-      lastError = error
-      if (!isRouteFallback404(error)) {
-        throw error
-      }
-    }
+function normalizePricingResponse(data: unknown, fallbackUserId?: number): AffiliatePricingResponse {
+  return {
+    user_id: Number.isFinite(Number((data as any)?.user_id)) ? Number((data as any).user_id) : fallbackUserId,
+    group_rates: normalizeGroupRates(data),
+    updated_at: typeof (data as any)?.updated_at === 'string' ? (data as any).updated_at : null,
   }
-  throw lastError
 }
 
-function isRouteFallback404(error: any): boolean {
-  if (error?.status !== 404) return false
-  const reason = String(error?.reason || error?.code || '')
-  return reason === '' || reason === 'NOT_FOUND' || reason === 'ROUTE_NOT_FOUND'
+function normalizeDefaultPricingResponse(data: unknown): DefaultDistributionPricingResponse {
+  return {
+    group_rates: normalizeGroupRates(data),
+    updated_at: typeof (data as any)?.updated_at === 'string' ? (data as any).updated_at : null,
+  }
+}
+
+function normalizeUpstreamResponse(
+  data: unknown,
+  userId: number,
+  payload: UpdateUserUpstreamRequest,
+): UserUpstreamResponse {
+  const fallbackUpstreamUserId = payload.upstream_user_id ?? payload.inviter_id ?? null
+  const upstreamUserID = Number.isFinite(Number((data as any)?.upstream_user_id))
+    ? Number((data as any).upstream_user_id)
+    : fallbackUpstreamUserId
+  const inviterID = Number.isFinite(Number((data as any)?.inviter_id))
+    ? Number((data as any).inviter_id)
+    : upstreamUserID
+
+  return {
+    user_id: Number.isFinite(Number((data as any)?.user_id)) ? Number((data as any).user_id) : userId,
+    inviter_id: inviterID,
+    upstream_user_id: upstreamUserID,
+    updated_at: typeof (data as any)?.updated_at === 'string' ? (data as any).updated_at : null,
+  }
+}
+
+function createMissingGroupRatesError(path: string): Error {
+  return Object.assign(new Error(`Expected non-empty group_rates from ${path}`), {
+    code: 'INVALID_GROUP_RATES_RESPONSE',
+  })
+}
+
+async function ensurePricingUpdateResult(
+  path: string,
+  data: unknown,
+  fallback: () => Promise<AffiliatePricingResponse>,
+  fallbackUserId?: number,
+): Promise<AffiliatePricingResponse> {
+  const normalized = normalizePricingResponse(data, fallbackUserId)
+  if (normalized.group_rates.length > 0) {
+    return normalized
+  }
+
+  const verified = await fallback()
+  if (verified.group_rates.length > 0) {
+    return verified
+  }
+
+  throw createMissingGroupRatesError(path)
+}
+
+async function ensureDefaultPricingUpdateResult(
+  path: string,
+  data: unknown,
+  fallback: () => Promise<DefaultDistributionPricingResponse>,
+): Promise<DefaultDistributionPricingResponse> {
+  const normalized = normalizeDefaultPricingResponse(data)
+  if (normalized.group_rates.length > 0) {
+    return normalized
+  }
+
+  const verified = await fallback()
+  if (verified.group_rates.length > 0) {
+    return verified
+  }
+
+  throw createMissingGroupRatesError(path)
 }
 
 export async function listUsers(
@@ -395,37 +474,82 @@ export async function getDistributionTree(params: { search?: string; root_user_i
   return data
 }
 
+export async function getDefaultDistributionPricing(): Promise<DefaultDistributionPricingResponse> {
+  const { data } = await apiClient.get<unknown>('/admin/affiliates/default-pricing')
+  return normalizeDefaultPricingResponse(data)
+}
+
+export async function updateDefaultDistributionPricing(
+  payload: { group_rates: AffiliateGroupRateInput[] },
+): Promise<DefaultDistributionPricingResponse> {
+  const groupRates = payload.group_rates.map((rate) => ({
+    group_id: rate.group_id,
+    rate_multiplier: rate.rate_multiplier,
+  }))
+  const { data } = await apiClient.put<unknown>('/admin/affiliates/default-pricing', { group_rates: groupRates })
+  return ensureDefaultPricingUpdateResult('/admin/affiliates/default-pricing', data, () => getDefaultDistributionPricing())
+}
+
 export async function getUserDistributionPricing(
   userId: number,
-): Promise<{ user_id: number; model_rates: AffiliateModelRate[] }> {
-  const { data } = await apiClient.get<{ user_id: number; model_rates: AffiliateModelRate[] }>(
-    `/admin/affiliates/users/${userId}/pricing`,
-  )
-  return data
+): Promise<AffiliatePricingResponse> {
+  const { data } = await apiClient.get<unknown>(`/admin/affiliates/users/${userId}/pricing`)
+  return normalizePricingResponse(data, userId)
 }
 
 export async function updateUserDistributionPricing(
   userId: number,
-  payload: { model_rates: Array<{ model_name?: string; model?: string; multiplier: number }> },
-): Promise<{ user_id: number; model_rates: AffiliateModelRate[] }> {
-  const modelRates = payload.model_rates.map((rate) => ({
-    model: rate.model || rate.model_name || '',
-    multiplier: rate.multiplier,
+  payload: { group_rates: AffiliateGroupRateInput[] },
+): Promise<AffiliatePricingResponse> {
+  const groupRates = payload.group_rates.map((rate) => ({
+    group_id: rate.group_id,
+    rate_multiplier: rate.rate_multiplier,
   }))
-  const { data } = await apiClient.put<{ user_id: number; model_rates: AffiliateModelRate[] }>(
+  const { data } = await apiClient.put<unknown>(`/admin/affiliates/users/${userId}/pricing`, { group_rates: groupRates })
+  return ensurePricingUpdateResult(
     `/admin/affiliates/users/${userId}/pricing`,
-    { model_rates: modelRates },
+    data,
+    () => getUserDistributionPricing(userId),
+    userId,
   )
-  return data
+}
+
+export async function getUserInvitePricing(
+  userId: number,
+): Promise<AffiliatePricingResponse> {
+  const { data } = await apiClient.get<unknown>(`/admin/affiliates/users/${userId}/invite-pricing`)
+  return normalizePricingResponse(data, userId)
+}
+
+export async function updateUserInvitePricing(
+  userId: number,
+  payload: { group_rates: AffiliateGroupRateInput[] },
+): Promise<AffiliatePricingResponse> {
+  const groupRates = payload.group_rates.map((rate) => ({
+    group_id: rate.group_id,
+    rate_multiplier: rate.rate_multiplier,
+  }))
+  const { data } = await apiClient.put<unknown>(`/admin/affiliates/users/${userId}/invite-pricing`, { group_rates: groupRates })
+  return ensurePricingUpdateResult(
+    `/admin/affiliates/users/${userId}/invite-pricing`,
+    data,
+    () => getUserInvitePricing(userId),
+    userId,
+  )
+}
+
+export async function updateUserUpstream(
+  userId: number,
+  payload: UpdateUserUpstreamRequest,
+): Promise<UserUpstreamResponse> {
+  const { data } = await apiClient.put<unknown>(`/admin/affiliates/users/${userId}/upstream`, payload)
+  return normalizeUpstreamResponse(data, userId, payload)
 }
 
 export async function getUserDistributionPermissions(
   userId: number,
 ): Promise<AffiliateAgentPermissions> {
-  const data = await getWithFallback<AffiliateAgentPermissions | { permissions?: AffiliateAgentPermissions; user_id?: number }>([
-    `/admin/affiliates/users/${userId}/permissions`,
-    `/admin/affiliates/users/${userId}/agent-permissions`,
-  ])
+  const { data } = await apiClient.get<AffiliateAgentPermissions | { permissions?: AffiliateAgentPermissions; user_id?: number }>(`/admin/affiliates/users/${userId}/permissions`)
   return normalizePermissionsResponse(data, userId)
 }
 
@@ -433,13 +557,7 @@ export async function updateUserDistributionPermissions(
   userId: number,
   payload: UpdateAffiliateAgentPermissionsRequest,
 ): Promise<AffiliateAgentPermissions> {
-  const data = await putWithFallback<AffiliateAgentPermissions | { permissions?: AffiliateAgentPermissions; user_id?: number }>(
-    [
-      `/admin/affiliates/users/${userId}/permissions`,
-      `/admin/affiliates/users/${userId}/agent-permissions`,
-    ],
-    payload,
-  )
+  const { data } = await apiClient.put<AffiliateAgentPermissions | { permissions?: AffiliateAgentPermissions; user_id?: number }>(`/admin/affiliates/users/${userId}/permissions`, payload)
   return normalizePermissionsResponse(data, userId)
 }
 
@@ -457,8 +575,13 @@ export const affiliatesAPI = {
   getUserOverview,
   setUserRebateBalance,
   getDistributionTree,
+  getDefaultDistributionPricing,
+  updateDefaultDistributionPricing,
   getUserDistributionPricing,
   updateUserDistributionPricing,
+  getUserInvitePricing,
+  updateUserInvitePricing,
+  updateUserUpstream,
   getUserDistributionPermissions,
   updateUserDistributionPermissions,
 }

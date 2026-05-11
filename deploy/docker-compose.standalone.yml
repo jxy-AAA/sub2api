@@ -12,7 +12,7 @@
 
 services:
   sub2api:
-    image: weishaw/sub2api:latest
+    image: ${SUB2API_IMAGE_REF:?SUB2API_IMAGE_REF is required}
     container_name: sub2api
     restart: unless-stopped
     ulimits:
@@ -20,7 +20,7 @@ services:
         soft: 100000
         hard: 100000
     ports:
-      - "${BIND_HOST:-0.0.0.0}:${SERVER_PORT:-8080}:8080"
+      - "${BIND_HOST:-127.0.0.1}:${SERVER_PORT:-8080}:8080"
     volumes:
       - sub2api_data:/app/data
     extra_hosts:
@@ -58,7 +58,7 @@ services:
       # =======================================================================
       - REDIS_HOST=${REDIS_HOST:?REDIS_HOST is required}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       - REDIS_DB=${REDIS_DB:-0}
       - REDIS_POOL_SIZE=${REDIS_POOL_SIZE:-1024}
       - REDIS_MIN_IDLE_CONNS=${REDIS_MIN_IDLE_CONNS:-10}
@@ -68,7 +68,7 @@ services:
       # Admin Account (auto-created on first run)
       # =======================================================================
       - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@sub2api.local}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
 
       # =======================================================================
       # JWT Configuration
@@ -114,3 +114,4 @@ services:
 volumes:
   sub2api_data:
     driver: local
+    name: ${SUB2API_DATA_VOLUME_NAME:-sub2api-data}

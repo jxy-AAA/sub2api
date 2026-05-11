@@ -1,12 +1,60 @@
-export interface AffiliateModelRate {
-  model: string
-  multiplier: number
+export interface AffiliateGroupRate {
+  group_id: number
+  group_name?: string
+  group_platform?: string
+  group_rate_multiplier?: number
+  rate_multiplier: number
+  source_type?: string
+  source_aff_code?: string
+  upstream_user_id?: number | null
+  updated_at?: string | null
 }
 
-export interface AffiliateRawModelRate {
-  model?: string
-  model_name?: string
-  multiplier?: number | null
+export interface AffiliateGroupRateInput {
+  group_id: number
+  rate_multiplier: number
+}
+
+export interface AffiliatePricingResponse {
+  user_id?: number
+  group_rates: AffiliateGroupRate[]
+  updated_at?: string | null
+}
+
+export interface AffiliateDefaultPricingResponse {
+  group_rates: AffiliateGroupRate[]
+  updated_at?: string | null
+}
+
+export interface AffiliateUserUpstreamRequest {
+  inviter_id?: number | null
+  upstream_user_id?: number | null
+}
+
+export interface AffiliateUserUpstreamResponse {
+  user_id: number
+  inviter_id?: number | null
+  upstream_user_id?: number | null
+  updated_at?: string | null
+}
+
+export interface AffiliateRawGroupRate {
+  group_id?: number | null
+  group_name?: string | null
+  group_platform?: string | null
+  group_rate_multiplier?: number | null
+  rate_multiplier?: number | null
+  source_type?: string | null
+  source_aff_code?: string | null
+  upstream_user_id?: number | null
+  updated_at?: string | null
+}
+
+export interface AffiliateGroupOption {
+  id: number
+  name: string
+  platform?: string
+  rate_multiplier?: number
 }
 
 export interface AffiliateDirectChild {
@@ -18,7 +66,7 @@ export interface AffiliateDirectChild {
   today_revenue_usd: number
   today_rebate_rmb: number
   current_rebate_balance_rmb: number
-  model_rates: AffiliateModelRate[]
+  group_rates: AffiliateGroupRate[]
 }
 
 export interface AffiliateDirectChildResponse {
@@ -33,16 +81,16 @@ export interface AffiliateDirectChildResponse {
   today_business_usd?: number | null
   today_rebate_rmb?: number | null
   current_rebate_balance_rmb?: number | null
-  model_rates?: AffiliateRawModelRate[] | null
-  current_model_rates?: AffiliateRawModelRate[] | null
+  group_rates?: AffiliateRawGroupRate[] | null
+  current_group_rates?: AffiliateRawGroupRate[] | null
 }
 
 export interface AffiliateDistributionDetail {
   user_id: number
   aff_code: string
   inviter_id?: number | null
-  invite_code_model_rates: AffiliateModelRate[]
-  my_model_rates: AffiliateModelRate[]
+  invite_group_rates: AffiliateGroupRate[]
+  my_group_rates: AffiliateGroupRate[]
   today_revenue_usd: number
   today_rebate_rmb: number
   current_rebate_balance_rmb: number
@@ -55,9 +103,10 @@ export interface AffiliateDistributionDetailResponse {
   aff_code?: string | null
   invite_code?: string | null
   inviter_id?: number | null
-  invite_code_model_rates?: AffiliateRawModelRate[] | null
-  invite_model_rates?: AffiliateRawModelRate[] | null
-  my_model_rates?: AffiliateRawModelRate[] | null
+  invite_group_rates?: AffiliateRawGroupRate[] | null
+  my_group_rates?: AffiliateRawGroupRate[] | null
+  current_group_rates?: AffiliateRawGroupRate[] | null
+  group_rates?: AffiliateRawGroupRate[] | null
   today_revenue_usd?: number | null
   today_business_usd?: number | null
   today_rebate_rmb?: number | null

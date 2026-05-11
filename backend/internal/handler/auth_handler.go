@@ -54,7 +54,6 @@ type RegisterRequest struct {
 	Password       string `json:"password" binding:"required,min=6"`
 	VerifyCode     string `json:"verify_code"`
 	TurnstileToken string `json:"turnstile_token"`
-	PromoCode      string `json:"promo_code"`      // 注册优惠码
 	InvitationCode string `json:"invitation_code"` // 邀请码
 	AffCode        string `json:"aff_code"`        // 邀请返利码
 }
@@ -223,7 +222,6 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Turnstile 验证（邮箱验证码注册场景避免重复校验一次性 token）
 	if err := h.authService.VerifyTurnstileForRegister(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c), req.VerifyCode); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -234,7 +232,6 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		req.Email,
 		req.Password,
 		req.VerifyCode,
-		req.PromoCode,
 		req.InvitationCode,
 		req.AffCode,
 	)
@@ -507,72 +504,52 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 	})
 }
 
-// ValidatePromoCodeRequest 验证优惠码请求
-type ValidatePromoCodeRequest struct {
+// ValidateAffiliateCodeRequest validates an affiliate code.
+type ValidateAffiliateCodeRequest struct {
 	Code string `json:"code" binding:"required"`
 }
 
-// ValidatePromoCodeResponse 验证优惠码响应
-type ValidatePromoCodeResponse struct {
-	Valid       bool    `json:"valid"`
-	BonusAmount float64 `json:"bonus_amount,omitempty"`
-	ErrorCode   string  `json:"error_code,omitempty"`
-	Message     string  `json:"message,omitempty"`
+// ValidateAffiliateCodeResponse is returned by affiliate code validation.
+type ValidateAffiliateCodeResponse struct {
+	Valid     bool   `json:"valid"`
+	AffCode   string `json:"aff_code,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
-// ValidatePromoCode 验证优惠码（公开接口，注册前调用）
-// POST /api/v1/auth/validate-promo-code
-func (h *AuthHandler) ValidatePromoCode(c *gin.Context) {
-	// 检查优惠码功能是否启用
-	if h.settingSvc != nil && !h.settingSvc.IsPromoCodeEnabled(c.Request.Context()) {
-		response.Success(c, ValidatePromoCodeResponse{
+// ValidateAffiliateCode validates an affiliate code before registration.
+// POST /api/v1/auth/validate-affiliate-code
+func (h *AuthHandler) ValidateAffiliateCode(c *gin.Context) {
+	if h.settingSvc == nil || !h.settingSvc.IsAffiliateEnabled(c.Request.Context()) {
+		response.Success(c, ValidateAffiliateCodeResponse{
 			Valid:     false,
-			ErrorCode: "PROMO_CODE_DISABLED",
+			ErrorCode: "AFFILIATE_DISABLED",
 		})
 		return
 	}
 
-	var req ValidatePromoCodeRequest
+	var req ValidateAffiliateCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
-	promoCode, err := h.promoService.ValidatePromoCode(c.Request.Context(), req.Code)
+	summary, err := h.authService.ValidateAffiliateCode(c.Request.Context(), req.Code)
 	if err != nil {
-		// 根据错误类型返回对应的错误码
-		errorCode := "PROMO_CODE_INVALID"
-		switch err {
-		case service.ErrPromoCodeNotFound:
-			errorCode = "PROMO_CODE_NOT_FOUND"
-		case service.ErrPromoCodeExpired:
-			errorCode = "PROMO_CODE_EXPIRED"
-		case service.ErrPromoCodeDisabled:
-			errorCode = "PROMO_CODE_DISABLED"
-		case service.ErrPromoCodeMaxUsed:
-			errorCode = "PROMO_CODE_MAX_USED"
-		case service.ErrPromoCodeAlreadyUsed:
-			errorCode = "PROMO_CODE_ALREADY_USED"
+		if errors.Is(err, service.ErrAffiliateCodeInvalid) {
+			response.Success(c, ValidateAffiliateCodeResponse{
+				Valid:     false,
+				ErrorCode: "AFFILIATE_CODE_INVALID",
+			})
+			return
 		}
-
-		response.Success(c, ValidatePromoCodeResponse{
-			Valid:     false,
-			ErrorCode: errorCode,
-		})
+		response.ErrorFrom(c, err)
 		return
 	}
 
-	if promoCode == nil {
-		response.Success(c, ValidatePromoCodeResponse{
-			Valid:     false,
-			ErrorCode: "PROMO_CODE_INVALID",
-		})
-		return
-	}
-
-	response.Success(c, ValidatePromoCodeResponse{
-		Valid:       true,
-		BonusAmount: promoCode.BonusAmount,
+	response.Success(c, ValidateAffiliateCodeResponse{
+		Valid:   true,
+		AffCode: summary.AffCode,
 	})
 }
 
@@ -588,9 +565,9 @@ type ValidateInvitationCodeResponse struct {
 }
 
 // ValidateInvitationCode 验证邀请码（公开接口，注册前调用）
+// ValidateInvitationCode validates an invitation code before registration.
 // POST /api/v1/auth/validate-invitation-code
 func (h *AuthHandler) ValidateInvitationCode(c *gin.Context) {
-	// 检查邀请码功能是否启用
 	if h.settingSvc == nil || !h.settingSvc.IsInvitationCodeEnabled(c.Request.Context()) {
 		response.Success(c, ValidateInvitationCodeResponse{
 			Valid:     false,
@@ -605,7 +582,6 @@ func (h *AuthHandler) ValidateInvitationCode(c *gin.Context) {
 		return
 	}
 
-	// 验证邀请码
 	redeemCode, err := h.redeemService.GetByCode(c.Request.Context(), req.Code)
 	if err != nil {
 		response.Success(c, ValidateInvitationCodeResponse{
@@ -615,7 +591,6 @@ func (h *AuthHandler) ValidateInvitationCode(c *gin.Context) {
 		return
 	}
 
-	// 检查类型和状态
 	if redeemCode.Type != service.RedeemTypeInvitation {
 		response.Success(c, ValidateInvitationCodeResponse{
 			Valid:     false,
@@ -782,10 +757,9 @@ type LogoutResponse struct {
 }
 
 // Logout 用户登出
-// POST /api/v1/auth/logout
 func (h *AuthHandler) Logout(c *gin.Context) {
 	var req LogoutRequest
-	// 允许空请求体（向后兼容）
+	// Allow empty request body for backward compatibility.
 	_ = c.ShouldBindJSON(&req)
 	req.RefreshToken = strings.TrimSpace(req.RefreshToken)
 	if req.RefreshToken == "" {
@@ -794,11 +768,9 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		}
 	}
 
-	// 如果提供了Refresh Token，撤销它
 	if req.RefreshToken != "" {
 		if err := h.authService.RevokeRefreshToken(c.Request.Context(), req.RefreshToken); err != nil {
 			slog.Debug("failed to revoke refresh token", "error", err)
-			// 不影响登出流程
 		}
 	}
 	h.clearRefreshTokenCookie(c)

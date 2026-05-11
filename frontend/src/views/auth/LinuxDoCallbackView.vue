@@ -245,6 +245,7 @@ import PendingOAuthCreateAccountForm, {
 import { apiClient } from '@/api/client'
 import { useAuthStore, useAppStore } from '@/stores'
 import {
+  clearOAuthCallbackFragment,
   completeLinuxDoOAuthRegistration,
   exchangePendingOAuthCompletion,
   getOAuthCompletionKind,
@@ -742,6 +743,7 @@ async function handleSubmitTotpChallenge() {
 
 onMounted(async () => {
   const params = parseFragmentParams()
+  clearOAuthCallbackFragment()
   const legacyLogin = readLegacyFragmentLogin(params)
   const legacyPendingToken = params.get('pending_oauth_token')?.trim() || ''
   const error = params.get('error')

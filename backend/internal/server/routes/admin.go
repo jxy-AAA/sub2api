@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// RegisterAdminRoutes 注册管理员路由
 func RegisterAdminRoutes(
 	v1 *gin.RouterGroup,
 	h *handler.Handlers,
@@ -17,85 +16,32 @@ func RegisterAdminRoutes(
 	admin := v1.Group("/admin")
 	admin.Use(gin.HandlerFunc(adminAuth))
 	{
-		// 仪表盘
 		registerDashboardRoutes(admin, h)
-
-		// 用户管理
 		registerUserManagementRoutes(admin, h)
-
-		// 分组管理
 		registerGroupRoutes(admin, h)
-
-		// 账号管理
 		registerAccountRoutes(admin, h)
-
-		// 公告管理
 		registerAnnouncementRoutes(admin, h)
-
-		// OpenAI OAuth
 		registerOpenAIOAuthRoutes(admin, h)
-
-		// Gemini OAuth
 		registerGeminiOAuthRoutes(admin, h)
-
-		// Antigravity OAuth
 		registerAntigravityOAuthRoutes(admin, h)
-
-		// 代理管理
 		registerProxyRoutes(admin, h)
-
-		// 卡密管理
 		registerRedeemCodeRoutes(admin, h)
-
-		// 优惠码管理
 		registerPromoCodeRoutes(admin, h)
-
-		// 系统设置
 		registerSettingsRoutes(admin, h)
-
-		// 数据管理
 		registerDataManagementRoutes(admin, h)
-
-		// 数据库备份恢复
 		registerBackupRoutes(admin, h)
-
-		// 运维监控（Ops）
 		registerOpsRoutes(admin, h)
-
-		// 系统管理
 		registerSystemRoutes(admin, h)
-
-		// 订阅管理
 		registerSubscriptionRoutes(admin, h)
-
-		// 使用记录管理
 		registerUsageRoutes(admin, h)
-
-		// 用户属性管理
 		registerUserAttributeRoutes(admin, h)
-
-		// 错误透传规则管理
 		registerErrorPassthroughRoutes(admin, h)
-
-		// TLS 指纹模板管理
 		registerTLSFingerprintProfileRoutes(admin, h)
-
-		// API Key 管理
 		registerAdminAPIKeyRoutes(admin, h)
-
-		// 定时测试计划
 		registerScheduledTestRoutes(admin, h)
-
-		// 渠道管理
 		registerChannelRoutes(admin, h)
-
-		// 渠道监控
 		registerChannelMonitorRoutes(admin, h)
-
-		// 风控中心
 		registerContentModerationRoutes(admin, h)
-
-		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
 	}
 }
@@ -312,7 +258,6 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.POST("/batch-clear-error", h.Admin.Account.BatchClearError)
 		accounts.POST("/batch-refresh", h.Admin.Account.BatchRefresh)
 
-		// Antigravity 默认模型映射
 		accounts.GET("/antigravity/default-model-mapping", h.Admin.Account.GetAntigravityDefaultModelMapping)
 
 		// Claude OAuth routes
@@ -420,26 +365,19 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.PUT("", h.Admin.Setting.UpdateSettings)
 		adminSettings.POST("/test-smtp", h.Admin.Setting.TestSMTPConnection)
 		adminSettings.POST("/send-test-email", h.Admin.Setting.SendTestEmail)
-		// Admin API Key 管理
 		adminSettings.GET("/admin-api-key", h.Admin.Setting.GetAdminAPIKey)
 		adminSettings.POST("/admin-api-key/regenerate", h.Admin.Setting.RegenerateAdminAPIKey)
 		adminSettings.DELETE("/admin-api-key", h.Admin.Setting.DeleteAdminAPIKey)
-		// 529过载冷却配置
 		adminSettings.GET("/overload-cooldown", h.Admin.Setting.GetOverloadCooldownSettings)
 		adminSettings.PUT("/overload-cooldown", h.Admin.Setting.UpdateOverloadCooldownSettings)
-		// 429默认回避配置
 		adminSettings.GET("/rate-limit-429-cooldown", h.Admin.Setting.GetRateLimit429CooldownSettings)
 		adminSettings.PUT("/rate-limit-429-cooldown", h.Admin.Setting.UpdateRateLimit429CooldownSettings)
-		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)
-		// 请求整流器配置
 		adminSettings.GET("/rectifier", h.Admin.Setting.GetRectifierSettings)
 		adminSettings.PUT("/rectifier", h.Admin.Setting.UpdateRectifierSettings)
-		// Beta 策略配置
 		adminSettings.GET("/beta-policy", h.Admin.Setting.GetBetaPolicySettings)
 		adminSettings.PUT("/beta-policy", h.Admin.Setting.UpdateBetaPolicySettings)
-		// Web Search 模拟配置
 		adminSettings.GET("/web-search-emulation", h.Admin.Setting.GetWebSearchEmulationConfig)
 		adminSettings.PUT("/web-search-emulation", h.Admin.Setting.UpdateWebSearchEmulationConfig)
 		adminSettings.POST("/web-search-emulation/test", h.Admin.Setting.TestWebSearchEmulation)
@@ -473,23 +411,19 @@ func registerDataManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 func registerBackupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	backup := admin.Group("/backups")
 	{
-		// S3 存储配置
 		backup.GET("/s3-config", h.Admin.Backup.GetS3Config)
 		backup.PUT("/s3-config", h.Admin.Backup.UpdateS3Config)
 		backup.POST("/s3-config/test", h.Admin.Backup.TestS3Connection)
 
-		// 定时备份配置
 		backup.GET("/schedule", h.Admin.Backup.GetSchedule)
 		backup.PUT("/schedule", h.Admin.Backup.UpdateSchedule)
 
-		// 备份操作
 		backup.POST("", h.Admin.Backup.CreateBackup)
 		backup.GET("", h.Admin.Backup.ListBackups)
 		backup.GET("/:id", h.Admin.Backup.GetBackup)
 		backup.DELETE("/:id", h.Admin.Backup.DeleteBackup)
 		backup.GET("/:id/download-url", h.Admin.Backup.GetDownloadURL)
 
-		// 恢复操作
 		backup.POST("/:id/restore", h.Admin.Backup.RestoreBackup)
 	}
 }
@@ -518,10 +452,7 @@ func registerSubscriptionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		subscriptions.DELETE("/:id", h.Admin.Subscription.Revoke)
 	}
 
-	// 分组下的订阅列表
 	admin.GET("/groups/:id/subscriptions", h.Admin.Subscription.ListByGroup)
-
-	// 用户下的订阅列表
 	admin.GET("/users/:id/subscriptions", h.Admin.Subscription.ListByUser)
 }
 
@@ -620,10 +551,11 @@ func registerChannelMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-// registerAffiliateRoutes 注册邀请返利的管理端路由（专属用户配置）
 func registerAffiliateRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	affiliates := admin.Group("/affiliates")
 	{
+		affiliates.GET("/default-pricing", h.Admin.Affiliate.GetDefaultDistributionGroupRates)
+		affiliates.PUT("/default-pricing", h.Admin.Affiliate.UpdateDefaultDistributionGroupRates)
 		affiliates.GET("/daily-business", h.Admin.Affiliate.ListDailyBusinessRanking)
 		affiliates.GET("/daily-revenue", h.Admin.Affiliate.ListDailyBusinessRanking)
 		affiliates.GET("/daily-revenues", h.Admin.Affiliate.ListDailyBusinessRanking)
@@ -652,10 +584,11 @@ func registerAffiliateRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 			users.GET("/:user_id/overview", h.Admin.Affiliate.GetUserOverview)
 			users.GET("/:user_id/permissions", h.Admin.Affiliate.GetAgentDistributionPermissions)
 			users.PUT("/:user_id/permissions", h.Admin.Affiliate.UpdateAgentDistributionPermissions)
-			users.GET("/:user_id/agent-permissions", h.Admin.Affiliate.GetAgentDistributionPermissions)
-			users.PUT("/:user_id/agent-permissions", h.Admin.Affiliate.UpdateAgentDistributionPermissions)
-			users.GET("/:user_id/pricing", h.Admin.Affiliate.GetUserDistributionPricing)
-			users.PUT("/:user_id/pricing", h.Admin.Affiliate.UpdateUserDistributionPricing)
+			users.GET("/:user_id/pricing", h.Admin.Affiliate.GetUserDistributionGroupRates)
+			users.PUT("/:user_id/pricing", h.Admin.Affiliate.UpdateUserDistributionGroupRates)
+			users.GET("/:user_id/invite-pricing", h.Admin.Affiliate.GetUserInviteGroupRates)
+			users.PUT("/:user_id/invite-pricing", h.Admin.Affiliate.UpdateUserInviteGroupRates)
+			users.PUT("/:user_id/upstream", h.Admin.Affiliate.UpdateUserUpstream)
 			users.PUT("/:user_id", h.Admin.Affiliate.UpdateUserSettings)
 			users.DELETE("/:user_id", h.Admin.Affiliate.ClearUserSettings)
 		}

@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import WechatPaymentCallbackView from '@/views/auth/WechatPaymentCallbackView.vue'
 
-const { replaceMock, routeState, locationState, showErrorMock } = vi.hoisted(() => ({
+const { replaceMock, routeState, locationState, showErrorMock, clearOAuthCallbackFragmentMock } = vi.hoisted(() => ({
   replaceMock: vi.fn(),
   routeState: {
     query: {} as Record<string, unknown>,
@@ -17,6 +17,7 @@ const { replaceMock, routeState, locationState, showErrorMock } = vi.hoisted(() 
     } as Location & { origin: string },
   },
   showErrorMock: vi.fn(),
+  clearOAuthCallbackFragmentMock: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -45,11 +46,17 @@ vi.mock('@/stores', () => ({
   }),
 }))
 
+vi.mock('@/api/auth', () => ({
+  clearOAuthCallbackFragment: (...args: any[]) => clearOAuthCallbackFragmentMock(...args),
+}))
+
 describe('WechatPaymentCallbackView', () => {
   beforeEach(() => {
     replaceMock.mockReset()
     showErrorMock.mockReset()
+    clearOAuthCallbackFragmentMock.mockReset()
     routeState.query = {}
+    localStorage.clear()
     locationState.current = {
       href: 'http://localhost/auth/wechat/payment/callback',
       hash: '',
@@ -69,6 +76,8 @@ describe('WechatPaymentCallbackView', () => {
     mount(WechatPaymentCallbackView)
     await flushPromises()
 
+    expect(clearOAuthCallbackFragmentMock).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem('pending_oauth_token')).toBeNull()
     expect(replaceMock).toHaveBeenCalledWith({
       path: '/purchase',
       query: {

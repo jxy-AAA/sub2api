@@ -1,6 +1,11 @@
 import { apiClient } from './client'
 import type { PaginatedResponse } from '@/types'
-import type { AffiliateDistributionTreeNode, AffiliateModelRate } from '@/api/admin/affiliates'
+import type { AffiliateDistributionTreeNode } from '@/api/admin/affiliates'
+import type {
+  AffiliateGroupRate,
+  AffiliateGroupRateInput,
+  AffiliatePricingResponse,
+} from '@/components/affiliate/types'
 
 export interface ManagedAffiliatePermissions {
   can_view_downline_daily_revenue: boolean
@@ -108,47 +113,56 @@ function normalizeQuery(params: ManagedAffiliateLeaderboardQuery = {}) {
   }
 }
 
-async function getWithFallback<T>(paths: string[], params?: Record<string, unknown>) {
-  let lastError: unknown
-  for (const path of paths) {
-    try {
-      const { data } = await apiClient.get<T>(path, { params })
-      return data
-    } catch (error: any) {
-      lastError = error
-      const status = error?.response?.status ?? error?.status
-      if (status !== 404) {
-        throw error
+function normalizeGroupRates(data: unknown): AffiliateGroupRate[] {
+  const payload = data as {
+    group_rates?: AffiliateGroupRate[]
+    current_group_rates?: AffiliateGroupRate[]
+    invite_group_rates?: AffiliateGroupRate[]
+  } | null
+
+  const rawRates = payload?.group_rates
+    ?? payload?.current_group_rates
+    ?? payload?.invite_group_rates
+    ?? []
+
+  return rawRates
+    .map((rate) => {
+      const groupId = Number(rate?.group_id)
+      const rateMultiplier = Number(rate?.rate_multiplier ?? Number.NaN)
+
+      if (!Number.isInteger(groupId) || groupId <= 0 || !Number.isFinite(rateMultiplier) || rateMultiplier <= 0) {
+        return null
       }
-    }
-  }
-  throw lastError
+
+      return {
+        ...rate,
+        group_id: groupId,
+        rate_multiplier: rateMultiplier,
+      } satisfies AffiliateGroupRate
+    })
+    .filter((rate): rate is AffiliateGroupRate => rate !== null)
 }
 
-async function putWithFallback<T>(paths: string[], payload: Record<string, unknown>) {
-  let lastError: unknown
-  for (const path of paths) {
-    try {
-      const { data } = await apiClient.put<T>(path, payload)
-      return data
-    } catch (error: any) {
-      lastError = error
-      const status = error?.response?.status ?? error?.status
-      if (status !== 404) {
-        throw error
-      }
-    }
+function normalizePricingResponse(
+  data: unknown,
+  userId: number,
+): AffiliatePricingResponse {
+  const payload = data as { user_id?: number } | null
+
+  return {
+    user_id: Number.isFinite(Number(payload?.user_id)) ? Number(payload?.user_id) : userId,
+    group_rates: normalizeGroupRates(data),
   }
-  throw lastError
+}
+
+function createMissingGroupRatesError(path: string): Error {
+  return Object.assign(new Error(`Expected non-empty group_rates from ${path}`), {
+    code: 'INVALID_GROUP_RATES_RESPONSE',
+  })
 }
 
 export async function getManagedAffiliatePermissions(): Promise<ManagedAffiliatePermissions> {
-  const data = await getWithFallback<Partial<ManagedAffiliatePermissions>>(
-    [
-      '/user/aff/managed/permissions',
-      '/user/aff/manage/permissions',
-    ],
-  )
+  const { data } = await apiClient.get<Partial<ManagedAffiliatePermissions>>('/user/aff/managed/permissions')
 
   return {
     can_view_downline_daily_revenue: Boolean(data.can_view_downline_daily_revenue),
@@ -160,68 +174,56 @@ export async function getManagedAffiliatePermissions(): Promise<ManagedAffiliate
 export async function listManagedDailyRevenueRankings(
   params: ManagedAffiliateLeaderboardQuery = {},
 ): Promise<ManagedAffiliateLeaderboardResponse<ManagedDailyRevenueRankingItem>> {
-  return getWithFallback<ManagedAffiliateLeaderboardResponse<ManagedDailyRevenueRankingItem>>(
-    [
-      '/user/aff/managed/daily-revenue',
-      '/user/aff/manage/daily-revenue',
-    ],
-    normalizeQuery(params),
-  )
+  const { data } = await apiClient.get<ManagedAffiliateLeaderboardResponse<ManagedDailyRevenueRankingItem>>('/user/aff/managed/daily-revenue', { params: normalizeQuery(params) })
+  return data
 }
 
 export async function listManagedRebateBalanceRankings(
   params: ManagedAffiliateLeaderboardQuery = {},
 ): Promise<ManagedAffiliateLeaderboardResponse<ManagedRebateBalanceRankingItem>> {
-  return getWithFallback<ManagedAffiliateLeaderboardResponse<ManagedRebateBalanceRankingItem>>(
-    [
-      '/user/aff/managed/rebate-balances',
-      '/user/aff/manage/rebate-balances',
-    ],
-    normalizeQuery(params),
-  )
+  const { data } = await apiClient.get<ManagedAffiliateLeaderboardResponse<ManagedRebateBalanceRankingItem>>('/user/aff/managed/rebate-balances', { params: normalizeQuery(params) })
+  return data
 }
 
 export async function getManagedDistributionTree(
   params: { search?: string } = {},
 ): Promise<AffiliateDistributionTreeNode[]> {
-  return getWithFallback<AffiliateDistributionTreeNode[]>(
-    [
-      '/user/aff/managed/tree',
-      '/user/aff/manage/tree',
-    ],
-    {
-      search: params.search || undefined,
-    },
-  )
+  const { data } = await apiClient.get<AffiliateDistributionTreeNode[]>('/user/aff/managed/tree', {
+    params: { search: params.search || undefined },
+  })
+  return data
 }
 
 export async function getManagedUserDistributionPricing(
   userId: number,
-): Promise<{ user_id: number; model_rates: AffiliateModelRate[] }> {
-  return getWithFallback<{ user_id: number; model_rates: AffiliateModelRate[] }>(
-    [
-      `/user/aff/managed/users/${userId}/pricing`,
-      `/user/aff/manage/users/${userId}/pricing`,
-    ],
-  )
+): Promise<AffiliatePricingResponse> {
+  const { data } = await apiClient.get<unknown>(`/user/aff/managed/users/${userId}/pricing`)
+
+  return normalizePricingResponse(data, userId)
 }
 
 export async function updateManagedUserDistributionPricing(
   userId: number,
-  payload: { model_rates: Array<{ model_name?: string; model?: string; multiplier: number }> },
-): Promise<{ user_id: number; model_rates: AffiliateModelRate[] }> {
-  const modelRates = payload.model_rates.map((rate) => ({
-    model: rate.model || rate.model_name || '',
-    multiplier: rate.multiplier,
+  payload: { group_rates: AffiliateGroupRateInput[] },
+): Promise<AffiliatePricingResponse> {
+  const groupRates = payload.group_rates.map((rate) => ({
+    group_id: rate.group_id,
+    rate_multiplier: rate.rate_multiplier,
   }))
 
-  return putWithFallback<{ user_id: number; model_rates: AffiliateModelRate[] }>(
-    [
-      `/user/aff/managed/users/${userId}/pricing`,
-      `/user/aff/manage/users/${userId}/pricing`,
-    ],
-    { model_rates: modelRates },
-  )
+  const { data } = await apiClient.put<unknown>(`/user/aff/managed/users/${userId}/pricing`, { group_rates: groupRates })
+
+  const normalized = normalizePricingResponse(data, userId)
+  if (normalized.group_rates.length > 0) {
+    return normalized
+  }
+
+  const verified = await getManagedUserDistributionPricing(userId)
+  if (verified.group_rates.length > 0) {
+    return verified
+  }
+
+  throw createMissingGroupRatesError(`/user/aff/managed/users/${userId}/pricing`)
 }
 
 const userAffiliateManagedAPI = {

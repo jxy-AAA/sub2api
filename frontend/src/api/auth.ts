@@ -469,22 +469,22 @@ export async function sendPendingOAuthVerifyCode(
 }
 
 /**
- * Validate promo code response
+ * Validate affiliate code response
  */
-export interface ValidatePromoCodeResponse {
+export interface ValidateAffiliateCodeResponse {
   valid: boolean
-  bonus_amount?: number
+  aff_code?: string
   error_code?: string
   message?: string
 }
 
 /**
- * Validate promo code (public endpoint, no auth required)
- * @param code - Promo code to validate
- * @returns Validation result with bonus amount if valid
+ * Validate affiliate code (public endpoint, no auth required)
+ * @param code - Affiliate code to validate
+ * @returns Validation result
  */
-export async function validatePromoCode(code: string): Promise<ValidatePromoCodeResponse> {
-  const { data } = await apiClient.post<ValidatePromoCodeResponse>('/auth/validate-promo-code', { code })
+export async function validateAffiliateCode(code: string): Promise<ValidateAffiliateCodeResponse> {
+  const { data } = await apiClient.post<ValidateAffiliateCodeResponse>('/auth/validate-affiliate-code', { code })
   return data
 }
 
@@ -649,6 +649,20 @@ export async function exchangePendingOAuthCompletion(
   return completePendingOAuthBindLogin(decision)
 }
 
+export function clearOAuthCallbackFragment(): void {
+  if (typeof window === 'undefined' || !window.location.hash) {
+    return
+  }
+
+  const pathname = typeof window.location.pathname === 'string' ? window.location.pathname : ''
+  const search = typeof window.location.search === 'string' ? window.location.search : ''
+  const sanitizedUrl = `${pathname}${search}`.trim()
+  if (!sanitizedUrl) {
+    return
+  }
+  window.history.replaceState(window.history.state, document.title, sanitizedUrl)
+}
+
 export const authAPI = {
   login,
   login2FA,
@@ -667,7 +681,7 @@ export const authAPI = {
   getPublicSettings,
   sendVerifyCode,
   sendPendingOAuthVerifyCode,
-  validatePromoCode,
+  validateAffiliateCode,
   validateInvitationCode,
   forgotPassword,
   resetPassword,

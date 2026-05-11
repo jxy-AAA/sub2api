@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -46,127 +45,6 @@ func NewPromoService(
 		entClient:            entClient,
 		authCacheInvalidator: authCacheInvalidator,
 	}
-}
-
-// ValidatePromoCode 验证优惠码（注册前调用）
-// 返回 nil, nil 表示空码（不报错）
-func (s *PromoService) ValidatePromoCode(ctx context.Context, code string) (*PromoCode, error) {
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return nil, nil // 空码不报错，直接返回
-	}
-
-	promoCode, err := s.promoRepo.GetByCode(ctx, code)
-	if err != nil {
-		// 保留原始错误类型，不要统一映射为 NotFound
-		return nil, err
-	}
-
-	if err := s.validatePromoCodeStatus(promoCode); err != nil {
-		return nil, err
-	}
-
-	return promoCode, nil
-}
-
-// validatePromoCodeStatus 验证优惠码状态
-func (s *PromoService) validatePromoCodeStatus(promoCode *PromoCode) error {
-	if !promoCode.CanUse() {
-		if promoCode.IsExpired() {
-			return ErrPromoCodeExpired
-		}
-		if promoCode.Status == PromoCodeStatusDisabled {
-			return ErrPromoCodeDisabled
-		}
-		if promoCode.MaxUses > 0 && promoCode.UsedCount >= promoCode.MaxUses {
-			return ErrPromoCodeMaxUsed
-		}
-		return ErrPromoCodeInvalid
-	}
-	return nil
-}
-
-// ApplyPromoCode 应用优惠码（注册成功后调用）
-// 使用事务和行锁确保并发安全
-func (s *PromoService) ApplyPromoCode(ctx context.Context, userID int64, code string) error {
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return nil
-	}
-
-	// 开启事务
-	tx, err := s.entClient.Tx(ctx)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	txCtx := dbent.NewTxContext(ctx, tx)
-
-	// 在事务中获取并锁定优惠码记录（FOR UPDATE）
-	promoCode, err := s.promoRepo.GetByCodeForUpdate(txCtx, code)
-	if err != nil {
-		return err
-	}
-
-	// 在事务中验证优惠码状态
-	if err := s.validatePromoCodeStatus(promoCode); err != nil {
-		return err
-	}
-
-	// 在事务中检查用户是否已使用过此优惠码
-	existing, err := s.promoRepo.GetUsageByPromoCodeAndUser(txCtx, promoCode.ID, userID)
-	if err != nil {
-		return fmt.Errorf("check existing usage: %w", err)
-	}
-	if existing != nil {
-		return ErrPromoCodeAlreadyUsed
-	}
-
-	// 增加用户余额
-	if err := s.userRepo.UpdateBalance(txCtx, userID, promoCode.BonusAmount); err != nil {
-		return fmt.Errorf("update user balance: %w", err)
-	}
-
-	// 创建使用记录
-	usage := &PromoCodeUsage{
-		PromoCodeID: promoCode.ID,
-		UserID:      userID,
-		BonusAmount: promoCode.BonusAmount,
-		UsedAt:      time.Now(),
-	}
-	if err := s.promoRepo.CreateUsage(txCtx, usage); err != nil {
-		return fmt.Errorf("create usage record: %w", err)
-	}
-
-	// 增加使用次数
-	if err := s.promoRepo.IncrementUsedCount(txCtx, promoCode.ID); err != nil {
-		return fmt.Errorf("increment used count: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	s.invalidatePromoCaches(ctx, userID, promoCode.BonusAmount)
-
-	// 失效余额缓存
-	if s.billingCacheService != nil {
-		go func() {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = s.billingCacheService.InvalidateUserBalance(cacheCtx, userID)
-		}()
-	}
-
-	return nil
-}
-
-func (s *PromoService) invalidatePromoCaches(ctx context.Context, userID int64, bonusAmount float64) {
-	if bonusAmount == 0 || s.authCacheInvalidator == nil {
-		return
-	}
-	s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 }
 
 // GenerateRandomCode 生成随机优惠码

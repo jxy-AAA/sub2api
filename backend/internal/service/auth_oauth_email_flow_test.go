@@ -15,6 +15,7 @@ import (
 
 type redeemCodeRepoStub struct {
 	codesByCode map[string]*RedeemCode
+	useErr      error
 	useCalls    []struct {
 		id     int64
 		userID int64
@@ -64,6 +65,9 @@ func (s *redeemCodeRepoStub) Delete(context.Context, int64) error {
 }
 
 func (s *redeemCodeRepoStub) Use(_ context.Context, id, userID int64) error {
+	if s.useErr != nil {
+		return s.useErr
+	}
 	for code, redeemCode := range s.codesByCode {
 		if redeemCode.ID != id {
 			continue

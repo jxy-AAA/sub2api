@@ -83,16 +83,53 @@ func (r *affiliateRepository) GetAffiliateByCode(ctx context.Context, code strin
 func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID int64) (bool, error) {
 	var bound bool
 	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
-		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
+		summary, err := ensureUserAffiliateWithClient(txCtx, txClient, userID)
+		if err != nil {
 			return err
 		}
 		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, inviterID); err != nil {
 			return err
 		}
+		rootAdminID, hasRootAdmin, err := queryFirstActiveAdminID(txCtx, txClient)
+		if err != nil {
+			return err
+		}
+		if summary.InviterID != nil {
+			if *summary.InviterID == inviterID {
+				if summary.InviterSource != affiliateInviterSourceDefaultRoot && summary.InviterSource != affiliateInviterSourceAffiliateCode {
+					bound = true
+					return nil
+				}
+				if _, err := txClient.ExecContext(txCtx, `
+UPDATE user_affiliates
+SET inviter_source = $2,
+    updated_at = NOW()
+WHERE user_id = $1`, userID, affiliateInviterSourceAffiliateCode); err != nil {
+					return fmt.Errorf("mark affiliate inviter source: %w", err)
+				}
+				bound = true
+				return nil
+			}
+			if !hasRootAdmin || *summary.InviterID != rootAdminID || summary.InviterSource != affiliateInviterSourceDefaultRoot {
+				bound = false
+				return nil
+			}
+		}
+		if err := r.ensureNoInviterCycle(txCtx, txClient, userID, inviterID); err != nil {
+			return err
+		}
 
 		res, err := txClient.ExecContext(txCtx,
-			"UPDATE user_affiliates SET inviter_id = $1, updated_at = NOW() WHERE user_id = $2 AND inviter_id IS NULL",
-			inviterID, userID,
+			`UPDATE user_affiliates
+SET inviter_id = $1,
+    inviter_source = $4,
+    updated_at = NOW()
+WHERE user_id = $2
+  AND (
+      inviter_id IS NULL
+      OR ($3::bigint IS NOT NULL AND inviter_id = $3)
+  )`,
+			inviterID, userID, nullableInt64(rootAdminIDPtr(hasRootAdmin, rootAdminID)), affiliateInviterSourceAffiliateCode,
 		)
 		if err != nil {
 			return fmt.Errorf("bind inviter: %w", err)
@@ -103,10 +140,12 @@ func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID
 			return nil
 		}
 
-		if _, err = txClient.ExecContext(txCtx,
-			"UPDATE user_affiliates SET aff_count = aff_count + 1, updated_at = NOW() WHERE user_id = $1",
-			inviterID,
-		); err != nil {
+		if summary.InviterID != nil && hasRootAdmin && *summary.InviterID == rootAdminID && rootAdminID != inviterID {
+			if err := refreshAffiliateCountWithClient(txCtx, txClient, rootAdminID); err != nil {
+				return err
+			}
+		}
+		if err := refreshAffiliateCountWithClient(txCtx, txClient, inviterID); err != nil {
 			return fmt.Errorf("increment inviter aff_count: %w", err)
 		}
 		bound = true
@@ -753,12 +792,25 @@ func (r *affiliateRepository) withTx(ctx context.Context, fn func(txCtx context.
 }
 
 func ensureUserAffiliateWithClient(ctx context.Context, client affiliateQueryExecer, userID int64) (*service.AffiliateSummary, error) {
-	summary, err := queryAffiliateByUserID(ctx, client, userID)
+	_, err := queryAffiliateByUserID(ctx, client, userID)
 	if err == nil {
-		return summary, nil
+		if err := ensureAffiliateInviterAttachedToRoot(ctx, client, userID); err != nil {
+			return nil, err
+		}
+		return queryAffiliateByUserID(ctx, client, userID)
 	}
 	if !errors.Is(err, service.ErrAffiliateProfileNotFound) {
 		return nil, err
+	}
+
+	rootAdminID, hasRootAdmin, err := queryFirstActiveAdminID(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	if hasRootAdmin && rootAdminID != userID {
+		if _, err := ensureUserAffiliateWithClient(ctx, client, rootAdminID); err != nil {
+			return nil, err
+		}
 	}
 
 	for i := 0; i < affiliateCodeMaxAttempts; i++ {
@@ -766,10 +818,7 @@ func ensureUserAffiliateWithClient(ctx context.Context, client affiliateQueryExe
 		if codeErr != nil {
 			return nil, codeErr
 		}
-		_, insertErr := client.ExecContext(ctx, `
-INSERT INTO user_affiliates (user_id, aff_code, created_at, updated_at)
-VALUES ($1, $2, NOW(), NOW())
-ON CONFLICT (user_id) DO NOTHING`, userID, code)
+		insertErr := insertUserAffiliateWithDefaults(ctx, client, userID, code, rootAdminIDPtr(hasRootAdmin && rootAdminID != userID, rootAdminID))
 		if insertErr == nil {
 			break
 		}
@@ -782,6 +831,107 @@ ON CONFLICT (user_id) DO NOTHING`, userID, code)
 	return queryAffiliateByUserID(ctx, client, userID)
 }
 
+func insertUserAffiliateWithDefaults(ctx context.Context, client affiliateQueryExecer, userID int64, code string, inviterID *int64) error {
+	if inviterID == nil {
+		_, err := client.ExecContext(ctx, `
+INSERT INTO user_affiliates (user_id, aff_code, created_at, updated_at)
+VALUES ($1, $2, NOW(), NOW())
+ON CONFLICT (user_id) DO NOTHING`, userID, code)
+		return err
+	}
+	_, err := client.ExecContext(ctx, `
+WITH inserted AS (
+    INSERT INTO user_affiliates (user_id, aff_code, inviter_id, inviter_source, created_at, updated_at)
+    VALUES ($1, $2, $3, 'default_root', NOW(), NOW())
+    ON CONFLICT (user_id) DO NOTHING
+    RETURNING inviter_id
+)
+UPDATE user_affiliates ua
+SET aff_count = ua.aff_count + 1,
+    updated_at = NOW()
+WHERE ua.user_id = $3
+  AND EXISTS (SELECT 1 FROM inserted)`, userID, code, *inviterID)
+	return err
+}
+
+func ensureAffiliateInviterAttachedToRoot(ctx context.Context, client affiliateQueryExecer, userID int64) error {
+	rootAdminID, hasRootAdmin, err := queryFirstActiveAdminID(ctx, client)
+	if err != nil {
+		return err
+	}
+	if !hasRootAdmin || rootAdminID == userID {
+		return nil
+	}
+	if _, err := ensureUserAffiliateWithClient(ctx, client, rootAdminID); err != nil {
+		return err
+	}
+	res, err := client.ExecContext(ctx, `
+WITH moved AS (
+    UPDATE user_affiliates
+    SET inviter_id = $1,
+        inviter_source = 'default_root',
+        updated_at = NOW()
+    WHERE user_id = $2
+      AND inviter_id IS NULL
+      AND user_id <> $1
+    RETURNING 1
+)
+UPDATE user_affiliates ua
+SET aff_count = ua.aff_count + 1,
+    updated_at = NOW()
+WHERE ua.user_id = $1
+  AND EXISTS (SELECT 1 FROM moved)`, rootAdminID, userID)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return nil
+	}
+	return refreshAffiliateCountWithClient(ctx, client, rootAdminID)
+}
+
+func refreshAffiliateCountWithClient(ctx context.Context, client affiliateQueryExecer, userID int64) error {
+	if userID <= 0 {
+		return nil
+	}
+	_, err := client.ExecContext(ctx, `
+UPDATE user_affiliates ua
+SET aff_count = COALESCE((
+        SELECT COUNT(*)::integer
+        FROM user_affiliates child
+        WHERE child.inviter_id = ua.user_id
+    ), 0),
+    updated_at = NOW()
+WHERE ua.user_id = $1`, userID)
+	return err
+}
+
+func queryFirstActiveAdminID(ctx context.Context, client affiliateQueryExecer) (int64, bool, error) {
+	var rootAdminID int64
+	err := scanSingleRow(ctx, client, `
+SELECT id
+FROM users
+WHERE role = $1
+  AND status = $2
+ORDER BY id ASC
+LIMIT 1`, []any{service.RoleAdmin, service.StatusActive}, &rootAdminID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return rootAdminID, true, nil
+}
+
+func rootAdminIDPtr(ok bool, userID int64) *int64 {
+	if !ok || userID <= 0 {
+		return nil
+	}
+	return &userID
+}
+
 func queryAffiliateByUserID(ctx context.Context, client affiliateQueryExecer, userID int64) (*service.AffiliateSummary, error) {
 	rows, err := client.QueryContext(ctx, `
 SELECT user_id,
@@ -789,6 +939,7 @@ SELECT user_id,
        aff_code_custom,
        aff_rebate_rate_percent,
        inviter_id,
+       inviter_source,
        aff_count,
        aff_quota::double precision,
        aff_frozen_quota::double precision,
@@ -817,6 +968,7 @@ WHERE user_id = $1`, userID)
 		&out.AffCodeCustom,
 		&rebateRate,
 		&inviterID,
+		&out.InviterSource,
 		&out.AffCount,
 		&out.AffQuota,
 		&out.AffFrozenQuota,
@@ -843,6 +995,7 @@ SELECT user_id,
        aff_code_custom,
        aff_rebate_rate_percent,
        inviter_id,
+       inviter_source,
        aff_count,
        aff_quota::double precision,
        aff_frozen_quota::double precision,
@@ -873,6 +1026,7 @@ LIMIT 1`, strings.ToUpper(strings.TrimSpace(code)))
 		&out.AffCodeCustom,
 		&rebateRate,
 		&inviterID,
+		&out.InviterSource,
 		&out.AffCount,
 		&out.AffQuota,
 		&out.AffFrozenQuota,
