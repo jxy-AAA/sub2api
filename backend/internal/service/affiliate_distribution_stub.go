@@ -221,6 +221,34 @@ type affiliateDistributionUpstreamRepository interface {
 	AdminUpdateUserUpstream(ctx context.Context, operatorUserID, userID int64, upstreamUserID *int64) (*AgentUserUpstream, error)
 }
 
+func (s *AffiliateService) RecordDistributionPaidCredit(ctx context.Context, userID, sourceOrderID int64, amountUSD float64, creditedAt time.Time) (bool, error) {
+	if s == nil || s.repo == nil {
+		return false, ErrAffiliateDistributionUnavailable
+	}
+	if userID <= 0 || sourceOrderID <= 0 || amountUSD <= 0 || math.IsNaN(amountUSD) || math.IsInf(amountUSD, 0) {
+		return false, ErrAffiliateDistributionPaidCreditInvalidInput
+	}
+	repo, ok := s.repo.(AffiliateDistributionPaidCreditRecorder)
+	if !ok {
+		return false, ErrAffiliateDistributionUnavailable
+	}
+	return repo.RecordPaidCredit(ctx, userID, sourceOrderID, amountUSD, creditedAt)
+}
+
+func (s *AffiliateService) ReverseDistributionPaidCredit(ctx context.Context, userID, sourceOrderID int64, amountUSD float64, reversedAt time.Time) (bool, error) {
+	if s == nil || s.repo == nil {
+		return false, ErrAffiliateDistributionUnavailable
+	}
+	if userID <= 0 || sourceOrderID <= 0 || amountUSD <= 0 || math.IsNaN(amountUSD) || math.IsInf(amountUSD, 0) {
+		return false, ErrAffiliateDistributionPaidCreditInvalidInput
+	}
+	repo, ok := s.repo.(AffiliateDistributionPaidCreditRecorder)
+	if !ok {
+		return false, ErrAffiliateDistributionUnavailable
+	}
+	return repo.ReversePaidCredit(ctx, userID, sourceOrderID, amountUSD, reversedAt)
+}
+
 func (s *AffiliateService) distributionRepo() (AffiliateDistributionRepository, error) {
 	if s == nil || s.repo == nil {
 		return nil, ErrAffiliateDistributionUnavailable

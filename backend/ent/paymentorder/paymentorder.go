@@ -64,6 +64,12 @@ const (
 	FieldRefundReason = "refund_reason"
 	// FieldRefundAt holds the string denoting the refund_at field in the database.
 	FieldRefundAt = "refund_at"
+	// FieldRefundGatewayConfirmedAt holds the string denoting the refund_gateway_confirmed_at field in the database.
+	FieldRefundGatewayConfirmedAt = "refund_gateway_confirmed_at"
+	// FieldRefundGatewayRefundID holds the string denoting the refund_gateway_refund_id field in the database.
+	FieldRefundGatewayRefundID = "refund_gateway_refund_id"
+	// FieldRefundIdempotencyKey holds the string denoting the refund_idempotency_key field in the database.
+	FieldRefundIdempotencyKey = "refund_idempotency_key"
 	// FieldForceRefund holds the string denoting the force_refund field in the database.
 	FieldForceRefund = "force_refund"
 	// FieldRefundRequestedAt holds the string denoting the refund_requested_at field in the database.
@@ -133,6 +139,9 @@ var Columns = []string{
 	FieldRefundAmount,
 	FieldRefundReason,
 	FieldRefundAt,
+	FieldRefundGatewayConfirmedAt,
+	FieldRefundGatewayRefundID,
+	FieldRefundIdempotencyKey,
 	FieldForceRefund,
 	FieldRefundRequestedAt,
 	FieldRefundRequestReason,
@@ -190,6 +199,10 @@ var (
 	StatusValidator func(string) error
 	// DefaultRefundAmount holds the default value on creation for the "refund_amount" field.
 	DefaultRefundAmount float64
+	// RefundGatewayRefundIDValidator is a validator for the "refund_gateway_refund_id" field. It is called by the builders before save.
+	RefundGatewayRefundIDValidator func(string) error
+	// RefundIdempotencyKeyValidator is a validator for the "refund_idempotency_key" field. It is called by the builders before save.
+	RefundIdempotencyKeyValidator func(string) error
 	// DefaultForceRefund holds the default value on creation for the "force_refund" field.
 	DefaultForceRefund bool
 	// RefundRequestedByValidator is a validator for the "refund_requested_by" field. It is called by the builders before save.
@@ -332,6 +345,21 @@ func ByRefundReason(opts ...sql.OrderTermOption) OrderOption {
 // ByRefundAt orders the results by the refund_at field.
 func ByRefundAt(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldRefundAt, opts...).ToFunc()
+}
+
+// ByRefundGatewayConfirmedAt orders the results by the refund_gateway_confirmed_at field.
+func ByRefundGatewayConfirmedAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRefundGatewayConfirmedAt, opts...).ToFunc()
+}
+
+// ByRefundGatewayRefundID orders the results by the refund_gateway_refund_id field.
+func ByRefundGatewayRefundID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRefundGatewayRefundID, opts...).ToFunc()
+}
+
+// ByRefundIdempotencyKey orders the results by the refund_idempotency_key field.
+func ByRefundIdempotencyKey(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRefundIdempotencyKey, opts...).ToFunc()
 }
 
 // ByForceRefund orders the results by the force_refund field.

@@ -3144,6 +3144,15 @@ import {
   resolveOpenAIWSModeConcurrencyHintKey,
   type OpenAIWSMode
 } from '@/utils/openaiWsMode'
+import {
+  buildTempUnschedRules,
+  buildTempUnschedValidationResult,
+  type TempUnschedRuleFormInput,
+  validateAccountName,
+  validateApiKeyRequirement,
+  validateCustomErrorCodeCandidate,
+  validateVertexServiceAccount
+} from '@/validation/accountForm'
 import OAuthAuthorizationFlow from './OAuthAuthorizationFlow.vue'
 
 // Type for exposed OAuthAuthorizationFlow component
@@ -3241,12 +3250,7 @@ interface ModelMapping {
   to: string
 }
 
-interface TempUnschedRuleForm {
-  error_code: number | null
-  keywords: string
-  duration_minutes: number | null
-  description: string
-}
+type TempUnschedRuleForm = TempUnschedRuleFormInput
 
 // State
 const step = ref(1)
@@ -3783,25 +3787,26 @@ const toggleErrorCode = (code: number) => {
 // Add custom error code from input
 const addCustomErrorCode = () => {
   const code = customErrorCodeInput.value
-  if (code === null || code < 100 || code > 599) {
-    appStore.showError(t('admin.accounts.invalidErrorCode'))
+  const validation = validateCustomErrorCodeCandidate(code, selectedErrorCodes.value)
+  if (!validation.ok) {
+    if (validation.messageLevel === 'info') {
+      appStore.showInfo(t(validation.messageKey!))
+    } else {
+      appStore.showError(t(validation.messageKey!))
+    }
     return
   }
-  if (selectedErrorCodes.value.includes(code)) {
-    appStore.showInfo(t('admin.accounts.errorCodeExists'))
-    return
-  }
-  // Check for 429/529 warning
-  if (code === 429) {
+
+  if (validation.warningCode === 429) {
     if (!confirm(t('admin.accounts.customErrorCodes429Warning'))) {
       return
     }
-  } else if (code === 529) {
+  } else if (validation.warningCode === 529) {
     if (!confirm(t('admin.accounts.customErrorCodes529Warning'))) {
       return
     }
   }
-  selectedErrorCodes.value.push(code)
+  selectedErrorCodes.value.push(Number(code))
   customErrorCodeInput.value = null
 }
 
@@ -3839,38 +3844,6 @@ const moveTempUnschedRule = (index: number, direction: number) => {
   rules[target] = current
 }
 
-const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
-  const out: Array<{
-    error_code: number
-    keywords: string[]
-    duration_minutes: number
-    description: string
-  }> = []
-
-  for (const rule of rules) {
-    const errorCode = Number(rule.error_code)
-    const duration = Number(rule.duration_minutes)
-    const keywords = splitTempUnschedKeywords(rule.keywords)
-    if (!Number.isFinite(errorCode) || errorCode < 100 || errorCode > 599) {
-      continue
-    }
-    if (!Number.isFinite(duration) || duration <= 0) {
-      continue
-    }
-    if (keywords.length === 0) {
-      continue
-    }
-    out.push({
-      error_code: Math.trunc(errorCode),
-      keywords,
-      duration_minutes: Math.trunc(duration),
-      description: rule.description.trim()
-    })
-  }
-
-  return out
-}
-
 const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
   if (!tempUnschedEnabled.value) {
     delete credentials.temp_unschedulable_enabled
@@ -3878,22 +3851,18 @@ const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
     return true
   }
 
-  const rules = buildTempUnschedRules(tempUnschedRules.value)
-  if (rules.length === 0) {
-    appStore.showError(t('admin.accounts.tempUnschedulable.rulesInvalid'))
+  const validation = buildTempUnschedValidationResult(
+    tempUnschedEnabled.value,
+    tempUnschedRules.value
+  )
+  if (!validation.valid) {
+    appStore.showError(t(validation.errorKey!))
     return false
   }
 
   credentials.temp_unschedulable_enabled = true
-  credentials.temp_unschedulable_rules = rules
+  credentials.temp_unschedulable_rules = validation.rules
   return true
-}
-
-const splitTempUnschedKeywords = (value: string) => {
-  return value
-    .split(/[,;]/)
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0)
 }
 
 const needsMixedChannelCheck = (platform: AccountPlatform) => platform === 'antigravity' || platform === 'anthropic'
@@ -4357,17 +4326,26 @@ const handleSubmit = async () => {
   }
 
   if ((form.platform === 'gemini' || form.platform === 'anthropic') && accountCategory.value === 'service_account') {
-    if (!form.name.trim()) {
-      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+    const accountNameError = validateAccountName(form.name)
+    if (accountNameError) {
+      appStore.showError(t(accountNameError))
       return
     }
     if (!parseVertexServiceAccountJson()) {
       return
     }
-    if (!vertexLocation.value.trim()) {
-      appStore.showError(t('admin.accounts.vertexLocationRequired'))
+
+    const vertexValidationError = validateVertexServiceAccount({
+      projectId: vertexProjectId.value,
+      clientEmail: vertexClientEmail.value,
+      location: vertexLocation.value,
+      hasServiceAccount: Boolean(vertexServiceAccountJson.value.trim())
+    })
+    if (vertexValidationError) {
+      appStore.showError(t(vertexValidationError))
       return
     }
+
     const credentials: Record<string, unknown> = {
       service_account_json: vertexServiceAccountJson.value.trim(),
       project_id: vertexProjectId.value.trim(),
@@ -4380,8 +4358,13 @@ const handleSubmit = async () => {
   }
 
   // For apikey type, create directly
-  if (!apiKeyValue.value.trim()) {
-    appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
+  const apiKeyError = validateApiKeyRequirement(
+    apiKeyValue.value,
+    undefined,
+    'admin.accounts.pleaseEnterApiKey'
+  )
+  if (apiKeyError) {
+    appStore.showError(t(apiKeyError))
     return
   }
 

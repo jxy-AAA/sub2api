@@ -1936,11 +1936,7 @@ func (s *SettingService) GetAffiliateRebateRatePercent(ctx context.Context) floa
 	if err != nil {
 		return AffiliateRebateRateDefault
 	}
-	rate, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) {
-		return AffiliateRebateRateDefault
-	}
-	return clampAffiliateRebateRate(rate)
+	return parseAffiliateRebateRateSetting(raw)
 }
 
 // GetAffiliateRebateFreezeHours 返回返利冻结期（小时）。
@@ -1950,14 +1946,7 @@ func (s *SettingService) GetAffiliateRebateFreezeHours(ctx context.Context) int 
 	if err != nil {
 		return AffiliateRebateFreezeHoursDefault
 	}
-	hours, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || hours < 0 {
-		return AffiliateRebateFreezeHoursDefault
-	}
-	if hours > AffiliateRebateFreezeHoursMax {
-		return AffiliateRebateFreezeHoursMax
-	}
-	return hours
+	return parseAffiliateRebateFreezeHoursSetting(raw)
 }
 
 // GetAffiliateRebateDurationDays 返回返利有效期（天）。
@@ -1967,14 +1956,7 @@ func (s *SettingService) GetAffiliateRebateDurationDays(ctx context.Context) int
 	if err != nil {
 		return AffiliateRebateDurationDaysDefault
 	}
-	days, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || days < 0 {
-		return AffiliateRebateDurationDaysDefault
-	}
-	if days > AffiliateRebateDurationDaysMax {
-		return AffiliateRebateDurationDaysMax
-	}
-	return days
+	return parseAffiliateRebateDurationDaysSetting(raw)
 }
 
 // GetAffiliateRebatePerInviteeCap 返回单人返利上限。
@@ -1984,11 +1966,7 @@ func (s *SettingService) GetAffiliateRebatePerInviteeCap(ctx context.Context) fl
 	if err != nil {
 		return AffiliateRebatePerInviteeCapDefault
 	}
-	cap, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil || cap < 0 || math.IsNaN(cap) || math.IsInf(cap, 0) {
-		return AffiliateRebatePerInviteeCapDefault
-	}
-	return cap
+	return parseAffiliateRebatePerInviteeCapSetting(raw)
 }
 
 // IsPasswordResetEnabled 检查是否启用密码重置功能
@@ -2670,6 +2648,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// Affiliate (邀请返利) feature (default: disabled; strict true)
 	result.AffiliateEnabled = settings[SettingKeyAffiliateEnabled] == "true"
+	result.AffiliateRebateRate = parseAffiliateRebateRateSetting(settings[SettingKeyAffiliateRebateRate])
+	result.AffiliateRebateFreezeHours = parseAffiliateRebateFreezeHoursSetting(settings[SettingKeyAffiliateRebateFreezeHours])
+	result.AffiliateRebateDurationDays = parseAffiliateRebateDurationDaysSetting(settings[SettingKeyAffiliateRebateDurationDays])
+	result.AffiliateRebatePerInviteeCap = parseAffiliateRebatePerInviteeCapSetting(settings[SettingKeyAffiliateRebatePerInviteeCap])
 
 	// 风控中心功能（默认关闭，严格 true 才启用）
 	result.RiskControlEnabled = settings[SettingKeyRiskControlEnabled] == "true"
@@ -2723,6 +2705,44 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	return result
 }
 
+func parseAffiliateRebateRateSetting(raw string) float64 {
+	rate, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) {
+		return AffiliateRebateRateDefault
+	}
+	return clampAffiliateRebateRate(rate)
+}
+
+func parseAffiliateRebateFreezeHoursSetting(raw string) int {
+	hours, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || hours < 0 {
+		return AffiliateRebateFreezeHoursDefault
+	}
+	if hours > AffiliateRebateFreezeHoursMax {
+		return AffiliateRebateFreezeHoursMax
+	}
+	return hours
+}
+
+func parseAffiliateRebateDurationDaysSetting(raw string) int {
+	days, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || days < 0 {
+		return AffiliateRebateDurationDaysDefault
+	}
+	if days > AffiliateRebateDurationDaysMax {
+		return AffiliateRebateDurationDaysMax
+	}
+	return days
+}
+
+func parseAffiliateRebatePerInviteeCapSetting(raw string) float64 {
+	cap, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || cap < 0 || math.IsNaN(cap) || math.IsInf(cap, 0) {
+		return AffiliateRebatePerInviteeCapDefault
+	}
+	return cap
+}
+
 func clampAffiliateRebateRate(value float64) float64 {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return AffiliateRebateRateDefault
@@ -2735,7 +2755,6 @@ func clampAffiliateRebateRate(value float64) float64 {
 	}
 	return value
 }
-
 
 func isFalseSettingValue(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {

@@ -382,6 +382,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { useTableLoader } from '@/composables/useTableLoader'
+import { useAnyOpenState } from '@/composables/useAnyOpenState'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
 import { useTableSelection } from '@/composables/useTableSelection'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -399,7 +400,6 @@ import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vu
 import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
 import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.vue'
-import type { SelectOption } from '@/components/common/Select.vue'
 import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
@@ -411,7 +411,7 @@ import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRules
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
+import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel, SelectOption } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -837,24 +837,24 @@ watch(loading, (isLoading, wasLoading) => {
   }
 })
 
-const isAnyModalOpen = computed(() => {
-  return (
-    showCreate.value ||
-    showEdit.value ||
-    showSync.value ||
-    showImportData.value ||
-    showExportDataDialog.value ||
-    showBulkEdit.value ||
-    showTempUnsched.value ||
-    showDeleteDialog.value ||
-    showReAuth.value ||
-    showTest.value ||
-    showStats.value ||
-    showSchedulePanel.value ||
-    showErrorPassthrough.value ||
-    showTLSFingerprintProfiles.value
-  )
-})
+const modalOpenStates = [
+  showCreate,
+  showEdit,
+  showSync,
+  showImportData,
+  showExportDataDialog,
+  showBulkEdit,
+  showTempUnsched,
+  showDeleteDialog,
+  showReAuth,
+  showTest,
+  showStats,
+  showSchedulePanel,
+  showErrorPassthrough,
+  showTLSFingerprintProfiles
+] as const
+
+const isAnyModalOpen = useAnyOpenState(modalOpenStates)
 
 const enterAutoRefreshSilentWindow = () => {
   autoRefreshSilentUntil.value = Date.now() + AUTO_REFRESH_SILENT_WINDOW_MS

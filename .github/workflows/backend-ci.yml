@@ -24,6 +24,9 @@ jobs:
       - name: Unit tests
         working-directory: backend
         run: make test-unit
+      - name: Contract tests
+        working-directory: backend
+        run: make test-contract
       - name: Integration tests
         working-directory: backend
         run: make test-integration
@@ -45,7 +48,7 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: pnpm install --frozen-lockfile
-      - name: Frontend typecheck and critical vitest
+      - name: Frontend lint, typecheck, and full vitest
         run: make test-frontend
 
   golangci-lint:

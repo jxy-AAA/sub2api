@@ -175,7 +175,8 @@ func TestJWTAuth_MissingAuthorizationHeader(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	var body ErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, "UNAUTHORIZED", body.Code)
+	require.Equal(t, http.StatusUnauthorized, body.Code)
+	require.Equal(t, "UNAUTHORIZED", body.Reason)
 }
 
 func TestJWTAuth_InvalidHeaderFormat(t *testing.T) {
@@ -199,7 +200,8 @@ func TestJWTAuth_InvalidHeaderFormat(t *testing.T) {
 			require.Equal(t, http.StatusUnauthorized, w.Code)
 			var body ErrorResponse
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-			require.Equal(t, "INVALID_AUTH_HEADER", body.Code)
+			require.Equal(t, http.StatusUnauthorized, body.Code)
+			require.Equal(t, "INVALID_AUTH_HEADER", body.Reason)
 		})
 	}
 }
@@ -215,7 +217,8 @@ func TestJWTAuth_EmptyToken(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	var body ErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, "EMPTY_TOKEN", body.Code)
+	require.Equal(t, http.StatusUnauthorized, body.Code)
+	require.Equal(t, "EMPTY_TOKEN", body.Reason)
 }
 
 func TestJWTAuth_TamperedToken(t *testing.T) {
@@ -229,7 +232,8 @@ func TestJWTAuth_TamperedToken(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	var body ErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, "INVALID_TOKEN", body.Code)
+	require.Equal(t, http.StatusUnauthorized, body.Code)
+	require.Equal(t, "INVALID_TOKEN", body.Reason)
 }
 
 func TestJWTAuth_UserNotFound(t *testing.T) {
@@ -255,7 +259,8 @@ func TestJWTAuth_UserNotFound(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	var body ErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, "USER_NOT_FOUND", body.Code)
+	require.Equal(t, http.StatusUnauthorized, body.Code)
+	require.Equal(t, "USER_NOT_FOUND", body.Reason)
 }
 
 func TestJWTAuth_UserInactive(t *testing.T) {
@@ -279,7 +284,8 @@ func TestJWTAuth_UserInactive(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	var body ErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, "USER_INACTIVE", body.Code)
+	require.Equal(t, http.StatusUnauthorized, body.Code)
+	require.Equal(t, "USER_INACTIVE", body.Reason)
 }
 
 func TestJWTAuth_TokenVersionMismatch(t *testing.T) {
@@ -311,5 +317,6 @@ func TestJWTAuth_TokenVersionMismatch(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	var body ErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, "TOKEN_REVOKED", body.Code)
+	require.Equal(t, http.StatusUnauthorized, body.Code)
+	require.Equal(t, "TOKEN_REVOKED", body.Reason)
 }

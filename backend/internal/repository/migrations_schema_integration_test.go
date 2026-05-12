@@ -1,12 +1,15 @@
-//go:build integration
+//go:build integration || contract
 
 package repository
 
 import (
 	"context"
 	"database/sql"
+	"io/fs"
+	"sort"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,10 +19,10 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	// Re-apply migrations to verify idempotency (no errors, no duplicate rows).
 	require.NoError(t, ApplyMigrations(context.Background(), integrationDB))
 
-	// schema_migrations should have at least the current migration set.
-	var applied int
-	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM schema_migrations").Scan(&applied))
-	require.GreaterOrEqual(t, applied, 7, "expected schema_migrations to contain applied migrations")
+	// schema_migrations must track the exact embedded migration set.
+	expectedMigrations := embeddedMigrationFilenames(t)
+	require.Equal(t, expectedMigrations, appliedMigrationFilenames(t, tx), "schema_migrations must match embedded SQL migrations exactly")
+	requireMigrationApplied(t, tx, expectedMigrations[len(expectedMigrations)-1])
 
 	// users: columns required by repository queries
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
@@ -113,9 +116,98 @@ func TestMigrationsRunner_AuthIdentityAndPaymentSchemaStayAligned(t *testing.T) 
 	requireForeignKeyOnDelete(t, tx, "identity_adoption_decisions", "pending_auth_session_id", "pending_auth_sessions", "CASCADE")
 	requireForeignKeyOnDelete(t, tx, "identity_adoption_decisions", "identity_id", "auth_identities", "SET NULL")
 
+	requireColumn(t, tx, "payment_orders", "refund_gateway_confirmed_at", "timestamp with time zone", 0, true)
+	requireColumn(t, tx, "payment_orders", "refund_gateway_refund_id", "character varying", 128, true)
+	requireColumn(t, tx, "payment_orders", "refund_idempotency_key", "character varying", 128, true)
 	requireIndex(t, tx, "payment_orders", "paymentorder_out_trade_no")
+	requireIndex(t, tx, "payment_orders", "idx_payment_orders_refund_gateway_confirmed_at")
 	requirePartialUniqueIndexDefinition(t, tx, "payment_orders", "paymentorder_out_trade_no", "out_trade_no", "WHERE")
 	requireIndexAbsent(t, tx, "payment_orders", "paymentorder_out_trade_no_unique")
+}
+
+func TestMigrationsRunner_UsageCleanupAndAffiliateProtectionSchemaStayAligned(t *testing.T) {
+	tx := testTx(t)
+
+	requireTableExists(t, tx, "usage_cleanup_tasks")
+	requireForeignKeyOnDelete(t, tx, "usage_cleanup_tasks", "created_by", "users", "RESTRICT")
+	requireIndex(t, tx, "usage_cleanup_tasks", "idx_usage_cleanup_tasks_status_created_at")
+	requireIndex(t, tx, "usage_cleanup_tasks", "idx_usage_cleanup_tasks_created_at")
+
+	requireTableExists(t, tx, "affiliate_distribution_paid_credit_balances")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_credit_balances", "user_id", "users", "CASCADE")
+
+	requireTableExists(t, tx, "affiliate_distribution_paid_credit_events")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_credit_events", "user_id", "users", "CASCADE")
+	requireIndex(t, tx, "affiliate_distribution_paid_credit_events", "idx_aff_dist_paid_credit_events_user_time")
+
+	requireTableExists(t, tx, "affiliate_distribution_paid_credit_reversals")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_credit_reversals", "credit_event_id", "affiliate_distribution_paid_credit_events", "RESTRICT")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_credit_reversals", "user_id", "users", "CASCADE")
+	requireIndex(t, tx, "affiliate_distribution_paid_credit_reversals", "idx_aff_dist_paid_credit_reversals_event")
+	requireIndex(t, tx, "affiliate_distribution_paid_credit_reversals", "idx_aff_dist_paid_credit_reversals_order")
+
+	requireTableExists(t, tx, "affiliate_distribution_paid_usage_settlements")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_usage_settlements", "usage_log_id", "usage_logs", "RESTRICT")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_usage_settlements", "user_id", "users", "CASCADE")
+	requireIndex(t, tx, "affiliate_distribution_paid_usage_settlements", "idx_aff_dist_paid_usage_user_day")
+
+	requireTableExists(t, tx, "affiliate_distribution_paid_credit_allocations")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_credit_allocations", "credit_event_id", "affiliate_distribution_paid_credit_events", "RESTRICT")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_credit_allocations", "usage_log_id", "affiliate_distribution_paid_usage_settlements", "CASCADE")
+	requireForeignKeyOnDelete(t, tx, "affiliate_distribution_paid_credit_allocations", "user_id", "users", "CASCADE")
+	requireIndex(t, tx, "affiliate_distribution_paid_credit_allocations", "idx_aff_dist_paid_credit_allocations_usage")
+	requireIndex(t, tx, "affiliate_distribution_paid_credit_allocations", "idx_aff_dist_paid_credit_allocations_user")
+}
+
+func embeddedMigrationFilenames(t *testing.T) []string {
+	t.Helper()
+
+	filenames, err := fs.Glob(migrations.FS, "*.sql")
+	require.NoError(t, err, "list embedded migrations")
+	sort.Strings(filenames)
+	require.NotEmpty(t, filenames, "expected embedded SQL migrations")
+	return filenames
+}
+
+func appliedMigrationFilenames(t *testing.T, tx *sql.Tx) []string {
+	t.Helper()
+
+	rows, err := tx.QueryContext(context.Background(), "SELECT filename FROM schema_migrations ORDER BY filename")
+	require.NoError(t, err, "query schema_migrations filenames")
+	defer func() { _ = rows.Close() }()
+
+	var filenames []string
+	for rows.Next() {
+		var filename string
+		require.NoError(t, rows.Scan(&filename), "scan schema_migrations filename")
+		filenames = append(filenames, filename)
+	}
+	require.NoError(t, rows.Err(), "iterate schema_migrations filenames")
+	return filenames
+}
+
+func requireMigrationApplied(t *testing.T, tx *sql.Tx, filename string) {
+	t.Helper()
+
+	var exists bool
+	err := tx.QueryRowContext(context.Background(), `
+SELECT EXISTS (
+	SELECT 1
+	FROM schema_migrations
+	WHERE filename = $1
+)
+`, filename).Scan(&exists)
+	require.NoError(t, err, "query schema_migrations for %s", filename)
+	require.True(t, exists, "expected migration %s to be recorded", filename)
+}
+
+func requireTableExists(t *testing.T, tx *sql.Tx, table string) {
+	t.Helper()
+
+	var regclass sql.NullString
+	err := tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.' || $1)", table).Scan(&regclass)
+	require.NoError(t, err, "query to_regclass for %s", table)
+	require.True(t, regclass.Valid, "expected table %s to exist", table)
 }
 
 func requireIndex(t *testing.T, tx *sql.Tx, table, index string) {

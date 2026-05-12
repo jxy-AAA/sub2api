@@ -492,6 +492,66 @@ func (_u *PaymentOrderUpdate) ClearRefundAt() *PaymentOrderUpdate {
 	return _u
 }
 
+// SetRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field.
+func (_u *PaymentOrderUpdate) SetRefundGatewayConfirmedAt(v time.Time) *PaymentOrderUpdate {
+	_u.mutation.SetRefundGatewayConfirmedAt(v)
+	return _u
+}
+
+// SetNillableRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field if the given value is not nil.
+func (_u *PaymentOrderUpdate) SetNillableRefundGatewayConfirmedAt(v *time.Time) *PaymentOrderUpdate {
+	if v != nil {
+		_u.SetRefundGatewayConfirmedAt(*v)
+	}
+	return _u
+}
+
+// ClearRefundGatewayConfirmedAt clears the value of the "refund_gateway_confirmed_at" field.
+func (_u *PaymentOrderUpdate) ClearRefundGatewayConfirmedAt() *PaymentOrderUpdate {
+	_u.mutation.ClearRefundGatewayConfirmedAt()
+	return _u
+}
+
+// SetRefundGatewayRefundID sets the "refund_gateway_refund_id" field.
+func (_u *PaymentOrderUpdate) SetRefundGatewayRefundID(v string) *PaymentOrderUpdate {
+	_u.mutation.SetRefundGatewayRefundID(v)
+	return _u
+}
+
+// SetNillableRefundGatewayRefundID sets the "refund_gateway_refund_id" field if the given value is not nil.
+func (_u *PaymentOrderUpdate) SetNillableRefundGatewayRefundID(v *string) *PaymentOrderUpdate {
+	if v != nil {
+		_u.SetRefundGatewayRefundID(*v)
+	}
+	return _u
+}
+
+// ClearRefundGatewayRefundID clears the value of the "refund_gateway_refund_id" field.
+func (_u *PaymentOrderUpdate) ClearRefundGatewayRefundID() *PaymentOrderUpdate {
+	_u.mutation.ClearRefundGatewayRefundID()
+	return _u
+}
+
+// SetRefundIdempotencyKey sets the "refund_idempotency_key" field.
+func (_u *PaymentOrderUpdate) SetRefundIdempotencyKey(v string) *PaymentOrderUpdate {
+	_u.mutation.SetRefundIdempotencyKey(v)
+	return _u
+}
+
+// SetNillableRefundIdempotencyKey sets the "refund_idempotency_key" field if the given value is not nil.
+func (_u *PaymentOrderUpdate) SetNillableRefundIdempotencyKey(v *string) *PaymentOrderUpdate {
+	if v != nil {
+		_u.SetRefundIdempotencyKey(*v)
+	}
+	return _u
+}
+
+// ClearRefundIdempotencyKey clears the value of the "refund_idempotency_key" field.
+func (_u *PaymentOrderUpdate) ClearRefundIdempotencyKey() *PaymentOrderUpdate {
+	_u.mutation.ClearRefundIdempotencyKey()
+	return _u
+}
+
 // SetForceRefund sets the "force_refund" field.
 func (_u *PaymentOrderUpdate) SetForceRefund(v bool) *PaymentOrderUpdate {
 	_u.mutation.SetForceRefund(v)
@@ -818,6 +878,16 @@ func (_u *PaymentOrderUpdate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.RefundGatewayRefundID(); ok {
+		if err := paymentorder.RefundGatewayRefundIDValidator(v); err != nil {
+			return &ValidationError{Name: "refund_gateway_refund_id", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.refund_gateway_refund_id": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.RefundIdempotencyKey(); ok {
+		if err := paymentorder.RefundIdempotencyKeyValidator(v); err != nil {
+			return &ValidationError{Name: "refund_idempotency_key", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.refund_idempotency_key": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.RefundRequestedBy(); ok {
 		if err := paymentorder.RefundRequestedByValidator(v); err != nil {
 			return &ValidationError{Name: "refund_requested_by", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.refund_requested_by": %w`, err)}
@@ -979,6 +1049,24 @@ func (_u *PaymentOrderUpdate) sqlSave(ctx context.Context) (_node int, err error
 	}
 	if _u.mutation.RefundAtCleared() {
 		_spec.ClearField(paymentorder.FieldRefundAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.RefundGatewayConfirmedAt(); ok {
+		_spec.SetField(paymentorder.FieldRefundGatewayConfirmedAt, field.TypeTime, value)
+	}
+	if _u.mutation.RefundGatewayConfirmedAtCleared() {
+		_spec.ClearField(paymentorder.FieldRefundGatewayConfirmedAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.RefundGatewayRefundID(); ok {
+		_spec.SetField(paymentorder.FieldRefundGatewayRefundID, field.TypeString, value)
+	}
+	if _u.mutation.RefundGatewayRefundIDCleared() {
+		_spec.ClearField(paymentorder.FieldRefundGatewayRefundID, field.TypeString)
+	}
+	if value, ok := _u.mutation.RefundIdempotencyKey(); ok {
+		_spec.SetField(paymentorder.FieldRefundIdempotencyKey, field.TypeString, value)
+	}
+	if _u.mutation.RefundIdempotencyKeyCleared() {
+		_spec.ClearField(paymentorder.FieldRefundIdempotencyKey, field.TypeString)
 	}
 	if value, ok := _u.mutation.ForceRefund(); ok {
 		_spec.SetField(paymentorder.FieldForceRefund, field.TypeBool, value)
@@ -1555,6 +1643,66 @@ func (_u *PaymentOrderUpdateOne) ClearRefundAt() *PaymentOrderUpdateOne {
 	return _u
 }
 
+// SetRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field.
+func (_u *PaymentOrderUpdateOne) SetRefundGatewayConfirmedAt(v time.Time) *PaymentOrderUpdateOne {
+	_u.mutation.SetRefundGatewayConfirmedAt(v)
+	return _u
+}
+
+// SetNillableRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field if the given value is not nil.
+func (_u *PaymentOrderUpdateOne) SetNillableRefundGatewayConfirmedAt(v *time.Time) *PaymentOrderUpdateOne {
+	if v != nil {
+		_u.SetRefundGatewayConfirmedAt(*v)
+	}
+	return _u
+}
+
+// ClearRefundGatewayConfirmedAt clears the value of the "refund_gateway_confirmed_at" field.
+func (_u *PaymentOrderUpdateOne) ClearRefundGatewayConfirmedAt() *PaymentOrderUpdateOne {
+	_u.mutation.ClearRefundGatewayConfirmedAt()
+	return _u
+}
+
+// SetRefundGatewayRefundID sets the "refund_gateway_refund_id" field.
+func (_u *PaymentOrderUpdateOne) SetRefundGatewayRefundID(v string) *PaymentOrderUpdateOne {
+	_u.mutation.SetRefundGatewayRefundID(v)
+	return _u
+}
+
+// SetNillableRefundGatewayRefundID sets the "refund_gateway_refund_id" field if the given value is not nil.
+func (_u *PaymentOrderUpdateOne) SetNillableRefundGatewayRefundID(v *string) *PaymentOrderUpdateOne {
+	if v != nil {
+		_u.SetRefundGatewayRefundID(*v)
+	}
+	return _u
+}
+
+// ClearRefundGatewayRefundID clears the value of the "refund_gateway_refund_id" field.
+func (_u *PaymentOrderUpdateOne) ClearRefundGatewayRefundID() *PaymentOrderUpdateOne {
+	_u.mutation.ClearRefundGatewayRefundID()
+	return _u
+}
+
+// SetRefundIdempotencyKey sets the "refund_idempotency_key" field.
+func (_u *PaymentOrderUpdateOne) SetRefundIdempotencyKey(v string) *PaymentOrderUpdateOne {
+	_u.mutation.SetRefundIdempotencyKey(v)
+	return _u
+}
+
+// SetNillableRefundIdempotencyKey sets the "refund_idempotency_key" field if the given value is not nil.
+func (_u *PaymentOrderUpdateOne) SetNillableRefundIdempotencyKey(v *string) *PaymentOrderUpdateOne {
+	if v != nil {
+		_u.SetRefundIdempotencyKey(*v)
+	}
+	return _u
+}
+
+// ClearRefundIdempotencyKey clears the value of the "refund_idempotency_key" field.
+func (_u *PaymentOrderUpdateOne) ClearRefundIdempotencyKey() *PaymentOrderUpdateOne {
+	_u.mutation.ClearRefundIdempotencyKey()
+	return _u
+}
+
 // SetForceRefund sets the "force_refund" field.
 func (_u *PaymentOrderUpdateOne) SetForceRefund(v bool) *PaymentOrderUpdateOne {
 	_u.mutation.SetForceRefund(v)
@@ -1894,6 +2042,16 @@ func (_u *PaymentOrderUpdateOne) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.RefundGatewayRefundID(); ok {
+		if err := paymentorder.RefundGatewayRefundIDValidator(v); err != nil {
+			return &ValidationError{Name: "refund_gateway_refund_id", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.refund_gateway_refund_id": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.RefundIdempotencyKey(); ok {
+		if err := paymentorder.RefundIdempotencyKeyValidator(v); err != nil {
+			return &ValidationError{Name: "refund_idempotency_key", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.refund_idempotency_key": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.RefundRequestedBy(); ok {
 		if err := paymentorder.RefundRequestedByValidator(v); err != nil {
 			return &ValidationError{Name: "refund_requested_by", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.refund_requested_by": %w`, err)}
@@ -2072,6 +2230,24 @@ func (_u *PaymentOrderUpdateOne) sqlSave(ctx context.Context) (_node *PaymentOrd
 	}
 	if _u.mutation.RefundAtCleared() {
 		_spec.ClearField(paymentorder.FieldRefundAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.RefundGatewayConfirmedAt(); ok {
+		_spec.SetField(paymentorder.FieldRefundGatewayConfirmedAt, field.TypeTime, value)
+	}
+	if _u.mutation.RefundGatewayConfirmedAtCleared() {
+		_spec.ClearField(paymentorder.FieldRefundGatewayConfirmedAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.RefundGatewayRefundID(); ok {
+		_spec.SetField(paymentorder.FieldRefundGatewayRefundID, field.TypeString, value)
+	}
+	if _u.mutation.RefundGatewayRefundIDCleared() {
+		_spec.ClearField(paymentorder.FieldRefundGatewayRefundID, field.TypeString)
+	}
+	if value, ok := _u.mutation.RefundIdempotencyKey(); ok {
+		_spec.SetField(paymentorder.FieldRefundIdempotencyKey, field.TypeString, value)
+	}
+	if _u.mutation.RefundIdempotencyKeyCleared() {
+		_spec.ClearField(paymentorder.FieldRefundIdempotencyKey, field.TypeString)
 	}
 	if value, ok := _u.mutation.ForceRefund(); ok {
 		_spec.SetField(paymentorder.FieldForceRefund, field.TypeBool, value)

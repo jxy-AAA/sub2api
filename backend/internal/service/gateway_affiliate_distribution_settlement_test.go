@@ -29,6 +29,7 @@ func TestGatewayServiceRecordUsage_SettlesAffiliateDistributionAfterUsageLogPers
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
 	settlementSvc := &gatewayAffiliateDistributionSettlementStub{}
+	groupID := int64(801)
 	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
 	svc.SetAffiliateDistributionUsageSettlementService(settlementSvc)
 
@@ -42,7 +43,7 @@ func TestGatewayServiceRecordUsage_SettlesAffiliateDistributionAfterUsageLogPers
 			Model:    "claude-sonnet-4",
 			Duration: time.Second,
 		},
-		APIKey:  &APIKey{ID: 501, Quota: 100},
+		APIKey:  &APIKey{ID: 501, GroupID: &groupID, Quota: 100},
 		User:    &User{ID: 601},
 		Account: &Account{ID: 701},
 	})
@@ -52,6 +53,7 @@ func TestGatewayServiceRecordUsage_SettlesAffiliateDistributionAfterUsageLogPers
 	require.NotNil(t, usageRepo.lastLog)
 	require.Equal(t, usageRepo.lastLog.ID, settlementSvc.last.UsageLogID)
 	require.Equal(t, usageRepo.lastLog.UserID, settlementSvc.last.UserID)
+	require.Equal(t, groupID, settlementSvc.last.GroupID)
 	require.Equal(t, usageRepo.lastLog.TotalCost, settlementSvc.last.TotalCost)
 	require.Equal(t, usageRepo.lastLog.ActualCost, settlementSvc.last.ActualCost)
 	require.Equal(t, usageRepo.lastLog.Model, settlementSvc.last.Model)

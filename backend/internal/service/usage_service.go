@@ -13,7 +13,8 @@ import (
 )
 
 var (
-	ErrUsageLogNotFound = infraerrors.NotFound("USAGE_LOG_NOT_FOUND", "usage log not found")
+	ErrUsageLogNotFound  = infraerrors.NotFound("USAGE_LOG_NOT_FOUND", "usage log not found")
+	ErrUsageLogImmutable = infraerrors.Conflict("USAGE_LOG_IMMUTABLE", "usage logs are append-only and cannot be modified directly")
 )
 
 // CreateUsageLogRequest 创建使用日志请求

@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -36,82 +37,79 @@ var (
 	Version   = ""
 	Commit    = "unknown"
 	Date      = "unknown"
-	BuildType = "source" // "source" for manual builds, "release" for CI builds (set by ldflags)
+	BuildType = "source"
 )
 
 func init() {
-	// 如果 Version 已通过 ldflags 注入（例如 -X main.Version=...），则不要覆盖。
 	if strings.TrimSpace(Version) != "" {
 		return
 	}
 
-	// 默认从 embedded VERSION 文件读取版本号（编译期打包进二进制）。
 	Version = strings.TrimSpace(embeddedVersion)
 	if Version == "" {
 		Version = "0.0.0-dev"
 	}
 }
 
-// initLogger configures the default slog handler based on gin.Mode().
-// In non-release mode, Debug level logs are enabled.
 func main() {
+	os.Exit(realMain())
+}
+
+func realMain() int {
 	logger.InitBootstrap()
 	defer logger.Sync()
 
-	// Parse command line flags
+	if err := run(); err != nil {
+		log.Printf("Sub2API exited with error: %v", err)
+		return 1
+	}
+	return 0
+}
+
+func run() error {
 	setupMode := flag.Bool("setup", false, "Run setup wizard in CLI mode")
 	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 
 	if *showVersion {
 		log.Printf("Sub2API %s (commit: %s, built: %s)\n", Version, Commit, Date)
-		return
+		return nil
 	}
 
-	// CLI setup mode
 	if *setupMode {
 		if err := setup.RunCLI(); err != nil {
-			log.Fatalf("Setup failed: %v", err)
+			return fmt.Errorf("setup failed: %w", err)
 		}
-		return
+		return nil
 	}
 
-	// Check if setup is needed
 	if setup.NeedsSetup() {
-		// Check if auto-setup is enabled (for Docker deployment)
 		if setup.AutoSetupEnabled() {
 			log.Println("Auto setup mode enabled...")
 			if err := setup.AutoSetupFromEnv(); err != nil {
-				log.Fatalf("Auto setup failed: %v", err)
+				return fmt.Errorf("auto setup failed: %w", err)
 			}
-			// Continue to main server after auto-setup
 		} else {
 			log.Println("First run detected, starting setup wizard...")
-			runSetupServer()
-			return
+			return runSetupServer()
 		}
 	}
 
-	// Normal server mode
-	runMainServer()
+	return runMainServer()
 }
 
-func runSetupServer() {
+func runSetupServer() error {
 	r := gin.New()
 	r.Use(middleware.Recovery())
 	r.Use(middleware.CORS(config.CORSConfig{}))
 	r.Use(middleware.SecurityHeaders(config.CSPConfig{Enabled: true, Policy: config.DefaultCSPPolicy}, nil))
 
-	// Register setup routes
 	setup.RegisterRoutes(r)
 
-	// Serve embedded frontend if available
 	if web.HasEmbeddedFrontend() {
 		r.Use(web.ServeEmbeddedFrontend())
 	}
 
-	// Get server address from config.yaml or environment variables (SERVER_HOST, SERVER_PORT)
-	// This allows users to run setup on a different address if needed
 	addr := config.GetServerAddress()
 	log.Printf("Setup wizard available at http://%s", addr)
 	log.Println("Complete the setup wizard to configure Sub2API")
@@ -124,17 +122,18 @@ func runSetupServer() {
 	}
 
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("Failed to start setup server: %v", err)
+		return fmt.Errorf("start setup server: %w", err)
 	}
+	return nil
 }
 
-func runMainServer() {
+func runMainServer() error {
 	cfg, err := config.LoadForBootstrap()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 	if err := logger.Init(logger.OptionsFromConfig(cfg.Log)); err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+		return fmt.Errorf("initialize logger: %w", err)
 	}
 	if cfg.RunMode == config.RunModeSimple {
 		log.Println("⚠️  WARNING: Running in SIMPLE mode - billing and quota checks are DISABLED")
@@ -147,32 +146,76 @@ func runMainServer() {
 
 	app, err := initializeApplication(buildInfo)
 	if err != nil {
-		log.Fatalf("Failed to initialize application: %v", err)
+		return fmt.Errorf("initialize application: %w", err)
 	}
-	defer app.Cleanup()
 
-	// 启动服务器
+	return runApplication(app, shutdownTimeoutFromConfig(cfg), nil)
+}
+
+func runApplication(app *Application, shutdownTimeout time.Duration, signals <-chan os.Signal) error {
+	if app == nil || app.Server == nil {
+		return errors.New("application server not initialized")
+	}
+	if app.Cleanup != nil {
+		defer app.Cleanup()
+	}
+	return serveApplication(app.Server, shutdownTimeout, signals)
+}
+
+func serveApplication(server *http.Server, shutdownTimeout time.Duration, signals <-chan os.Signal) error {
+	if server == nil {
+		return errors.New("server is nil")
+	}
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 30 * time.Second
+	}
+
+	serverErrCh := make(chan error, 1)
 	go func() {
-		if err := app.Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Failed to start server: %v", err)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrCh <- err
 		}
+		close(serverErrCh)
 	}()
 
-	log.Printf("Server started on %s", app.Server.Addr)
+	log.Printf("Server started on %s", server.Addr)
 
-	// 等待中断信号
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	if signals == nil {
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(quit)
+		signals = quit
+	}
 
-	log.Println("Shutting down server...")
+	select {
+	case err, ok := <-serverErrCh:
+		if ok && err != nil {
+			return fmt.Errorf("start server: %w", err)
+		}
+		log.Println("Server exited")
+		return nil
+	case sig, ok := <-signals:
+		if !ok {
+			return errors.New("signal channel closed unexpectedly")
+		}
+		log.Printf("Shutting down server on signal %s...", sig.String())
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	if err := app.Server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+	if err := server.Shutdown(ctx); err != nil {
+		_ = server.Close()
+		return fmt.Errorf("shutdown server after %s: %w", shutdownTimeout, err)
 	}
 
 	log.Println("Server exited")
+	return nil
+}
+
+func shutdownTimeoutFromConfig(cfg *config.Config) time.Duration {
+	if cfg != nil && cfg.Server.ShutdownTimeout > 0 {
+		return time.Duration(cfg.Server.ShutdownTimeout) * time.Second
+	}
+	return 30 * time.Second
 }

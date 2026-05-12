@@ -2,11 +2,16 @@ package repository
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/ent"
+	dbaccount "github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/tlsfingerprintprofile"
 	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+
+	entsql "entgo.io/ent/dialect/sql"
+	"entgo.io/ent/dialect/sql/sqljson"
 )
 
 type tlsFingerprintProfileRepository struct {
@@ -157,6 +162,24 @@ func (r *tlsFingerprintProfileRepository) Update(ctx context.Context, p *model.T
 
 // Delete 删除模板
 func (r *tlsFingerprintProfileRepository) Delete(ctx context.Context, id int64) error {
+	inUse, err := r.client.Account.Query().
+		Where(
+			dbaccount.DeletedAtIsNil(),
+			func(selector *entsql.Selector) {
+				path := sqljson.Path("tls_fingerprint_profile_id")
+				selector.Where(entsql.Or(
+					sqljson.ValueEQ(dbaccount.FieldExtra, id, path),
+					sqljson.ValueEQ(dbaccount.FieldExtra, strconv.FormatInt(id, 10), path),
+				))
+			},
+		).
+		Exist(ctx)
+	if err != nil {
+		return err
+	}
+	if inUse {
+		return service.ErrTLSFingerprintProfileInUse
+	}
 	return r.client.TLSFingerprintProfile.DeleteOneID(id).Exec(ctx)
 }
 

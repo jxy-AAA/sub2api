@@ -125,8 +125,7 @@ import { useAdminSettingsStore } from '@/stores/adminSettings'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { buildEmbeddedUrl, detectTheme } from '@/utils/embedded-url'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { renderMarkdown } from '@/utils/markdown'
 
 interface TocItem {
   id: string
@@ -239,8 +238,7 @@ async function fetchAndRenderMarkdown(slug: string) {
       (match, alt, src) => isRelativeMarkdownAsset(src) ? `![${alt}](${buildPageImageUrl(slug, src)})` : match
     )
 
-    const html = marked.parse(raw) as string
-    const sanitized = DOMPurify.sanitize(html, {
+    const sanitized = renderMarkdown(raw, {
       ADD_TAGS: ['iframe'],
       ADD_ATTR: ['allowfullscreen', 'frameborder', 'src'],
     })

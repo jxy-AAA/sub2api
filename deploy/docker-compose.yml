@@ -227,12 +227,21 @@ services:
         hard: 100000
     volumes:
       - redis_data:/data
+    tmpfs:
+      - /run/redis:size=1m,mode=0700
     command:
-      [
-        "sh",
-        "-c",
-        "redis-server --save 60 1 --appendonly yes --appendfsync everysec --requirepass \"$$REDIS_PASSWORD\"",
-      ]
+      - sh
+      - -ec
+      - |
+        umask 077
+        conf=/run/redis/redis.conf
+        cat > "$$conf" <<'EOF'
+        save 60 1
+        appendonly yes
+        appendfsync everysec
+        EOF
+        printf 'requirepass %s\n' "$$REDIS_PASSWORD" >> "$$conf"
+        exec redis-server "$$conf"
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}

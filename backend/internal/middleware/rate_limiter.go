@@ -3,21 +3,26 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"log"
-	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"github.com/spf13/viper"
+	"go.uber.org/zap"
 )
 
 // RateLimitFailureMode Redis 故障策略
 type RateLimitFailureMode int
 
 const (
-	RateLimitFailOpen RateLimitFailureMode = iota
+	RateLimitFailureModeUnset RateLimitFailureMode = iota
 	RateLimitFailClose
+	RateLimitFailOpen
 )
 
 // RateLimitOptions 限流可选配置
@@ -38,7 +43,7 @@ end
 return {current, repaired}
 `)
 
-// rateLimitRun 允许测试覆写脚本执行逻辑
+// rateLimitRun 允许测试覆盖脚本执行逻辑
 var rateLimitRun = func(ctx context.Context, client *redis.Client, key string, windowMillis int64) (int64, bool, error) {
 	values, err := rateLimitScript.Run(ctx, client, []string{key}, windowMillis).Slice()
 	if err != nil {
@@ -73,47 +78,42 @@ func NewRateLimiter(redisClient *redis.Client) *RateLimiter {
 }
 
 // Limit 返回速率限制中间件
-// key: 限制类型标识
-// limit: 时间窗口内最大请求数
-// window: 时间窗口
 func (r *RateLimiter) Limit(key string, limit int, window time.Duration) gin.HandlerFunc {
 	return r.LimitWithOptions(key, limit, window, RateLimitOptions{})
 }
 
 // LimitWithOptions 返回速率限制中间件（带可选配置）
 func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Duration, opts RateLimitOptions) gin.HandlerFunc {
-	failureMode := opts.FailureMode
-	if failureMode != RateLimitFailClose {
-		failureMode = RateLimitFailOpen
-	}
+	failureMode := resolveFailureMode(opts)
 
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
 		redisKey := r.prefix + key + ":" + ip
 
-		ctx := c.Request.Context()
-
 		windowMillis := windowTTLMillis(window)
-
-		// 使用 Lua 脚本原子操作增加计数并设置过期
-		count, repaired, err := rateLimitRun(ctx, r.redis, redisKey, windowMillis)
+		count, repaired, err := rateLimitRun(c.Request.Context(), r.redis, redisKey, windowMillis)
 		if err != nil {
-			log.Printf("[RateLimit] redis error: key=%s mode=%s err=%v", redisKey, failureModeLabel(failureMode), err)
+			logger.L().Warn("rate limit redis backend error",
+				zap.String("key", redisKey),
+				zap.String("failure_mode", failureModeLabel(failureMode)),
+				zap.Error(err),
+			)
 			if failureMode == RateLimitFailClose {
-				abortRateLimit(c)
+				abortRateLimitUnavailable(c)
 				return
 			}
-			// Redis 错误时放行，避免影响正常服务
 			c.Next()
 			return
 		}
 		if repaired {
-			log.Printf("[RateLimit] ttl repaired: key=%s window_ms=%d", redisKey, windowMillis)
+			logger.L().Info("rate limit ttl repaired",
+				zap.String("key", redisKey),
+				zap.Int64("window_ms", windowMillis),
+			)
 		}
 
-		// 超过限制
 		if count > int64(limit) {
-			abortRateLimit(c)
+			abortRateLimitExceeded(c)
 			return
 		}
 
@@ -129,11 +129,48 @@ func windowTTLMillis(window time.Duration) int64 {
 	return ttl
 }
 
-func abortRateLimit(c *gin.Context) {
-	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-		"error":   "rate limit exceeded",
-		"message": "Too many requests, please try again later",
-	})
+func abortRateLimitExceeded(c *gin.Context) {
+	response.AbortWithDetails(c, 429, "Too many requests, please try again later", "RATE_LIMIT_EXCEEDED", nil)
+}
+
+func abortRateLimitUnavailable(c *gin.Context) {
+	response.AbortWithDetails(c, 429, "Request throttling is temporarily unavailable. Please retry later", "RATE_LIMIT_BACKEND_UNAVAILABLE", nil)
+}
+
+func resolveFailureMode(opts RateLimitOptions) RateLimitFailureMode {
+	switch opts.FailureMode {
+	case RateLimitFailClose, RateLimitFailOpen:
+		return opts.FailureMode
+	}
+
+	switch normalizeFailureModeName(viper.GetString("rate_limit.redis_failure_mode")) {
+	case RateLimitFailOpen:
+		return RateLimitFailOpen
+	case RateLimitFailClose:
+		return RateLimitFailClose
+	}
+
+	for _, envName := range []string{"RATE_LIMIT_REDIS_FAILURE_MODE", "SUB2API_RATE_LIMIT_REDIS_FAILURE_MODE"} {
+		switch normalizeFailureModeName(os.Getenv(envName)) {
+		case RateLimitFailOpen:
+			return RateLimitFailOpen
+		case RateLimitFailClose:
+			return RateLimitFailClose
+		}
+	}
+
+	return RateLimitFailClose
+}
+
+func normalizeFailureModeName(raw string) RateLimitFailureMode {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "fail-open", "fail_open", "open":
+		return RateLimitFailOpen
+	case "fail-close", "fail_close", "close", "":
+		return RateLimitFailClose
+	default:
+		return RateLimitFailureModeUnset
+	}
 }
 
 func failureModeLabel(mode RateLimitFailureMode) string {

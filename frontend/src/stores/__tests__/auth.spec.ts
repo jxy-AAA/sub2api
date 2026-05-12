@@ -1,15 +1,15 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { setActivePinia, createPinia } from 'pinia'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { clearAccessToken, getAccessToken, setAccessToken } from '@/api/tokenStorage'
 
-// Mock authAPI
 const mockLogin = vi.fn()
 const mockLogin2FA = vi.fn()
 const mockLogout = vi.fn()
 const mockGetCurrentUser = vi.fn()
 const mockRegister = vi.fn()
 const mockRefreshToken = vi.fn()
+const mockRefreshAccessToken = vi.fn()
 
 vi.mock('@/api', () => ({
   authAPI: {
@@ -21,6 +21,10 @@ vi.mock('@/api', () => ({
     refreshToken: (...args: any[]) => mockRefreshToken(...args),
   },
   isTotp2FARequired: (response: any) => response?.requires_2fa === true,
+}))
+
+vi.mock('@/api/client', () => ({
+  refreshAccessToken: (...args: any[]) => mockRefreshAccessToken(...args),
 }))
 
 const fakeUser = {
@@ -60,16 +64,16 @@ describe('useAuthStore', () => {
     clearAccessToken()
     vi.useFakeTimers()
     vi.clearAllMocks()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
   afterEach(() => {
     vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
-  // --- login ---
-
   describe('login', () => {
-    it('成功登录后设置 token 和 user', async () => {
+    it('sets token and user after a successful login', async () => {
       mockLogin.mockResolvedValue(fakeAuthResponse)
       const store = useAuthStore()
 
@@ -83,7 +87,7 @@ describe('useAuthStore', () => {
       expect(localStorage.getItem('auth_user')).toBe(JSON.stringify(fakeUser))
     })
 
-    it('登录失败时清除状态并抛出错误', async () => {
+    it('clears auth state when login fails', async () => {
       mockLogin.mockRejectedValue(new Error('Invalid credentials'))
       const store = useAuthStore()
 
@@ -96,23 +100,21 @@ describe('useAuthStore', () => {
       expect(store.isAuthenticated).toBe(false)
     })
 
-    it('需要 2FA 时返回响应但不设置认证状态', async () => {
-      const twoFAResponse = { requires_2fa: true, temp_token: 'temp-123' }
-      mockLogin.mockResolvedValue(twoFAResponse)
+    it('returns a 2FA challenge without authenticating the user', async () => {
+      const twoFactorResponse = { requires_2fa: true, temp_token: 'temp-123' }
+      mockLogin.mockResolvedValue(twoFactorResponse)
       const store = useAuthStore()
 
       const result = await store.login({ email: 'test@example.com', password: '123456' })
 
-      expect(result).toEqual(twoFAResponse)
+      expect(result).toEqual(twoFactorResponse)
       expect(store.token).toBeNull()
       expect(store.isAuthenticated).toBe(false)
     })
   })
 
-  // --- login2FA ---
-
   describe('login2FA', () => {
-    it('2FA 验证成功后设置认证状态', async () => {
+    it('authenticates the user after a successful 2FA login', async () => {
       mockLogin2FA.mockResolvedValue(fakeAuthResponse)
       const store = useAuthStore()
 
@@ -127,7 +129,7 @@ describe('useAuthStore', () => {
       })
     })
 
-    it('2FA 验证失败时清除状态并抛出错误', async () => {
+    it('clears auth state when 2FA verification fails', async () => {
       mockLogin2FA.mockRejectedValue(new Error('Invalid TOTP'))
       const store = useAuthStore()
 
@@ -137,19 +139,15 @@ describe('useAuthStore', () => {
     })
   })
 
-  // --- logout ---
-
   describe('logout', () => {
-    it('注销后清除所有状态和 localStorage', async () => {
+    it('clears persisted auth state on logout', async () => {
       mockLogin.mockResolvedValue(fakeAuthResponse)
       mockLogout.mockResolvedValue(undefined)
       const store = useAuthStore()
 
-      // 先登录
       await store.login({ email: 'test@example.com', password: '123456' })
       expect(store.isAuthenticated).toBe(true)
 
-      // 注销
       await store.logout()
 
       expect(store.token).toBeNull()
@@ -162,59 +160,55 @@ describe('useAuthStore', () => {
     })
   })
 
-  // --- checkAuth ---
-
   describe('checkAuth', () => {
-    it('从 localStorage 恢复持久化状态', () => {
+    it('restores persisted auth state when an access token is still available', async () => {
       setAccessToken('saved-token')
       localStorage.setItem('auth_user', JSON.stringify(fakeUser))
-
-      // Mock refreshUser (getCurrentUser) 防止后台刷新报错
       mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
 
       const store = useAuthStore()
-      store.checkAuth()
+      await store.checkAuth()
 
       expect(store.token).toBe('saved-token')
       expect(store.user).toEqual(fakeUser)
       expect(store.isAuthenticated).toBe(true)
     })
 
-    it('localStorage 无数据时保持未认证状态', () => {
+    it('keeps the store unauthenticated when nothing is persisted', async () => {
       const store = useAuthStore()
-      store.checkAuth()
+      await store.checkAuth()
 
       expect(store.token).toBeNull()
       expect(store.user).toBeNull()
       expect(store.isAuthenticated).toBe(false)
     })
 
-    it('localStorage 中用户数据损坏时清除状态', () => {
+    it('clears auth state when persisted user data is invalid', async () => {
       setAccessToken('saved-token')
       localStorage.setItem('auth_user', 'invalid-json{{{')
 
       const store = useAuthStore()
-      store.checkAuth()
+      await store.checkAuth()
 
       expect(store.token).toBeNull()
       expect(store.user).toBeNull()
       expect(localStorage.getItem('auth_token')).toBeNull()
     })
 
-    it('恢复 refresh token 和过期时间', () => {
+    it('restores token expiry metadata from persistence', async () => {
       const futureTs = String(Date.now() + 3600_000)
       setAccessToken('saved-token')
       localStorage.setItem('auth_user', JSON.stringify(fakeUser))
       localStorage.setItem('token_expires_at', futureTs)
-
       mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
 
       const store = useAuthStore()
-      store.checkAuth()
+      await store.checkAuth()
 
       expect(store.isAuthenticated).toBe(true)
     })
-    it('restores persisted pending auth session metadata without restoring a token', () => {
+
+    it('restores pending auth metadata without restoring a pending token', async () => {
       sessionStorage.setItem(
         'pending_auth_session',
         JSON.stringify({
@@ -226,7 +220,7 @@ describe('useAuthStore', () => {
       )
 
       const store = useAuthStore()
-      store.checkAuth()
+      await store.checkAuth()
 
       expect(store.hasPendingAuthSession).toBe(true)
       expect(store.pendingAuthSession).toEqual({
@@ -236,8 +230,45 @@ describe('useAuthStore', () => {
         redirect: '/profile',
         adoption_required: undefined,
         suggested_display_name: undefined,
-        suggested_avatar_url: undefined
+        suggested_avatar_url: undefined,
       })
+    })
+
+    it('restores the access token through refresh when only session hints remain', async () => {
+      localStorage.setItem('auth_user', JSON.stringify(fakeUser))
+      localStorage.setItem('token_expires_at', String(Date.now() + 3600_000))
+      mockRefreshAccessToken.mockImplementation(async () => {
+        setAccessToken('restored-token')
+        return {
+          accessToken: 'restored-token',
+          expiresIn: 3600,
+        }
+      })
+      mockGetCurrentUser.mockResolvedValue({ data: fakeUser })
+
+      const store = useAuthStore()
+      await store.checkAuth()
+
+      expect(mockRefreshAccessToken).toHaveBeenCalledTimes(1)
+      expect(store.token).toBe('restored-token')
+      expect(getAccessToken()).toBe('restored-token')
+      expect(store.user).toEqual(fakeUser)
+      expect(store.isAuthenticated).toBe(true)
+    })
+
+    it('clears persisted auth state when restore-via-refresh fails', async () => {
+      localStorage.setItem('auth_user', JSON.stringify(fakeUser))
+      localStorage.setItem('token_expires_at', String(Date.now() + 3600_000))
+      mockRefreshAccessToken.mockRejectedValue(new Error('refresh failed'))
+
+      const store = useAuthStore()
+      await store.checkAuth()
+
+      expect(store.token).toBeNull()
+      expect(store.user).toBeNull()
+      expect(store.isAuthenticated).toBe(false)
+      expect(localStorage.getItem('auth_user')).toBeNull()
+      expect(localStorage.getItem('token_expires_at')).toBeNull()
     })
   })
 
@@ -260,6 +291,7 @@ describe('useAuthStore', () => {
         provider: 'wechat',
         redirect: '/profile',
       })
+
       const persisted = JSON.parse(sessionStorage.getItem('pending_auth_session') || 'null')
       expect(persisted).toEqual({
         token_field: 'pending_auth_token',
@@ -274,7 +306,7 @@ describe('useAuthStore', () => {
       expect(sessionStorage.getItem('pending_auth_session')).toBeNull()
     })
 
-    it('restores a persisted pending oauth session without requiring a token value', () => {
+    it('restores a persisted pending oauth session without requiring a token value', async () => {
       const firstStore = useAuthStore()
 
       firstStore.setPendingAuthSession({
@@ -283,12 +315,12 @@ describe('useAuthStore', () => {
         provider: 'oidc',
         redirect: '/welcome',
         adoption_required: true,
-        suggested_display_name: 'OIDC Nick'
+        suggested_display_name: 'OIDC Nick',
       })
 
       setActivePinia(createPinia())
       const restoredStore = useAuthStore()
-      restoredStore.checkAuth()
+      await restoredStore.checkAuth()
 
       expect(restoredStore.isAuthenticated).toBe(false)
       expect(restoredStore.hasPendingAuthSession).toBe(true)
@@ -299,11 +331,11 @@ describe('useAuthStore', () => {
         redirect: '/welcome',
         adoption_required: true,
         suggested_display_name: 'OIDC Nick',
-        suggested_avatar_url: undefined
+        suggested_avatar_url: undefined,
       })
     })
 
-    it('preserves pending auth session when registration fails', async () => {
+    it('preserves the pending auth session when registration fails', async () => {
       const store = useAuthStore()
       store.setPendingAuthSession({
         token: 'pending-token',
@@ -326,7 +358,7 @@ describe('useAuthStore', () => {
       })
     })
 
-    it('stages pending registration challenge without persisting password', () => {
+    it('stages a pending registration challenge without persisting the password', () => {
       const store = useAuthStore()
 
       store.setPendingRegistrationChallenge({
@@ -341,7 +373,9 @@ describe('useAuthStore', () => {
 
       expect(store.hasPendingRegistrationChallenge).toBe(true)
       expect(localStorage.getItem('pending_registration_challenge')).toBeNull()
-      expect(JSON.parse(sessionStorage.getItem('pending_registration_challenge') || 'null')).toMatchObject({
+      expect(
+        JSON.parse(sessionStorage.getItem('pending_registration_challenge') || 'null')
+      ).toMatchObject({
         email: 'user@example.com',
         turnstile_token: 'turnstile-token',
         invitation_code: 'INVITE123',
@@ -360,7 +394,7 @@ describe('useAuthStore', () => {
       })
     })
 
-    it('clears pending registration challenge after successful login', async () => {
+    it('clears the pending registration challenge after a successful login', async () => {
       const store = useAuthStore()
       store.setPendingRegistrationChallenge({
         email: 'user@example.com',
@@ -376,10 +410,8 @@ describe('useAuthStore', () => {
     })
   })
 
-  // --- isAdmin ---
-
   describe('isAdmin', () => {
-    it('管理员用户返回 true', async () => {
+    it('returns true for admin users', async () => {
       const adminResponse = { ...fakeAuthResponse, user: { ...fakeAdminUser } }
       mockLogin.mockResolvedValue(adminResponse)
       const store = useAuthStore()
@@ -389,7 +421,7 @@ describe('useAuthStore', () => {
       expect(store.isAdmin).toBe(true)
     })
 
-    it('普通用户返回 false', async () => {
+    it('returns false for regular users', async () => {
       mockLogin.mockResolvedValue(fakeAuthResponse)
       const store = useAuthStore()
 
@@ -398,16 +430,14 @@ describe('useAuthStore', () => {
       expect(store.isAdmin).toBe(false)
     })
 
-    it('未登录时返回 false', () => {
+    it('returns false when unauthenticated', () => {
       const store = useAuthStore()
       expect(store.isAdmin).toBe(false)
     })
   })
 
-  // --- refreshUser ---
-
   describe('refreshUser', () => {
-    it('刷新用户数据并更新 localStorage', async () => {
+    it('refreshes the user profile and updates persistence', async () => {
       mockLogin.mockResolvedValue(fakeAuthResponse)
       const store = useAuthStore()
       await store.login({ email: 'test@example.com', password: '123456' })
@@ -422,16 +452,14 @@ describe('useAuthStore', () => {
       expect(JSON.parse(localStorage.getItem('auth_user')!)).toEqual(updatedUser)
     })
 
-    it('未认证时抛出错误', async () => {
+    it('throws when the user is not authenticated', async () => {
       const store = useAuthStore()
       await expect(store.refreshUser()).rejects.toThrow('Not authenticated')
     })
   })
 
-  // --- isSimpleMode ---
-
   describe('isSimpleMode', () => {
-    it('run_mode 为 simple 时返回 true', async () => {
+    it('returns true when run_mode is simple', async () => {
       const simpleResponse = {
         ...fakeAuthResponse,
         user: { ...fakeUser, run_mode: 'simple' as const },
@@ -444,7 +472,7 @@ describe('useAuthStore', () => {
       expect(store.isSimpleMode).toBe(true)
     })
 
-    it('默认为 standard 模式', () => {
+    it('defaults to standard mode', () => {
       const store = useAuthStore()
       expect(store.isSimpleMode).toBe(false)
     })

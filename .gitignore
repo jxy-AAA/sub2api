@@ -34,6 +34,9 @@ backend/.gocache/
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/package-lock.json
+frontend/yarn.lock
+frontend/audit.json
 *.local
 *.tsbuildinfo
 vite.config.d.ts
@@ -119,6 +122,8 @@ tests
 CLAUDE.md
 .claude
 scripts
+!frontend/scripts/
+!frontend/scripts/enforce-pnpm.cjs
 .code-review-state
 #openspec/
 code-reviews/
@@ -131,6 +136,15 @@ docs/*
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
+!docs/README.md
+!docs/CHANNEL_MONITORING.md
+!docs/RISK_AND_CONTENT_AUDIT.md
+!docs/SUBSCRIPTIONS.md
+!docs/AUTH_PROVIDERS.md
+!docs/TOTP.md
+!docs/TLS_FINGERPRINTS.md
+!docs/GATEWAYS.md
+!docs/DEBUG_ENV.md
 .serena/
 .codex/
 frontend/coverage/

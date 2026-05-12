@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -510,6 +511,7 @@ type ServerConfig struct {
 	FrontendURL        string    `mapstructure:"frontend_url"`          // 前端基础 URL，用于生成邮件中的外部链接
 	ReadHeaderTimeout  int       `mapstructure:"read_header_timeout"`   // 读取请求头超时（秒）
 	IdleTimeout        int       `mapstructure:"idle_timeout"`          // 空闲连接超时（秒）
+	ShutdownTimeout    int       `mapstructure:"shutdown_timeout"`      // 优雅关闭超时（秒）
 	TrustedProxies     []string  `mapstructure:"trusted_proxies"`       // 可信代理列表（CIDR/IP）
 	MaxRequestBodySize int64     `mapstructure:"max_request_body_size"` // 全局最大请求体限制
 	H2C                H2CConfig `mapstructure:"h2c"`                   // HTTP/2 Cleartext 配置
@@ -1135,8 +1137,9 @@ type DefaultConfig struct {
 }
 
 type RateLimitConfig struct {
-	OverloadCooldownMinutes int `mapstructure:"overload_cooldown_minutes"`  // 529过载冷却时间(分钟)
-	OAuth401CooldownMinutes int `mapstructure:"oauth_401_cooldown_minutes"` // OAuth 401临时不可调度冷却(分钟)
+	OverloadCooldownMinutes int    `mapstructure:"overload_cooldown_minutes"`  // 529过载冷却时间(分钟)
+	OAuth401CooldownMinutes int    `mapstructure:"oauth_401_cooldown_minutes"` // OAuth 401临时不可调度冷却(分钟)
+	RedisFailureMode        string `mapstructure:"redis_failure_mode"`         // Redis 故障策略：fail_close/fail_open
 }
 
 // APIKeyAuthCacheConfig API Key 认证缓存配置
@@ -1282,7 +1285,15 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Server.Mode = "debug"
 	}
 	cfg.Server.FrontendURL = strings.TrimSpace(cfg.Server.FrontendURL)
+	cfg.Server.TrustedProxies = normalizeStringSlice(cfg.Server.TrustedProxies)
 	cfg.JWT.Secret = strings.TrimSpace(cfg.JWT.Secret)
+	cfg.Database.Host = strings.TrimSpace(cfg.Database.Host)
+	cfg.Database.User = strings.TrimSpace(cfg.Database.User)
+	cfg.Database.Password = strings.TrimSpace(cfg.Database.Password)
+	cfg.Database.DBName = strings.TrimSpace(cfg.Database.DBName)
+	cfg.Database.SSLMode = strings.ToLower(strings.TrimSpace(cfg.Database.SSLMode))
+	cfg.Redis.Host = strings.TrimSpace(cfg.Redis.Host)
+	cfg.RateLimit.RedisFailureMode = normalizeRateLimitRedisFailureMode(cfg.RateLimit.RedisFailureMode)
 	cfg.LinuxDo.ClientID = strings.TrimSpace(cfg.LinuxDo.ClientID)
 	cfg.LinuxDo.ClientSecret = strings.TrimSpace(cfg.LinuxDo.ClientSecret)
 	cfg.LinuxDo.AuthorizeURL = strings.TrimSpace(cfg.LinuxDo.AuthorizeURL)
@@ -1353,13 +1364,19 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	// Auto-generate TOTP encryption key if not set (32 bytes = 64 hex chars for AES-256)
 	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
 	if cfg.Totp.EncryptionKey == "" {
+		if !isDevelopmentLike(&cfg) {
+			return nil, fmt.Errorf("totp.encryption_key is required in production-like environments; configure TOTP_ENCRYPTION_KEY to preserve TOTP secrets across restarts")
+		}
 		key, err := generateJWTSecret(32) // Reuse the same random generation function
 		if err != nil {
 			return nil, fmt.Errorf("generate totp encryption key error: %w", err)
 		}
 		cfg.Totp.EncryptionKey = key
 		cfg.Totp.EncryptionKeyConfigured = false
-		slog.Warn("TOTP encryption key auto-generated. Consider setting a fixed key for production.")
+		slog.Warn("totp.encryption_key missing; generated ephemeral key for local development only",
+			"server_mode", cfg.Server.Mode,
+			"log_env", cfg.Log.Environment,
+		)
 	} else {
 		cfg.Totp.EncryptionKeyConfigured = true
 	}
@@ -1408,6 +1425,7 @@ func setDefaults() {
 	viper.SetDefault("server.frontend_url", "")
 	viper.SetDefault("server.read_header_timeout", 30) // 30秒读取请求头
 	viper.SetDefault("server.idle_timeout", 120)       // 120秒空闲超时
+	viper.SetDefault("server.shutdown_timeout", 30)    // 30秒优雅关闭超时
 	viper.SetDefault("server.trusted_proxies", []string{})
 	viper.SetDefault("server.max_request_body_size", int64(256*1024*1024))
 	// H2C 默认配置
@@ -1540,7 +1558,7 @@ func setDefaults() {
 	viper.SetDefault("database.host", "localhost")
 	viper.SetDefault("database.port", 5432)
 	viper.SetDefault("database.user", "postgres")
-	viper.SetDefault("database.password", "postgres")
+	viper.SetDefault("database.password", "")
 	viper.SetDefault("database.dbname", "sub2api")
 	viper.SetDefault("database.sslmode", "prefer")
 	viper.SetDefault("database.max_open_conns", 256)
@@ -1597,6 +1615,7 @@ func setDefaults() {
 	// RateLimit
 	viper.SetDefault("rate_limit.overload_cooldown_minutes", 10)
 	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
+	viper.SetDefault("rate_limit.redis_failure_mode", "fail_close")
 
 	// Pricing - 从 model-price-repo 同步模型定价和上下文窗口数据（固定到 commit，避免分支漂移）
 	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json")
@@ -1897,6 +1916,18 @@ func (c *Config) Validate() error {
 		}
 		warnIfInsecureURL("server.frontend_url", c.Server.FrontendURL)
 	}
+	if c.Server.ReadHeaderTimeout <= 0 {
+		return fmt.Errorf("server.read_header_timeout must be positive")
+	}
+	if c.Server.IdleTimeout <= 0 {
+		return fmt.Errorf("server.idle_timeout must be positive")
+	}
+	if c.Server.ShutdownTimeout <= 0 {
+		return fmt.Errorf("server.shutdown_timeout must be positive")
+	}
+	if c.Server.ShutdownTimeout < 15 {
+		slog.Warn("server.shutdown_timeout is low for long-lived SSE/WebSocket connections", "seconds", c.Server.ShutdownTimeout)
+	}
 	if c.JWT.ExpireHour <= 0 {
 		return fmt.Errorf("jwt.expire_hour must be positive")
 	}
@@ -2108,6 +2139,23 @@ func (c *Config) Validate() error {
 	if c.Database.MaxOpenConns <= 0 {
 		return fmt.Errorf("database.max_open_conns must be positive")
 	}
+	if strings.TrimSpace(c.Database.Password) == "" {
+		if !isDevelopmentLike(c) {
+			return fmt.Errorf("database.password is required in production-like environments")
+		}
+		slog.Warn("database.password is empty; allowed only for local development/test",
+			"database_host", c.Database.Host,
+			"log_env", c.Log.Environment,
+		)
+	} else if isWeakDatabasePassword(c.Database.Password) {
+		if !isDevelopmentLike(c) {
+			return fmt.Errorf("database.password uses a weak default value; configure a strong secret before production startup")
+		}
+		slog.Warn("database.password uses a weak default; allowed only for local development/test",
+			"database_host", c.Database.Host,
+			"log_env", c.Log.Environment,
+		)
+	}
 	if c.Database.MaxIdleConns < 0 {
 		return fmt.Errorf("database.max_idle_conns must be non-negative")
 	}
@@ -2137,6 +2185,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Redis.MinIdleConns > c.Redis.PoolSize {
 		return fmt.Errorf("redis.min_idle_conns cannot exceed redis.pool_size")
+	}
+	switch normalizeRateLimitRedisFailureMode(c.RateLimit.RedisFailureMode) {
+	case "fail_close", "fail_open":
+	default:
+		return fmt.Errorf("rate_limit.redis_failure_mode must be one of: fail_close/fail_open")
+	}
+	if normalizeRateLimitRedisFailureMode(c.RateLimit.RedisFailureMode) == "fail_open" && !isDevelopmentLike(c) {
+		slog.Warn("rate_limit.redis_failure_mode=fail_open reduces protection during Redis outages")
 	}
 	if c.Dashboard.Enabled {
 		if c.Dashboard.StatsFreshTTLSeconds <= 0 {
@@ -2654,6 +2710,60 @@ func generateJWTSecret(byteLength int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func normalizeRateLimitRedisFailureMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "fail-open", "fail_open", "open":
+		return "fail_open"
+	case "fail-close", "fail_close", "close", "":
+		return "fail_close"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+func isWeakDatabasePassword(password string) bool {
+	lower := strings.ToLower(strings.TrimSpace(password))
+	if lower == "" {
+		return true
+	}
+	weak := map[string]struct{}{
+		"postgres": {},
+		"password": {},
+		"123456":   {},
+		"12345678": {},
+		"admin":    {},
+		"changeme": {},
+	}
+	_, exists := weak[lower]
+	return exists
+}
+
+func isDevelopmentLike(c *Config) bool {
+	if c == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Log.Environment)) {
+	case "development", "dev", "test", "local":
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Server.Mode), "debug") {
+		return true
+	}
+	return isLoopbackHost(c.Database.Host) && isLoopbackHost(c.Redis.Host)
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
 // GetServerAddress returns the server address (host:port) from config file or environment variable.

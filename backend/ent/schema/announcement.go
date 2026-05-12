@@ -1,8 +1,7 @@
 package schema
 
 import (
-	"time"
-
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 
 	"entgo.io/ent"
@@ -24,6 +23,12 @@ type Announcement struct {
 func (Announcement) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "announcements"},
+	}
+}
+
+func (Announcement) Mixin() []ent.Mixin {
+	return []ent.Mixin{
+		mixins.TimeMixin{},
 	}
 }
 
@@ -67,14 +72,6 @@ func (Announcement) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			Comment("更新人用户ID（管理员）"),
-		field.Time("created_at").
-			Immutable().
-			Default(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
-		field.Time("updated_at").
-			Default(time.Now).
-			UpdateDefault(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
 	}
 }
 

@@ -367,6 +367,74 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultServerShutdownTimeout(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 30, cfg.Server.ShutdownTimeout)
+}
+
+func TestLoadAllowsLocalDevelopmentEphemeralTotpKey(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("DATABASE_HOST", "127.0.0.1")
+	t.Setenv("REDIS_HOST", "127.0.0.1")
+	t.Setenv("TOTP_ENCRYPTION_KEY", "")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Totp.EncryptionKeyConfigured)
+	require.Len(t, cfg.Totp.EncryptionKey, 64)
+}
+
+func TestLoadRejectsProductionLikeMissingTotpKey(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("DATABASE_HOST", "db.internal")
+	t.Setenv("REDIS_HOST", "redis.internal")
+	t.Setenv("DATABASE_PASSWORD", "strong-password")
+	t.Setenv("TOTP_ENCRYPTION_KEY", "")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "totp.encryption_key")
+}
+
+func TestLoadRejectsProductionLikeWeakDatabasePassword(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("DATABASE_HOST", "db.internal")
+	t.Setenv("REDIS_HOST", "redis.internal")
+	t.Setenv("DATABASE_PASSWORD", "postgres")
+	t.Setenv("TOTP_ENCRYPTION_KEY", strings.Repeat("a", 64))
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "database.password uses a weak default value")
+}
+
+func TestLoadAllowsLocalDevelopmentEmptyDatabasePassword(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("DATABASE_HOST", "localhost")
+	t.Setenv("REDIS_HOST", "127.0.0.1")
+	t.Setenv("DATABASE_PASSWORD", "")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "", cfg.Database.Password)
+}
+
+func TestValidateRateLimitRedisFailureMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("TOTP_ENCRYPTION_KEY", strings.Repeat("a", 64))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.RateLimit.RedisFailureMode = "invalid"
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rate_limit.redis_failure_mode")
+}
+
 func TestValidateLinuxDoFrontendRedirectURL(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

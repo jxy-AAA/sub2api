@@ -289,7 +289,7 @@ func (s *PaymentService) ExecuteBalanceFulfillment(ctx context.Context, oid int6
 		return infraerrors.NotFound("NOT_FOUND", "order not found")
 	}
 	if o.Status == OrderStatusCompleted {
-		return nil
+		return s.recordDistributionPaidCreditForOrder(ctx, o)
 	}
 	if psIsRefundStatus(o.Status) {
 		return infraerrors.BadRequest("INVALID_STATUS", "refund-related order cannot fulfill")
@@ -342,6 +342,9 @@ func (s *PaymentService) doBalance(ctx context.Context, o *dbent.PaymentOrder) e
 
 	switch action {
 	case redeemActionSkipCompleted:
+		if err := s.recordDistributionPaidCreditForOrder(ctx, o); err != nil {
+			return err
+		}
 		if err := s.applyAffiliateRebateForOrder(ctx, o); err != nil {
 			return err
 		}
@@ -358,10 +361,54 @@ func (s *PaymentService) doBalance(ctx context.Context, o *dbent.PaymentOrder) e
 	if _, err := s.redeemService.Redeem(ContextSkipRedeemAffiliate(ctx), o.UserID, o.RechargeCode); err != nil {
 		return fmt.Errorf("redeem balance: %w", err)
 	}
+	if err := s.recordDistributionPaidCreditForOrder(ctx, o); err != nil {
+		return err
+	}
 	if err := s.applyAffiliateRebateForOrder(ctx, o); err != nil {
 		return err
 	}
 	return s.markCompleted(ctx, o, "RECHARGE_SUCCESS")
+}
+
+func (s *PaymentService) recordDistributionPaidCreditForOrder(ctx context.Context, o *dbent.PaymentOrder) error {
+	if s == nil || o == nil || o.OrderType != payment.OrderTypeBalance || o.Amount <= 0 {
+		return nil
+	}
+	if o.UserID <= 0 || o.ID <= 0 {
+		s.writeAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_FAILED", "system", map[string]any{
+			"error": "invalid order identity for affiliate distribution paid credit",
+		})
+		slog.Warn("[PaymentService] affiliate distribution paid credit skipped due to invalid order identity", "orderID", o.ID, "userID", o.UserID)
+		return nil
+	}
+	if s.affiliateService == nil {
+		s.writeAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_FAILED", "system", map[string]any{
+			"error": "affiliate distribution service unavailable",
+		})
+		slog.Warn("[PaymentService] affiliate distribution paid credit service unavailable", "orderID", o.ID, "userID", o.UserID)
+		return nil
+	}
+	creditedAt := time.Now().UTC()
+	if o.PaidAt != nil && !o.PaidAt.IsZero() {
+		creditedAt = o.PaidAt.UTC()
+	}
+	applied, err := s.affiliateService.RecordDistributionPaidCredit(ctx, o.UserID, o.ID, o.Amount, creditedAt)
+	if err != nil {
+		s.writeAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_FAILED", "system", map[string]any{
+			"error":      err.Error(),
+			"amount":     o.Amount,
+			"creditedAt": creditedAt.Format(time.RFC3339Nano),
+		})
+		slog.Warn("[PaymentService] affiliate distribution paid credit failed", "orderID", o.ID, "userID", o.UserID, "error", err)
+		return nil
+	}
+	if applied && !s.hasAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_APPLIED") {
+		s.writeAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_APPLIED", "system", map[string]any{
+			"amount":     o.Amount,
+			"creditedAt": creditedAt.Format(time.RFC3339Nano),
+		})
+	}
+	return nil
 }
 
 func (s *PaymentService) markCompleted(ctx context.Context, o *dbent.PaymentOrder, auditAction string) error {

@@ -258,7 +258,11 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
 
-		AffiliateEnabled: settings.AffiliateEnabled,
+		AffiliateEnabled:             settings.AffiliateEnabled,
+		AffiliateRebateRate:          settings.AffiliateRebateRate,
+		AffiliateRebateFreezeHours:   settings.AffiliateRebateFreezeHours,
+		AffiliateRebateDurationDays:  settings.AffiliateRebateDurationDays,
+		AffiliateRebatePerInviteeCap: settings.AffiliateRebatePerInviteeCap,
 	}
 
 	// OpenAI fast policy (stored under a dedicated setting key)
@@ -1730,7 +1734,11 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
 
-		AffiliateEnabled: updatedSettings.AffiliateEnabled,
+		AffiliateEnabled:             updatedSettings.AffiliateEnabled,
+		AffiliateRebateRate:          updatedSettings.AffiliateRebateRate,
+		AffiliateRebateFreezeHours:   updatedSettings.AffiliateRebateFreezeHours,
+		AffiliateRebateDurationDays:  updatedSettings.AffiliateRebateDurationDays,
+		AffiliateRebatePerInviteeCap: updatedSettings.AffiliateRebatePerInviteeCap,
 
 		RiskControlEnabled: updatedSettings.RiskControlEnabled,
 	}

@@ -14,6 +14,21 @@ var ErrAffiliateDistributionGroupIDRequired = infraerrors.ServiceUnavailable(
 	"usage group id unavailable for settlement",
 )
 
+var ErrAffiliateDistributionSettlementInvalidInput = infraerrors.BadRequest(
+	"AFFILIATE_DISTRIBUTION_SETTLEMENT_INVALID",
+	"affiliate distribution settlement input is invalid",
+)
+
+var ErrAffiliateDistributionPaidCreditInvalidInput = infraerrors.BadRequest(
+	"AFFILIATE_DISTRIBUTION_PAID_CREDIT_INVALID",
+	"affiliate distribution paid credit input is invalid",
+)
+
+var ErrAffiliateDistributionPaidCreditConflict = infraerrors.Conflict(
+	"AFFILIATE_DISTRIBUTION_PAID_CREDIT_CONFLICT",
+	"affiliate distribution paid credit conflicts with existing order credit",
+)
+
 type AffiliateDistributionUsageSettlementCommand struct {
 	UsageLogID     int64
 	UserID         int64
@@ -39,6 +54,11 @@ type AffiliateDistributionUsageSettlementProcessor interface {
 	SettleUsageDistribution(ctx context.Context, cmd AffiliateDistributionUsageSettlementCommand) error
 }
 
+type AffiliateDistributionPaidCreditRecorder interface {
+	RecordPaidCredit(ctx context.Context, userID, sourceOrderID int64, amountUSD float64, creditedAt time.Time) (bool, error)
+	ReversePaidCredit(ctx context.Context, userID, sourceOrderID int64, amountUSD float64, reversedAt time.Time) (bool, error)
+}
+
 type AffiliateDistributionSettlementService struct {
 	store     AffiliateDistributionUsageSettlementStore
 	processor AffiliateDistributionUsageSettlementProcessor
@@ -55,8 +75,11 @@ func NewAffiliateDistributionSettlementService(
 }
 
 func (s *AffiliateDistributionSettlementService) SettleUsage(ctx context.Context, cmd AffiliateDistributionUsageSettlementCommand) (bool, error) {
-	if s == nil || s.store == nil || s.processor == nil || cmd.UsageLogID <= 0 {
-		return false, nil
+	if s == nil || s.store == nil || s.processor == nil {
+		return false, ErrAffiliateDistributionUnavailable
+	}
+	if cmd.UsageLogID <= 0 || cmd.UserID <= 0 {
+		return false, ErrAffiliateDistributionSettlementInvalidInput
 	}
 
 	claimed, err := s.store.TryBeginUsageSettlement(ctx, cmd.UsageLogID)

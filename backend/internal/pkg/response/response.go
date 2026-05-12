@@ -2,13 +2,15 @@
 package response
 
 import (
-	"log"
 	"math"
 	"net/http"
+	"strconv"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // Response 标准API响应格式
@@ -58,12 +60,7 @@ func Accepted(c *gin.Context, data any) {
 
 // Error 返回错误响应
 func Error(c *gin.Context, statusCode int, message string) {
-	c.JSON(statusCode, Response{
-		Code:     statusCode,
-		Message:  message,
-		Reason:   "",
-		Metadata: nil,
-	})
+	ErrorWithDetails(c, statusCode, message, "", nil)
 }
 
 // ErrorWithDetails returns an error response compatible with the existing envelope while
@@ -77,6 +74,12 @@ func ErrorWithDetails(c *gin.Context, statusCode int, message, reason string, me
 	})
 }
 
+// AbortWithDetails writes the standard error envelope and aborts the current handler chain.
+func AbortWithDetails(c *gin.Context, statusCode int, message, reason string, metadata map[string]string) {
+	ErrorWithDetails(c, statusCode, message, reason, metadata)
+	c.Abort()
+}
+
 // ErrorFrom converts an ApplicationError (or any error) into the envelope-compatible error response.
 // It returns true if an error was written.
 func ErrorFrom(c *gin.Context, err error) bool {
@@ -88,7 +91,12 @@ func ErrorFrom(c *gin.Context, err error) bool {
 
 	// Log internal errors with full details for debugging
 	if statusCode >= 500 && c.Request != nil {
-		log.Printf("[ERROR] %s %s\n  Error: %s", c.Request.Method, c.Request.URL.Path, logredact.RedactText(err.Error()))
+		logger.FromContext(c.Request.Context()).Error("request failed",
+			zap.Int("status_code", statusCode),
+			zap.String("method", c.Request.Method),
+			zap.String("path", c.Request.URL.Path),
+			zap.String("error", logredact.RedactText(err.Error())),
+		)
 	}
 
 	ErrorWithDetails(c, statusCode, status.Message, status.Reason, status.Metadata)
@@ -192,12 +200,5 @@ func ParsePagination(c *gin.Context) (page, pageSize int) {
 }
 
 func parseInt(s string) (int, error) {
-	var result int
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, nil
-		}
-		result = result*10 + int(c-'0')
-	}
-	return result, nil
+	return strconv.Atoi(s)
 }

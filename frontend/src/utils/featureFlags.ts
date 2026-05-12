@@ -123,6 +123,15 @@ export const FeatureFlags = {
 
 export type RegisteredFeatureFlag = keyof typeof FeatureFlags
 
+export function resolveFeatureFlag(
+  flag: FeatureFlagDefinition,
+  settings?: Partial<PublicSettings> | null,
+): boolean {
+  const raw = settings?.[flag.key] as boolean | undefined
+  if (typeof raw === 'boolean') return raw
+  return flag.mode === 'opt-out'
+}
+
 /**
  * Read the current value of a flag, honoring the mode's fallback.
  * `true`  → the feature is enabled (menu/route should render).

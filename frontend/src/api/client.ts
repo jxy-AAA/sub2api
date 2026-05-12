@@ -6,7 +6,14 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
-import { clearAccessToken, getAccessToken, setAccessToken } from './tokenStorage'
+import { navigateWithinApp } from '@/utils/spaNavigation'
+import {
+  clearPersistedSession,
+  getAccessToken,
+  hasPersistedSessionHint,
+  setAccessToken,
+  setTokenExpiresAt,
+} from './tokenStorage'
 
 // ==================== Axios Instance Configuration ====================
 
@@ -23,24 +30,68 @@ export const apiClient: AxiosInstance = axios.create({
 
 // ==================== Token Refresh State ====================
 
-// Track if a token refresh is in progress to prevent multiple simultaneous refresh requests
-let isRefreshing = false
-// Queue of requests waiting for token refresh
-let refreshSubscribers: Array<(token: string) => void> = []
-
-/**
- * Subscribe to token refresh completion
- */
-function subscribeTokenRefresh(callback: (token: string) => void): void {
-  refreshSubscribers.push(callback)
+export interface RefreshAccessTokenResult {
+  accessToken: string
+  refreshToken?: string
+  expiresIn: number
 }
 
-/**
- * Notify all subscribers that token has been refreshed
- */
-function onTokenRefreshed(token: string): void {
-  refreshSubscribers.forEach((callback) => callback(token))
-  refreshSubscribers = []
+let refreshPromise: Promise<RefreshAccessTokenResult> | null = null
+
+function isAuthEndpoint(url: string): boolean {
+  return (
+    url.includes('/auth/login')
+    || url.includes('/auth/register')
+    || url.includes('/auth/refresh')
+  )
+}
+
+function shouldAttemptTokenRefresh(url: string): boolean {
+  if (isAuthEndpoint(url)) {
+    return false
+  }
+
+  return Boolean(getAccessToken()) || hasPersistedSessionHint()
+}
+
+export async function refreshAccessToken(): Promise<RefreshAccessTokenResult> {
+  if (refreshPromise) {
+    return refreshPromise
+  }
+
+  refreshPromise = (async () => {
+    const refreshResponse = await axios.post(
+      `${API_BASE_URL}/auth/refresh`,
+      {},
+      { withCredentials: true, headers: { 'Content-Type': 'application/json' } }
+    )
+
+    const refreshData = refreshResponse.data as ApiResponse<{
+      access_token: string
+      refresh_token?: string
+      expires_in: number
+    }>
+
+    if (refreshData.code !== 0 || !refreshData.data?.access_token || !refreshData.data.expires_in) {
+      throw new Error('Token refresh failed')
+    }
+
+    const result: RefreshAccessTokenResult = {
+      accessToken: refreshData.data.access_token,
+      refreshToken: refreshData.data.refresh_token,
+      expiresIn: refreshData.data.expires_in
+    }
+
+    setAccessToken(result.accessToken)
+    setTokenExpiresAt(Date.now() + result.expiresIn * 1000)
+    return result
+  })()
+
+  try {
+    return await refreshPromise
+  } finally {
+    refreshPromise = null
+  }
 }
 
 // ==================== Request Interceptor ====================
@@ -55,7 +106,17 @@ const getUserTimezone = (): string => {
 }
 
 apiClient.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
+  async (config: InternalAxiosRequestConfig) => {
+    const requestUrl = String(config.url || '')
+
+    if (refreshPromise && !isAuthEndpoint(requestUrl)) {
+      try {
+        await refreshPromise
+      } catch {
+        // Let the request continue and fail normally if refresh did not succeed.
+      }
+    }
+
     // Attach token from memory-first storage
     const token = getAccessToken()
     if (token && config.headers) {
@@ -138,7 +199,7 @@ apiClient.interceptors.response.use(
         }
 
         if (window.location.pathname.startsWith('/admin/ops')) {
-          window.location.href = '/admin/settings'
+          await navigateWithinApp('/admin/settings', { replace: true })
         }
 
         return Promise.reject({
@@ -152,87 +213,25 @@ apiClient.interceptors.response.use(
       // 401: Try to refresh the token via refresh cookie
       // This handles TOKEN_EXPIRED, INVALID_TOKEN, TOKEN_REVOKED, etc.
       if (status === 401 && !originalRequest._retry) {
-        const hasAccessTokenForRefresh = !!getAccessToken()
-        const isAuthEndpoint =
-          url.includes('/auth/login') || url.includes('/auth/register') || url.includes('/auth/refresh')
+        const shouldRefresh = shouldAttemptTokenRefresh(url)
 
-        // If we have an access token and this is not an auth endpoint, try to refresh
-        if (hasAccessTokenForRefresh && !isAuthEndpoint) {
-          if (isRefreshing) {
-            // Wait for the ongoing refresh to complete
-            return new Promise((resolve, reject) => {
-              subscribeTokenRefresh((newToken: string) => {
-                if (newToken) {
-                  // Mark as retried to prevent infinite loop if retry also returns 401
-                  originalRequest._retry = true
-                  if (originalRequest.headers) {
-                    originalRequest.headers.Authorization = `Bearer ${newToken}`
-                  }
-                  resolve(apiClient(originalRequest))
-                } else {
-                  // Refresh failed, reject with original error
-                  reject({
-                    status,
-                    code: apiData.code,
-                    message: apiData.message || apiData.detail || error.message
-                  })
-                }
-              })
-            })
-          }
-
+        if (shouldRefresh) {
           originalRequest._retry = true
-          isRefreshing = true
 
           try {
-            // Call refresh endpoint directly to avoid circular dependency
-            const refreshResponse = await axios.post(
-              `${API_BASE_URL}/auth/refresh`,
-              {},
-              { withCredentials: true, headers: { 'Content-Type': 'application/json' } }
-            )
+            const refreshedSession = await refreshAccessToken()
 
-            const refreshData = refreshResponse.data as ApiResponse<{
-              access_token: string
-              refresh_token?: string
-              expires_in: number
-            }>
-
-            if (refreshData.code === 0 && refreshData.data) {
-              const { access_token, expires_in } = refreshData.data
-
-              // Update access token (convert expires_in to timestamp)
-              setAccessToken(access_token)
-              localStorage.setItem('token_expires_at', String(Date.now() + expires_in * 1000))
-
-              // Notify subscribers with new token
-              onTokenRefreshed(access_token)
-
-              // Retry the original request with new token
-              if (originalRequest.headers) {
-                originalRequest.headers.Authorization = `Bearer ${access_token}`
-              }
-
-              isRefreshing = false
-              return apiClient(originalRequest)
+            if (originalRequest.headers) {
+              originalRequest.headers.Authorization = `Bearer ${refreshedSession.accessToken}`
             }
 
-            // Refresh response was not successful, fall through to clear auth
-            throw new Error('Token refresh failed')
-          } catch (refreshError) {
-            // Refresh failed - notify subscribers with empty token
-            onTokenRefreshed('')
-            isRefreshing = false
-
-            // Clear tokens and redirect to login
-            clearAccessToken()
-            localStorage.removeItem('refresh_token')
-            localStorage.removeItem('auth_user')
-            localStorage.removeItem('token_expires_at')
+            return apiClient(originalRequest)
+          } catch {
+            clearPersistedSession()
             sessionStorage.setItem('auth_expired', '1')
 
             if (!window.location.pathname.includes('/login')) {
-              window.location.href = '/login'
+              await navigateWithinApp('/login', { replace: true })
             }
 
             return Promise.reject({
@@ -254,16 +253,13 @@ apiClient.interceptors.response.use(
               ? authHeader.length > 0
               : !!authHeader
 
-        clearAccessToken()
-        localStorage.removeItem('refresh_token')
-        localStorage.removeItem('auth_user')
-        localStorage.removeItem('token_expires_at')
-        if ((hasToken || sentAuth) && !isAuthEndpoint) {
+        clearPersistedSession()
+        if ((hasToken || sentAuth) && !isAuthEndpoint(url)) {
           sessionStorage.setItem('auth_expired', '1')
         }
         // Only redirect if not already on login page
         if (!window.location.pathname.includes('/login')) {
-          window.location.href = '/login'
+          await navigateWithinApp('/login', { replace: true })
         }
       }
 

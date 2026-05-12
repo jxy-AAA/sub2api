@@ -34,12 +34,12 @@ func TestShouldUseResponsesAPI(t *testing.T) {
 		extra map[string]any
 		want  bool
 	}{
-		// 关键不变量：未探测必须返回 true（保留旧行为）
-		{"unknown defaults to true (preserve old behavior)", nil, true},
-		{"unknown empty defaults to true", map[string]any{}, true},
-		{"unknown wrong type defaults to true", map[string]any{ExtraKeyResponsesSupported: "yes"}, true},
+		// 关键不变量：未探测必须返回 false，优先避免第三方兼容上游冷启动 404。
+		{"unknown defaults to false", nil, false},
+		{"unknown empty defaults to false", map[string]any{}, false},
+		{"unknown wrong type defaults to false", map[string]any{ExtraKeyResponsesSupported: "yes"}, false},
 
-		// 已探测：标记决定
+		// 已探测：仅显式支持时走 Responses。
 		{"explicitly supported", map[string]any{ExtraKeyResponsesSupported: true}, true},
 		{"explicitly unsupported", map[string]any{ExtraKeyResponsesSupported: false}, false},
 	}

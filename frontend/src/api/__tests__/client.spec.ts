@@ -1,35 +1,46 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import axios from 'axios'
 import type { AxiosInstance } from 'axios'
 
-// 需要在导入 client 之前设置 mock
+const { navigateWithinAppMock } = vi.hoisted(() => ({
+  navigateWithinAppMock: vi.fn().mockResolvedValue(true)
+}))
+
 vi.mock('@/i18n', () => ({
   getLocale: () => 'zh-CN',
 }))
 
-describe('API Client', () => {
+vi.mock('@/utils/spaNavigation', () => ({
+  navigateWithinApp: navigateWithinAppMock
+}))
+
+describe('apiClient', () => {
   let apiClient: AxiosInstance
+  let refreshAccessToken: typeof import('@/api/client').refreshAccessToken
 
   beforeEach(async () => {
     localStorage.clear()
-    // 每次测试重新导入以获取干净的模块状态
+    sessionStorage.clear()
     vi.resetModules()
-    const mod = await import('@/api/client')
-    apiClient = mod.apiClient
+    navigateWithinAppMock.mockClear()
+
+    const tokenStorage = await import('@/api/tokenStorage')
+    tokenStorage.clearPersistedSession()
+
+    const clientModule = await import('@/api/client')
+    apiClient = clientModule.apiClient
+    refreshAccessToken = clientModule.refreshAccessToken
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  // --- 请求拦截器 ---
-
-  describe('请求拦截器', () => {
-    it('自动附加 Authorization 头', async () => {
+  describe('request interceptor', () => {
+    it('attaches the Authorization header when a token exists', async () => {
       const tokenStorage = await import('@/api/tokenStorage')
       tokenStorage.setAccessToken('my-jwt-token')
 
-      // 拦截实际请求
       const adapter = vi.fn().mockResolvedValue({
         status: 200,
         data: { code: 0, data: {} },
@@ -45,7 +56,7 @@ describe('API Client', () => {
       expect(config.headers.get('Authorization')).toBe('Bearer my-jwt-token')
     })
 
-    it('无 token 时不附加 Authorization 头', async () => {
+    it('does not attach Authorization without a token', async () => {
       const adapter = vi.fn().mockResolvedValue({
         status: 200,
         data: { code: 0, data: {} },
@@ -61,7 +72,7 @@ describe('API Client', () => {
       expect(config.headers.get('Authorization')).toBeFalsy()
     })
 
-    it('GET 请求自动附加 timezone 参数', async () => {
+    it('adds timezone params to GET requests', async () => {
       const adapter = vi.fn().mockResolvedValue({
         status: 200,
         data: { code: 0, data: {} },
@@ -77,7 +88,7 @@ describe('API Client', () => {
       expect(config.params).toHaveProperty('timezone')
     })
 
-    it('POST 请求不附加 timezone 参数', async () => {
+    it('does not add timezone params to POST requests', async () => {
       const adapter = vi.fn().mockResolvedValue({
         status: 200,
         data: { code: 0, data: {} },
@@ -93,7 +104,7 @@ describe('API Client', () => {
       expect(config.params?.timezone).toBeUndefined()
     })
 
-    it('请求默认带 withCredentials 以支持跨域 cookie', async () => {
+    it('keeps withCredentials enabled for cookie-backed auth', async () => {
       const adapter = vi.fn().mockResolvedValue({
         status: 200,
         data: { code: 0, data: {} },
@@ -110,10 +121,8 @@ describe('API Client', () => {
     })
   })
 
-  // --- 响应拦截器 ---
-
-  describe('响应拦截器', () => {
-    it('code=0 时解包 data 字段', async () => {
+  describe('response interceptor', () => {
+    it('unwraps the data field when code is 0', async () => {
       const adapter = vi.fn().mockResolvedValue({
         status: 200,
         data: { code: 0, data: { name: 'test' }, message: 'ok' },
@@ -127,10 +136,10 @@ describe('API Client', () => {
       expect(response.data).toEqual({ name: 'test' })
     })
 
-    it('code!=0 时拒绝并返回结构化错误', async () => {
+    it('rejects with a structured error when code is not 0', async () => {
       const adapter = vi.fn().mockResolvedValue({
         status: 200,
-        data: { code: 1001, message: '参数错误', data: null },
+        data: { code: 1001, message: '鍙傛暟閿欒', data: null },
         headers: {},
         config: {},
         statusText: 'OK',
@@ -140,45 +149,38 @@ describe('API Client', () => {
       await expect(apiClient.get('/test')).rejects.toEqual(
         expect.objectContaining({
           code: 1001,
-          message: '参数错误',
+          message: '鍙傛暟閿欒',
         })
       )
     })
-  })
 
-  // --- 401 Token 刷新 ---
-
-  describe('401 Token 刷新', () => {
-    it('无 refresh_token 时 401 清除 localStorage', async () => {
-      localStorage.setItem('auth_token', 'expired-token')
-      vi.spyOn(axios, 'post').mockRejectedValue(new Error('refresh failed'))
-      // 不设置 refresh_token
-
-      // Mock window.location
-      const originalLocation = window.location
-      Object.defineProperty(window, 'location', {
-        value: { ...originalLocation, pathname: '/dashboard', href: '/dashboard' },
-        writable: true,
-      })
-
+    it('uses internal SPA navigation when ops pages are disabled', async () => {
       const adapter = vi.fn().mockRejectedValue({
         response: {
-          status: 401,
-          data: { code: 'TOKEN_EXPIRED', message: 'Token expired' },
+          status: 404,
+          data: { message: 'Ops monitoring is disabled' },
         },
         config: {
-          url: '/test',
-          headers: { Authorization: 'Bearer expired-token' },
+          url: '/admin/ops/config',
+          headers: {},
         },
-        code: 'ERR_BAD_REQUEST',
       })
       apiClient.defaults.adapter = adapter
 
-      await expect(apiClient.get('/test')).rejects.toBeDefined()
+      const originalLocation = window.location
+      Object.defineProperty(window, 'location', {
+        value: { ...originalLocation, pathname: '/admin/ops' },
+        writable: true,
+      })
 
-      expect(localStorage.getItem('auth_token')).toBeNull()
+      await expect(apiClient.get('/admin/ops/config')).rejects.toEqual(
+        expect.objectContaining({
+          code: 'OPS_DISABLED',
+        })
+      )
 
-      // 恢复 location
+      expect(navigateWithinAppMock).toHaveBeenCalledWith('/admin/settings', { replace: true })
+
       Object.defineProperty(window, 'location', {
         value: originalLocation,
         writable: true,
@@ -186,15 +188,122 @@ describe('API Client', () => {
     })
   })
 
-  // --- 网络错误 ---
+  describe('token refresh', () => {
+    it('retries a protected request after refreshing from persisted session hints', async () => {
+      localStorage.setItem('auth_user', JSON.stringify({ id: 1, role: 'user' }))
+      localStorage.setItem('token_expires_at', String(Date.now() + 3600_000))
 
-  describe('网络错误', () => {
-    it('网络错误返回 status 0 的错误', async () => {
+      const refreshSpy = vi.spyOn(axios, 'post').mockResolvedValue({
+        data: {
+          code: 0,
+          data: {
+            access_token: 'refreshed-token',
+            expires_in: 3600,
+          },
+        },
+      } as any)
+
+      const adapter = vi
+        .fn()
+        .mockRejectedValueOnce({
+          response: {
+            status: 401,
+            data: { code: 'TOKEN_EXPIRED', message: 'Token expired' },
+          },
+          config: {
+            url: '/protected',
+            headers: {},
+          },
+          code: 'ERR_BAD_REQUEST',
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          data: { code: 0, data: { ok: true } },
+          headers: {},
+          config: {},
+          statusText: 'OK',
+        })
+      apiClient.defaults.adapter = adapter
+
+      const response = await apiClient.get('/protected')
+
+      expect(response.data).toEqual({ ok: true })
+      expect(refreshSpy).toHaveBeenCalledTimes(1)
+      expect(adapter).toHaveBeenCalledTimes(2)
+      const retriedConfig = adapter.mock.calls[1][0]
+      expect(retriedConfig.headers.get('Authorization')).toBe('Bearer refreshed-token')
+    })
+
+    it('clears persisted auth state when refresh fails', async () => {
+      localStorage.setItem('auth_user', JSON.stringify({ id: 1, role: 'user' }))
+      localStorage.setItem('token_expires_at', String(Date.now() + 3600_000))
+      vi.spyOn(axios, 'post').mockRejectedValue(new Error('refresh failed'))
+
+      const adapter = vi.fn().mockRejectedValue({
+        response: {
+          status: 401,
+          data: { code: 'TOKEN_EXPIRED', message: 'Token expired' },
+        },
+        config: {
+          url: '/protected',
+          headers: {},
+        },
+        code: 'ERR_BAD_REQUEST',
+      })
+      apiClient.defaults.adapter = adapter
+
+      await expect(apiClient.get('/protected')).rejects.toEqual(
+        expect.objectContaining({
+          code: 'TOKEN_REFRESH_FAILED',
+        })
+      )
+
+      expect(localStorage.getItem('auth_user')).toBeNull()
+      expect(localStorage.getItem('token_expires_at')).toBeNull()
+      expect(navigateWithinAppMock).toHaveBeenCalledWith('/login', { replace: true })
+    })
+
+    it('deduplicates concurrent refresh calls', async () => {
+      let resolveRefresh: ((value: any) => void) | null = null
+      const refreshSpy = vi.spyOn(axios, 'post').mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveRefresh = resolve
+          }) as any
+      )
+
+      const firstCall = refreshAccessToken()
+      const secondCall = refreshAccessToken()
+
+      expect(refreshSpy).toHaveBeenCalledTimes(1)
+
+      resolveRefresh?.({
+        data: {
+          code: 0,
+          data: {
+            access_token: 'deduped-token',
+            expires_in: 3600,
+          },
+        },
+      })
+
+      const [firstResult, secondResult] = await Promise.all([firstCall, secondCall])
+
+      expect(firstResult).toEqual({
+        accessToken: 'deduped-token',
+        refreshToken: undefined,
+        expiresIn: 3600,
+      })
+      expect(secondResult).toEqual(firstResult)
+    })
+  })
+
+  describe('network errors', () => {
+    it('maps network errors to status 0', async () => {
       const adapter = vi.fn().mockRejectedValue({
         code: 'ERR_NETWORK',
         message: 'Network Error',
         config: { url: '/test' },
-        // 没有 response
       })
       apiClient.defaults.adapter = adapter
 
@@ -207,20 +316,13 @@ describe('API Client', () => {
     })
   })
 
-  // --- 请求取消 ---
-
-  describe('请求取消', () => {
-    it('取消的请求保持原始取消错误', async () => {
+  describe('request cancellation', () => {
+    it('preserves axios cancellation errors', async () => {
       const source = axios.CancelToken.source()
-
-      const adapter = vi.fn().mockRejectedValue(
-        new axios.Cancel('Operation canceled')
-      )
+      const adapter = vi.fn().mockRejectedValue(new axios.Cancel('Operation canceled'))
       apiClient.defaults.adapter = adapter
 
-      await expect(
-        apiClient.get('/test', { cancelToken: source.token })
-      ).rejects.toBeDefined()
+      await expect(apiClient.get('/test', { cancelToken: source.token })).rejects.toBeDefined()
     })
   })
 })

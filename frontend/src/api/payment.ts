@@ -14,7 +14,21 @@ import type {
   CreateOrderResult,
   PaymentOrder
 } from '@/types/payment'
-import type { BasePaginationResponse } from '@/types'
+import type { BasePaginationResponse, FetchOptions } from '@/types'
+
+async function getData<T>(url: string, options?: FetchOptions): Promise<T> {
+  const { data } = await apiClient.get<T>(url, {
+    signal: options?.signal
+  })
+  return data
+}
+
+async function postData<T>(url: string, payload?: unknown, options?: FetchOptions): Promise<T> {
+  const { data } = await apiClient.post<T>(url, payload, {
+    signal: options?.signal
+  })
+  return data
+}
 
 export const paymentAPI = {
   /** Get payment configuration (enabled types, limits, etc.) */
@@ -28,8 +42,8 @@ export const paymentAPI = {
   },
 
   /** Get available payment channels */
-  getChannels() {
-    return apiClient.get<PaymentChannel[]>('/payment/channels')
+  getChannels(options?: FetchOptions) {
+    return getData<PaymentChannel[]>('/payment/channels', options)
   },
 
   /** Get all checkout page data in a single call */
@@ -38,8 +52,8 @@ export const paymentAPI = {
   },
 
   /** Get payment method limits and fee rates */
-  getLimits() {
-    return apiClient.get<MethodLimitsResponse>('/payment/limits')
+  getLimits(options?: FetchOptions) {
+    return getData<MethodLimitsResponse>('/payment/limits', options)
   },
 
   /** Create a new payment order */
@@ -63,8 +77,8 @@ export const paymentAPI = {
   },
 
   /** Verify order payment status with upstream provider */
-  verifyOrder(outTradeNo: string) {
-    return apiClient.post<PaymentOrder>('/payment/orders/verify', { out_trade_no: outTradeNo })
+  verifyOrder(outTradeNo: string, options?: FetchOptions) {
+    return postData<PaymentOrder>('/payment/orders/verify', { out_trade_no: outTradeNo }, options)
   },
 
   /** Legacy-compatible public order lookup by out_trade_no */

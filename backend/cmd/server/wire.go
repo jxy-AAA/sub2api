@@ -5,7 +5,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -28,31 +28,299 @@ type Application struct {
 	Cleanup func()
 }
 
+type cleanupStep struct {
+	name string
+	fn   func() error
+}
+
+type CleanupRegistry struct {
+	parallel   []cleanupStep
+	sequential []cleanupStep
+}
+
+func (r *CleanupRegistry) AddParallel(name string, fn func() error) {
+	if fn == nil {
+		return
+	}
+	r.parallel = append(r.parallel, cleanupStep{name: name, fn: fn})
+}
+
+func (r *CleanupRegistry) AddSequential(name string, fn func() error) {
+	if fn == nil {
+		return
+	}
+	r.sequential = append(r.sequential, cleanupStep{name: name, fn: fn})
+}
+
+func (r *CleanupRegistry) Run(ctx context.Context) {
+	runParallel := func(steps []cleanupStep) {
+		var wg sync.WaitGroup
+		for i := range steps {
+			step := steps[i]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := step.fn(); err != nil {
+					slog.Warn("cleanup step failed", "step", step.name, "error", err)
+					return
+				}
+				slog.Info("cleanup step succeeded", "step", step.name)
+			}()
+		}
+		wg.Wait()
+	}
+
+	runSequential := func(steps []cleanupStep) {
+		for i := range steps {
+			step := steps[i]
+			if err := step.fn(); err != nil {
+				slog.Warn("cleanup step failed", "step", step.name, "error", err)
+				continue
+			}
+			slog.Info("cleanup step succeeded", "step", step.name)
+		}
+	}
+
+	runParallel(r.parallel)
+	runSequential(r.sequential)
+
+	select {
+	case <-ctx.Done():
+		slog.Warn("cleanup timed out", "error", ctx.Err())
+	default:
+		slog.Info("cleanup steps completed")
+	}
+}
+
+type cleanupInfrastructure struct {
+	EntClient *ent.Client
+	Redis     *redis.Client
+}
+
+func (c cleanupInfrastructure) Register(registry *CleanupRegistry) {
+	registry.AddSequential("Redis", func() error {
+		if c.Redis == nil {
+			return nil
+		}
+		return c.Redis.Close()
+	})
+	registry.AddSequential("Ent", func() error {
+		if c.EntClient == nil {
+			return nil
+		}
+		return c.EntClient.Close()
+	})
+}
+
+type cleanupServices struct {
+	OpsMetricsCollector               *service.OpsMetricsCollector
+	OpsAggregationService             *service.OpsAggregationService
+	OpsAlertEvaluatorService          *service.OpsAlertEvaluatorService
+	OpsCleanupService                 *service.OpsCleanupService
+	OpsScheduledReportService         *service.OpsScheduledReportService
+	OpsSystemLogSink                  *service.OpsSystemLogSink
+	SchedulerSnapshotService          *service.SchedulerSnapshotService
+	TokenRefreshService               *service.TokenRefreshService
+	AccountExpiryService              *service.AccountExpiryService
+	SubscriptionExpiryService         *service.SubscriptionExpiryService
+	UsageCleanupService               *service.UsageCleanupService
+	IdempotencyCleanupService         *service.IdempotencyCleanupService
+	PricingService                    *service.PricingService
+	EmailQueueService                 *service.EmailQueueService
+	BillingCacheService               *service.BillingCacheService
+	UsageRecordWorkerPool             *service.UsageRecordWorkerPool
+	SubscriptionService               *service.SubscriptionService
+	OAuthService                      *service.OAuthService
+	OpenAIOAuthService                *service.OpenAIOAuthService
+	GeminiOAuthService                *service.GeminiOAuthService
+	AntigravityOAuthService           *service.AntigravityOAuthService
+	OpenAIGatewayService              *service.OpenAIGatewayService
+	ScheduledTestRunnerService        *service.ScheduledTestRunnerService
+	BackupService                     *service.BackupService
+	PaymentOrderExpiryService         *service.PaymentOrderExpiryService
+	ChannelMonitorRunner              *service.ChannelMonitorRunner
+	AffiliateDistributionMonthlyReset *service.AffiliateDistributionMonthlyResetService
+}
+
+func (s cleanupServices) Register(registry *CleanupRegistry) {
+	registry.AddParallel("AffiliateDistributionMonthlyResetService", func() error {
+		if s.AffiliateDistributionMonthlyReset != nil {
+			s.AffiliateDistributionMonthlyReset.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OpsScheduledReportService", func() error {
+		if s.OpsScheduledReportService != nil {
+			s.OpsScheduledReportService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OpsCleanupService", func() error {
+		if s.OpsCleanupService != nil {
+			s.OpsCleanupService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OpsSystemLogSink", func() error {
+		if s.OpsSystemLogSink != nil {
+			s.OpsSystemLogSink.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OpsAlertEvaluatorService", func() error {
+		if s.OpsAlertEvaluatorService != nil {
+			s.OpsAlertEvaluatorService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OpsAggregationService", func() error {
+		if s.OpsAggregationService != nil {
+			s.OpsAggregationService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OpsMetricsCollector", func() error {
+		if s.OpsMetricsCollector != nil {
+			s.OpsMetricsCollector.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("SchedulerSnapshotService", func() error {
+		if s.SchedulerSnapshotService != nil {
+			s.SchedulerSnapshotService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("UsageCleanupService", func() error {
+		if s.UsageCleanupService != nil {
+			s.UsageCleanupService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("IdempotencyCleanupService", func() error {
+		if s.IdempotencyCleanupService != nil {
+			s.IdempotencyCleanupService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("TokenRefreshService", func() error {
+		if s.TokenRefreshService != nil {
+			s.TokenRefreshService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("AccountExpiryService", func() error {
+		if s.AccountExpiryService != nil {
+			s.AccountExpiryService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("SubscriptionExpiryService", func() error {
+		if s.SubscriptionExpiryService != nil {
+			s.SubscriptionExpiryService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("SubscriptionService", func() error {
+		if s.SubscriptionService != nil {
+			s.SubscriptionService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("PricingService", func() error {
+		if s.PricingService != nil {
+			s.PricingService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("EmailQueueService", func() error {
+		if s.EmailQueueService != nil {
+			s.EmailQueueService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("BillingCacheService", func() error {
+		if s.BillingCacheService != nil {
+			s.BillingCacheService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("UsageRecordWorkerPool", func() error {
+		if s.UsageRecordWorkerPool != nil {
+			s.UsageRecordWorkerPool.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OAuthService", func() error {
+		if s.OAuthService != nil {
+			s.OAuthService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OpenAIOAuthService", func() error {
+		if s.OpenAIOAuthService != nil {
+			s.OpenAIOAuthService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("GeminiOAuthService", func() error {
+		if s.GeminiOAuthService != nil {
+			s.GeminiOAuthService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("AntigravityOAuthService", func() error {
+		if s.AntigravityOAuthService != nil {
+			s.AntigravityOAuthService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("OpenAIWSPool", func() error {
+		if s.OpenAIGatewayService != nil {
+			s.OpenAIGatewayService.CloseOpenAIWSPool()
+		}
+		return nil
+	})
+	registry.AddParallel("ScheduledTestRunnerService", func() error {
+		if s.ScheduledTestRunnerService != nil {
+			s.ScheduledTestRunnerService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("BackupService", func() error {
+		if s.BackupService != nil {
+			s.BackupService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("PaymentOrderExpiryService", func() error {
+		if s.PaymentOrderExpiryService != nil {
+			s.PaymentOrderExpiryService.Stop()
+		}
+		return nil
+	})
+	registry.AddParallel("ChannelMonitorRunner", func() error {
+		if s.ChannelMonitorRunner != nil {
+			s.ChannelMonitorRunner.Stop()
+		}
+		return nil
+	})
+}
+
 func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	wire.Build(
-		// Infrastructure layer ProviderSets
 		config.ProviderSet,
-
-		// Business layer ProviderSets
 		repository.ProviderSet,
 		service.ProviderSet,
 		payment.ProviderSet,
 		middleware.ProviderSet,
 		handler.ProviderSet,
-
-		// Server layer ProviderSet
 		server.ProviderSet,
-
-		// Privacy client factory for OpenAI training opt-out
 		providePrivacyClientFactory,
-
-		// BuildInfo provider
 		provideServiceBuildInfo,
-
-		// Cleanup function provider
+		wire.Struct(new(cleanupInfrastructure), "*"),
+		wire.Struct(new(cleanupServices), "*"),
 		provideCleanup,
-
-		// Application struct
 		wire.Struct(new(Application), "Server", "Cleanup"),
 	)
 	return nil, nil
@@ -69,244 +337,14 @@ func provideServiceBuildInfo(buildInfo handler.BuildInfo) service.BuildInfo {
 	}
 }
 
-func provideCleanup(
-	entClient *ent.Client,
-	rdb *redis.Client,
-	opsMetricsCollector *service.OpsMetricsCollector,
-	opsAggregation *service.OpsAggregationService,
-	opsAlertEvaluator *service.OpsAlertEvaluatorService,
-	opsCleanup *service.OpsCleanupService,
-	opsScheduledReport *service.OpsScheduledReportService,
-	opsSystemLogSink *service.OpsSystemLogSink,
-	schedulerSnapshot *service.SchedulerSnapshotService,
-	tokenRefresh *service.TokenRefreshService,
-	accountExpiry *service.AccountExpiryService,
-	subscriptionExpiry *service.SubscriptionExpiryService,
-	usageCleanup *service.UsageCleanupService,
-	idempotencyCleanup *service.IdempotencyCleanupService,
-	pricing *service.PricingService,
-	emailQueue *service.EmailQueueService,
-	billingCache *service.BillingCacheService,
-	usageRecordWorkerPool *service.UsageRecordWorkerPool,
-	subscriptionService *service.SubscriptionService,
-	oauth *service.OAuthService,
-	openaiOAuth *service.OpenAIOAuthService,
-	geminiOAuth *service.GeminiOAuthService,
-	antigravityOAuth *service.AntigravityOAuthService,
-	openAIGateway *service.OpenAIGatewayService,
-	scheduledTestRunner *service.ScheduledTestRunnerService,
-	backupSvc *service.BackupService,
-	paymentOrderExpiry *service.PaymentOrderExpiryService,
-	channelMonitorRunner *service.ChannelMonitorRunner,
-	affiliateDistributionMonthlyReset *service.AffiliateDistributionMonthlyResetService,
-) func() {
+func provideCleanup(infra cleanupInfrastructure, services cleanupServices) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		type cleanupStep struct {
-			name string
-			fn   func() error
-		}
-
-		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
-		parallelSteps := []cleanupStep{
-			{"AffiliateDistributionMonthlyResetService", func() error {
-				if affiliateDistributionMonthlyReset != nil {
-					affiliateDistributionMonthlyReset.Stop()
-				}
-				return nil
-			}},
-			{"OpsScheduledReportService", func() error {
-				if opsScheduledReport != nil {
-					opsScheduledReport.Stop()
-				}
-				return nil
-			}},
-			{"OpsCleanupService", func() error {
-				if opsCleanup != nil {
-					opsCleanup.Stop()
-				}
-				return nil
-			}},
-			{"OpsSystemLogSink", func() error {
-				if opsSystemLogSink != nil {
-					opsSystemLogSink.Stop()
-				}
-				return nil
-			}},
-			{"OpsAlertEvaluatorService", func() error {
-				if opsAlertEvaluator != nil {
-					opsAlertEvaluator.Stop()
-				}
-				return nil
-			}},
-			{"OpsAggregationService", func() error {
-				if opsAggregation != nil {
-					opsAggregation.Stop()
-				}
-				return nil
-			}},
-			{"OpsMetricsCollector", func() error {
-				if opsMetricsCollector != nil {
-					opsMetricsCollector.Stop()
-				}
-				return nil
-			}},
-			{"SchedulerSnapshotService", func() error {
-				if schedulerSnapshot != nil {
-					schedulerSnapshot.Stop()
-				}
-				return nil
-			}},
-			{"UsageCleanupService", func() error {
-				if usageCleanup != nil {
-					usageCleanup.Stop()
-				}
-				return nil
-			}},
-			{"IdempotencyCleanupService", func() error {
-				if idempotencyCleanup != nil {
-					idempotencyCleanup.Stop()
-				}
-				return nil
-			}},
-			{"TokenRefreshService", func() error {
-				tokenRefresh.Stop()
-				return nil
-			}},
-			{"AccountExpiryService", func() error {
-				accountExpiry.Stop()
-				return nil
-			}},
-			{"SubscriptionExpiryService", func() error {
-				subscriptionExpiry.Stop()
-				return nil
-			}},
-			{"SubscriptionService", func() error {
-				if subscriptionService != nil {
-					subscriptionService.Stop()
-				}
-				return nil
-			}},
-			{"PricingService", func() error {
-				pricing.Stop()
-				return nil
-			}},
-			{"EmailQueueService", func() error {
-				emailQueue.Stop()
-				return nil
-			}},
-			{"BillingCacheService", func() error {
-				billingCache.Stop()
-				return nil
-			}},
-			{"UsageRecordWorkerPool", func() error {
-				if usageRecordWorkerPool != nil {
-					usageRecordWorkerPool.Stop()
-				}
-				return nil
-			}},
-			{"OAuthService", func() error {
-				oauth.Stop()
-				return nil
-			}},
-			{"OpenAIOAuthService", func() error {
-				openaiOAuth.Stop()
-				return nil
-			}},
-			{"GeminiOAuthService", func() error {
-				geminiOAuth.Stop()
-				return nil
-			}},
-			{"AntigravityOAuthService", func() error {
-				antigravityOAuth.Stop()
-				return nil
-			}},
-			{"OpenAIWSPool", func() error {
-				if openAIGateway != nil {
-					openAIGateway.CloseOpenAIWSPool()
-				}
-				return nil
-			}},
-			{"ScheduledTestRunnerService", func() error {
-				if scheduledTestRunner != nil {
-					scheduledTestRunner.Stop()
-				}
-				return nil
-			}},
-			{"BackupService", func() error {
-				if backupSvc != nil {
-					backupSvc.Stop()
-				}
-				return nil
-			}},
-			{"PaymentOrderExpiryService", func() error {
-				if paymentOrderExpiry != nil {
-					paymentOrderExpiry.Stop()
-				}
-				return nil
-			}},
-			{"ChannelMonitorRunner", func() error {
-				if channelMonitorRunner != nil {
-					channelMonitorRunner.Stop()
-				}
-				return nil
-			}},
-		}
-
-		infraSteps := []cleanupStep{
-			{"Redis", func() error {
-				if rdb == nil {
-					return nil
-				}
-				return rdb.Close()
-			}},
-			{"Ent", func() error {
-				if entClient == nil {
-					return nil
-				}
-				return entClient.Close()
-			}},
-		}
-
-		runParallel := func(steps []cleanupStep) {
-			var wg sync.WaitGroup
-			for i := range steps {
-				step := steps[i]
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					if err := step.fn(); err != nil {
-						log.Printf("[Cleanup] %s failed: %v", step.name, err)
-						return
-					}
-					log.Printf("[Cleanup] %s succeeded", step.name)
-				}()
-			}
-			wg.Wait()
-		}
-
-		runSequential := func(steps []cleanupStep) {
-			for i := range steps {
-				step := steps[i]
-				if err := step.fn(); err != nil {
-					log.Printf("[Cleanup] %s failed: %v", step.name, err)
-					continue
-				}
-				log.Printf("[Cleanup] %s succeeded", step.name)
-			}
-		}
-
-		runParallel(parallelSteps)
-		runSequential(infraSteps)
-
-		// Check if context timed out
-		select {
-		case <-ctx.Done():
-			log.Printf("[Cleanup] Warning: cleanup timed out after 10 seconds")
-		default:
-			log.Printf("[Cleanup] All cleanup steps completed")
-		}
+		registry := &CleanupRegistry{}
+		services.Register(registry)
+		infra.Register(registry)
+		registry.Run(ctx)
 	}
 }

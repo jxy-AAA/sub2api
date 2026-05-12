@@ -2210,6 +2210,14 @@ import {
   buildModelMappingObject,
   isValidWildcardPattern
 } from '@/composables/useModelWhitelist'
+import {
+  buildTempUnschedValidationResult,
+  type TempUnschedRuleFormInput,
+  validateApiKeyRequirement,
+  validateCustomErrorCodeCandidate,
+  validateVertexServiceAccount,
+  isEditableAccountStatus
+} from '@/validation/accountForm'
 
 interface Props {
   show: boolean
@@ -2245,12 +2253,7 @@ interface ModelMapping {
   to: string
 }
 
-interface TempUnschedRuleForm {
-  error_code: number | null
-  keywords: string
-  duration_minutes: number | null
-  description: string
-}
+type TempUnschedRuleForm = TempUnschedRuleFormInput
 
 // State
 const submitting = ref(false)
@@ -2958,25 +2961,26 @@ const toggleErrorCode = (code: number) => {
 // Add custom error code from input
 const addCustomErrorCode = () => {
   const code = customErrorCodeInput.value
-  if (code === null || code < 100 || code > 599) {
-    appStore.showError(t('admin.accounts.invalidErrorCode'))
+  const validation = validateCustomErrorCodeCandidate(code, selectedErrorCodes.value)
+  if (!validation.ok) {
+    if (validation.messageLevel === 'info') {
+      appStore.showInfo(t(validation.messageKey!))
+    } else {
+      appStore.showError(t(validation.messageKey!))
+    }
     return
   }
-  if (selectedErrorCodes.value.includes(code)) {
-    appStore.showInfo(t('admin.accounts.errorCodeExists'))
-    return
-  }
-  // Check for 429/529 warning
-  if (code === 429) {
+
+  if (validation.warningCode === 429) {
     if (!confirm(t('admin.accounts.customErrorCodes429Warning'))) {
       return
     }
-  } else if (code === 529) {
+  } else if (validation.warningCode === 529) {
     if (!confirm(t('admin.accounts.customErrorCodes529Warning'))) {
       return
     }
   }
-  selectedErrorCodes.value.push(code)
+  selectedErrorCodes.value.push(Number(code))
   customErrorCodeInput.value = null
 }
 
@@ -3014,38 +3018,6 @@ const moveTempUnschedRule = (index: number, direction: number) => {
   rules[target] = current
 }
 
-const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
-  const out: Array<{
-    error_code: number
-    keywords: string[]
-    duration_minutes: number
-    description: string
-  }> = []
-
-  for (const rule of rules) {
-    const errorCode = Number(rule.error_code)
-    const duration = Number(rule.duration_minutes)
-    const keywords = splitTempUnschedKeywords(rule.keywords)
-    if (!Number.isFinite(errorCode) || errorCode < 100 || errorCode > 599) {
-      continue
-    }
-    if (!Number.isFinite(duration) || duration <= 0) {
-      continue
-    }
-    if (keywords.length === 0) {
-      continue
-    }
-    out.push({
-      error_code: Math.trunc(errorCode),
-      keywords,
-      duration_minutes: Math.trunc(duration),
-      description: rule.description.trim()
-    })
-  }
-
-  return out
-}
-
 const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
   if (!tempUnschedEnabled.value) {
     delete credentials.temp_unschedulable_enabled
@@ -3053,14 +3025,17 @@ const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
     return true
   }
 
-  const rules = buildTempUnschedRules(tempUnschedRules.value)
-  if (rules.length === 0) {
-    appStore.showError(t('admin.accounts.tempUnschedulable.rulesInvalid'))
+  const validation = buildTempUnschedValidationResult(
+    tempUnschedEnabled.value,
+    tempUnschedRules.value
+  )
+  if (!validation.valid) {
+    appStore.showError(t(validation.errorKey!))
     return false
   }
 
   credentials.temp_unschedulable_enabled = true
-  credentials.temp_unschedulable_rules = rules
+  credentials.temp_unschedulable_rules = validation.rules
   return true
 }
 
@@ -3175,13 +3150,6 @@ function formatTempUnschedKeywords(value: unknown) {
     return value
   }
   return ''
-}
-
-const splitTempUnschedKeywords = (value: string) => {
-  return value
-    .split(/[,;]/)
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0)
 }
 
 function toPositiveNumber(value: unknown) {
@@ -3309,7 +3277,7 @@ const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
 
-  if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
+  if (!isEditableAccountStatus(form.status)) {
     appStore.showError(t('admin.accounts.pleaseSelectStatus'))
     return
   }
@@ -3350,7 +3318,8 @@ const handleSubmit = async () => {
         // Preserve existing api_key
         newCredentials.api_key = currentCredentials.api_key
       } else {
-        appStore.showError(t('admin.accounts.apiKeyIsRequired'))
+        const apiKeyError = validateApiKeyRequirement(editApiKey.value, currentCredentials.api_key)
+        appStore.showError(t(apiKeyError || 'admin.accounts.apiKeyIsRequired'))
         return
       }
 
@@ -3421,23 +3390,17 @@ const handleSubmit = async () => {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
 
-      if (!editVertexProjectId.value.trim()) {
-        appStore.showError(t('admin.accounts.vertexSaJsonMissingProjectId'))
-        return
-      }
-      if (!editVertexClientEmail.value.trim()) {
-        appStore.showError(t('admin.accounts.vertexSaJsonMissingClientEmail'))
-        return
-      }
-      if (!editVertexLocation.value.trim()) {
-        appStore.showError(t('admin.accounts.vertexLocationRequired'))
+      const vertexValidationError = validateVertexServiceAccount({
+        projectId: editVertexProjectId.value,
+        clientEmail: editVertexClientEmail.value,
+        location: editVertexLocation.value,
+        hasServiceAccount: Boolean(currentCredentials.service_account_json || currentCredentials.service_account)
+      })
+      if (vertexValidationError) {
+        appStore.showError(t(vertexValidationError))
         return
       }
 
-      if (!currentCredentials.service_account_json && !currentCredentials.service_account) {
-        appStore.showError(t('admin.accounts.vertexSaJsonRequired'))
-        return
-      }
       newCredentials.project_id = editVertexProjectId.value.trim()
       newCredentials.client_email = editVertexClientEmail.value.trim()
       newCredentials.location = editVertexLocation.value.trim()

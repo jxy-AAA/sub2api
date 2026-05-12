@@ -1424,6 +1424,10 @@ func (a *Account) GetTLSFingerprintProfileID() int64 {
 		if i, err := id.Int64(); err == nil {
 			return i
 		}
+	case string:
+		if i, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64); err == nil {
+			return i
+		}
 	}
 	return 0
 }

@@ -11,7 +11,7 @@ import type {
   SubscriptionPlan,
   ProviderInstance
 } from '@/types/payment'
-import type { BasePaginationResponse } from '@/types'
+import type { BasePaginationResponse, FetchOptions } from '@/types'
 
 /** Admin-facing payment config returned by GET /admin/payment/config */
 export interface AdminPaymentConfig {
@@ -49,6 +49,27 @@ export interface UpdatePaymentConfigRequest {
   help_text?: string
 }
 
+async function getData<T>(url: string, options?: FetchOptions): Promise<T> {
+  const { data } = await apiClient.get<T>(url, {
+    signal: options?.signal
+  })
+  return data
+}
+
+async function postData<T>(url: string, payload?: unknown, options?: FetchOptions): Promise<T> {
+  const { data } = await apiClient.post<T>(url, payload, {
+    signal: options?.signal
+  })
+  return data
+}
+
+async function putData<T>(url: string, payload?: unknown, options?: FetchOptions): Promise<T> {
+  const { data } = await apiClient.put<T>(url, payload, {
+    signal: options?.signal
+  })
+  return data
+}
+
 export const adminPaymentAPI = {
   // ==================== Config ====================
 
@@ -58,8 +79,8 @@ export const adminPaymentAPI = {
   },
 
   /** Update payment configuration */
-  updateConfig(data: UpdatePaymentConfigRequest) {
-    return apiClient.put('/admin/payment/config', data)
+  updateConfig(data: UpdatePaymentConfigRequest, options?: FetchOptions) {
+    return putData<AdminPaymentConfig>('/admin/payment/config', data, options)
   },
 
   // ==================== Dashboard ====================
@@ -111,18 +132,18 @@ export const adminPaymentAPI = {
   // ==================== Channels ====================
 
   /** Get all payment channels */
-  getChannels() {
-    return apiClient.get<PaymentChannel[]>('/admin/payment/channels')
+  getChannels(options?: FetchOptions) {
+    return getData<PaymentChannel[]>('/admin/payment/channels', options)
   },
 
   /** Create a payment channel */
-  createChannel(data: Partial<PaymentChannel>) {
-    return apiClient.post<PaymentChannel>('/admin/payment/channels', data)
+  createChannel(data: Partial<PaymentChannel>, options?: FetchOptions) {
+    return postData<PaymentChannel>('/admin/payment/channels', data, options)
   },
 
   /** Update a payment channel */
-  updateChannel(id: number, data: Partial<PaymentChannel>) {
-    return apiClient.put<PaymentChannel>(`/admin/payment/channels/${id}`, data)
+  updateChannel(id: number, data: Partial<PaymentChannel>, options?: FetchOptions) {
+    return putData<PaymentChannel>(`/admin/payment/channels/${id}`, data, options)
   },
 
   /** Delete a payment channel */
@@ -160,13 +181,13 @@ export const adminPaymentAPI = {
   },
 
   /** Create a provider instance */
-  createProvider(data: Partial<ProviderInstance>) {
-    return apiClient.post<ProviderInstance>('/admin/payment/providers', data)
+  createProvider(data: Partial<ProviderInstance>, options?: FetchOptions) {
+    return postData<ProviderInstance>('/admin/payment/providers', data, options)
   },
 
   /** Update a provider instance */
-  updateProvider(id: number, data: Partial<ProviderInstance>) {
-    return apiClient.put<ProviderInstance>(`/admin/payment/providers/${id}`, data)
+  updateProvider(id: number, data: Partial<ProviderInstance>, options?: FetchOptions) {
+    return putData<ProviderInstance>(`/admin/payment/providers/${id}`, data, options)
   },
 
   /** Delete a provider instance */

@@ -137,6 +137,10 @@ func (User) Edges() []ent.Edge {
 func (User) Indexes() []ent.Index {
 	return []ent.Index{
 		// email 字段已在 Fields() 中声明 Unique()，无需重复索引
+		index.Fields("email").
+			Unique().
+			StorageKey("users_email_unique_active").
+			Annotations(entsql.IndexWhere("deleted_at IS NULL")),
 		index.Fields("status"),
 		index.Fields("deleted_at"),
 	}

@@ -219,7 +219,9 @@ func (r *dashboardAggregationRepository) CleanupUsageLogs(ctx context.Context, c
 	}
 	for {
 		res, err := r.sql.ExecContext(ctx, `
-			WITH victims AS (
+			WITH maintenance AS (
+				SELECT set_config('sub2api.usage_log_maintenance', 'on', true)
+			), victims AS (
 				SELECT u.ctid
 				FROM usage_logs AS u
 				WHERE u.created_at < $1

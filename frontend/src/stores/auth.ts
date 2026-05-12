@@ -6,11 +6,19 @@
 import { defineStore } from 'pinia'
 import { computed, readonly, ref } from 'vue'
 import { authAPI, isTotp2FARequired, type LoginResponse } from '@/api'
-import { clearAccessToken, getAccessToken, setAccessToken } from '@/api/tokenStorage'
+import { refreshAccessToken } from '@/api/client'
+import {
+  clearPersistedSession,
+  getAccessToken,
+  getPersistedAuthUser,
+  getTokenExpiresAt,
+  hasPersistedSessionHint,
+  setAccessToken,
+  setPersistedAuthUser,
+  setTokenExpiresAt,
+} from '@/api/tokenStorage'
 import type { AuthResponse, LoginRequest, RegisterRequest, User } from '@/types'
 
-const AUTH_USER_KEY = 'auth_user'
-const TOKEN_EXPIRES_AT_KEY = 'token_expires_at'
 const PENDING_AUTH_SESSION_KEY = 'pending_auth_session'
 const PENDING_REGISTRATION_CHALLENGE_KEY = 'pending_registration_challenge'
 const AUTO_REFRESH_INTERVAL = 60 * 1000
@@ -229,11 +237,13 @@ export const useAuthStore = defineStore('auth', () => {
   const refreshTokenValue = ref<string | null>(null)
   const tokenExpiresAt = ref<number | null>(null)
   const runMode = ref<'standard' | 'simple'>('standard')
+  const isSessionRestoring = ref(false)
   const pendingAuthSession = ref<PendingAuthSessionSummary | null>(null)
   const pendingRegistrationChallenge = ref<PendingRegistrationChallengeSummary | null>(null)
 
   let refreshIntervalId: ReturnType<typeof setInterval> | null = null
   let tokenRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
+  let restoreSessionPromise: Promise<User | null> | null = null
 
   const isAuthenticated = computed(() => !!token.value && !!user.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
@@ -242,6 +252,17 @@ export const useAuthStore = defineStore('auth', () => {
   const hasPendingRegistrationChallenge = computed(
     () => pendingRegistrationChallenge.value !== null
   )
+
+  function applyUserState(nextUser: User & { run_mode?: 'standard' | 'simple' }): User {
+    if (nextUser.run_mode) {
+      runMode.value = nextUser.run_mode
+    }
+
+    const { run_mode: _runMode, ...userData } = nextUser
+    user.value = userData
+    setPersistedAuthUser(userData)
+    return userData
+  }
 
   function keepPendingAuthSessionIfRequested(shouldPreserve: boolean): void {
     if (shouldPreserve) {
@@ -265,9 +286,79 @@ export const useAuthStore = defineStore('auth', () => {
     clearPendingRegistrationChallengeStorage()
   }
 
-  function checkAuth(): void {
-    const savedUser = localStorage.getItem(AUTH_USER_KEY)
-    const savedExpiresAt = localStorage.getItem(TOKEN_EXPIRES_AT_KEY)
+  function isSessionAuthFailure(error: unknown): boolean {
+    const apiError = error as { status?: number; code?: string }
+    return (
+      apiError.status === 401
+      || apiError.code === 'TOKEN_REFRESH_FAILED'
+      || apiError.code === 'TOKEN_EXPIRED'
+      || apiError.code === 'TOKEN_REVOKED'
+      || apiError.code === 'INVALID_TOKEN'
+    )
+  }
+
+  function clearAuthAfterSessionFailure(): void {
+    clearAuth({
+      preservePendingAuthSession: pendingAuthSession.value !== null,
+      preservePendingRegistrationChallenge: pendingRegistrationChallenge.value !== null
+    })
+  }
+
+  async function restoreSession(): Promise<User | null> {
+    if (token.value && user.value) {
+      return user.value
+    }
+
+    if (!hasPersistedSessionHint()) {
+      return null
+    }
+
+    if (restoreSessionPromise) {
+      return restoreSessionPromise
+    }
+
+    isSessionRestoring.value = true
+
+    restoreSessionPromise = (async () => {
+      try {
+        const refreshedSession = await refreshAccessToken()
+        token.value = refreshedSession.accessToken
+        if (refreshedSession.refreshToken) {
+          refreshTokenValue.value = refreshedSession.refreshToken
+        }
+        scheduleTokenRefresh(refreshedSession.expiresIn)
+      } catch (error) {
+        clearAuthAfterSessionFailure()
+        throw error
+      }
+
+      try {
+        const restoredUser = await refreshUser()
+        clearPendingAuthSession()
+        clearPendingRegistrationChallenge()
+        startAutoRefresh()
+        return restoredUser
+      } catch (error) {
+        if (isSessionAuthFailure(error)) {
+          clearAuthAfterSessionFailure()
+          throw error
+        }
+
+        console.error('Failed to refresh user while restoring session:', error)
+        startAutoRefresh()
+        return user.value
+      } finally {
+        isSessionRestoring.value = false
+        restoreSessionPromise = null
+      }
+    })()
+
+    return restoreSessionPromise
+  }
+
+  async function checkAuth(): Promise<void> {
+    const savedUser = getPersistedAuthUser()
+    const savedExpiresAt = getTokenExpiresAt()
     const savedAccessToken = getAccessToken()
     pendingAuthSession.value = getPersistedPendingAuthSession()
     pendingRegistrationChallenge.value = getPersistedPendingRegistrationChallenge()
@@ -276,29 +367,73 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = savedAccessToken
     }
 
-    if (savedUser && savedAccessToken) {
-      try {
-        user.value = JSON.parse(savedUser)
-        tokenExpiresAt.value = savedExpiresAt ? parseInt(savedExpiresAt, 10) : null
-        clearPendingAuthSession()
-        clearPendingRegistrationChallenge()
-
-        refreshUser().catch((error) => {
-          console.error('Failed to refresh user on init:', error)
-        })
-        startAutoRefresh()
-
-        if (tokenExpiresAt.value !== null) {
-          scheduleTokenRefreshAt(tokenExpiresAt.value)
+    if (!savedUser) {
+      if (savedAccessToken) {
+        try {
+          await refreshUser()
+          startAutoRefresh()
+          if (savedExpiresAt !== null) {
+            tokenExpiresAt.value = savedExpiresAt
+            scheduleTokenRefreshAt(savedExpiresAt)
+          }
+        } catch (error) {
+          console.error('Failed to restore user from saved access token:', error)
+          if (isSessionAuthFailure(error)) {
+            clearAuthAfterSessionFailure()
+          }
         }
-      } catch (error) {
-        console.error('Failed to parse saved user data:', error)
-        clearAuth({
-          preservePendingAuthSession: true,
-          preservePendingRegistrationChallenge: true
-        })
       }
+      return
     }
+
+    try {
+      applyUserState(JSON.parse(savedUser) as User)
+      tokenExpiresAt.value = savedExpiresAt
+    } catch (error) {
+      console.error('Failed to parse saved user data:', error)
+      clearAuth({
+        preservePendingAuthSession: true,
+        preservePendingRegistrationChallenge: true
+      })
+      return
+    }
+
+    if (savedAccessToken) {
+      clearPendingAuthSession()
+      clearPendingRegistrationChallenge()
+
+      try {
+        await refreshUser()
+      } catch (error) {
+        console.error('Failed to refresh user on init:', error)
+        if (isSessionAuthFailure(error)) {
+          clearAuthAfterSessionFailure()
+          return
+        }
+      }
+
+      startAutoRefresh()
+
+      if (tokenExpiresAt.value !== null) {
+        scheduleTokenRefreshAt(tokenExpiresAt.value)
+      }
+
+      return
+    }
+
+    if (savedExpiresAt !== null) {
+      try {
+        await restoreSession()
+      } catch (error) {
+        console.error('Failed to restore session on init:', error)
+      }
+      return
+    }
+
+    clearAuth({
+      preservePendingAuthSession: true,
+      preservePendingRegistrationChallenge: true
+    })
   }
 
   function startAutoRefresh(): void {
@@ -342,18 +477,18 @@ export const useAuthStore = defineStore('auth', () => {
   function scheduleTokenRefresh(expiresInSeconds: number): void {
     const expiresAtMs = Date.now() + expiresInSeconds * 1000
     tokenExpiresAt.value = expiresAtMs
-    localStorage.setItem(TOKEN_EXPIRES_AT_KEY, String(expiresAtMs))
+    setTokenExpiresAt(expiresAtMs)
     scheduleTokenRefreshAt(expiresAtMs)
   }
 
   async function performTokenRefresh(): Promise<void> {
     try {
-      const response = await authAPI.refreshToken()
-      token.value = response.access_token
-      if (response.refresh_token) {
-        refreshTokenValue.value = response.refresh_token
+      const refreshedSession = await refreshAccessToken()
+      token.value = refreshedSession.accessToken
+      if (refreshedSession.refreshToken) {
+        refreshTokenValue.value = refreshedSession.refreshToken
       }
-      scheduleTokenRefresh(response.expires_in)
+      scheduleTokenRefresh(refreshedSession.expiresIn)
     } catch (error) {
       console.error('Token refresh failed:', error)
     }
@@ -400,21 +535,15 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function setAuthFromResponse(response: AuthResponse): void {
+    isSessionRestoring.value = false
     token.value = response.access_token
 
     if (response.refresh_token) {
       refreshTokenValue.value = response.refresh_token
     }
 
-    if (response.user.run_mode) {
-      runMode.value = response.user.run_mode
-    }
-
-    const { run_mode: _run_mode, ...userData } = response.user
-    user.value = userData
-
     setAccessToken(response.access_token)
-    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(userData))
+    applyUserState(response.user)
     clearPendingAuthSession()
     clearPendingRegistrationChallenge()
     startAutoRefresh()
@@ -441,16 +570,14 @@ export const useAuthStore = defineStore('auth', () => {
   async function setToken(newToken: string): Promise<User> {
     stopAutoRefresh()
     stopTokenRefresh()
+    isSessionRestoring.value = false
     token.value = null
     user.value = null
 
     token.value = newToken
     setAccessToken(newToken)
 
-    const savedExpiresAt = localStorage.getItem(TOKEN_EXPIRES_AT_KEY)
-    if (savedExpiresAt) {
-      tokenExpiresAt.value = parseInt(savedExpiresAt, 10)
-    }
+    tokenExpiresAt.value = getTokenExpiresAt()
 
     try {
       const userData = await refreshUser()
@@ -535,18 +662,20 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function refreshUser(): Promise<User> {
     if (!token.value) {
+      try {
+        await restoreSession()
+      } catch {
+        // Fall through to a normalized "not authenticated" error below.
+      }
+    }
+
+    if (!token.value) {
       throw new Error('Not authenticated')
     }
 
     try {
       const response = await authAPI.getCurrentUser()
-      if (response.data.run_mode) {
-        runMode.value = response.data.run_mode
-      }
-      const { run_mode: _run_mode, ...userData } = response.data
-      user.value = userData
-      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(userData))
-      return userData
+      return applyUserState(response.data)
     } catch (error) {
       if ((error as { status?: number }).status === 401) {
         clearAuth({
@@ -565,14 +694,13 @@ export const useAuthStore = defineStore('auth', () => {
     stopAutoRefresh()
     stopTokenRefresh()
 
+    isSessionRestoring.value = false
+    restoreSessionPromise = null
     token.value = null
     refreshTokenValue.value = null
     tokenExpiresAt.value = null
     user.value = null
-    clearAccessToken()
-    localStorage.removeItem(AUTH_USER_KEY)
-    localStorage.removeItem('refresh_token')
-    localStorage.removeItem(TOKEN_EXPIRES_AT_KEY)
+    clearPersistedSession()
 
     keepPendingAuthSessionIfRequested(options?.preservePendingAuthSession === true)
     keepPendingRegistrationChallengeIfRequested(

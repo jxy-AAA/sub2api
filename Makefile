@@ -1,4 +1,6 @@
-.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-frontend-critical test-frontend-affiliate-auth-admin test-datamanagementd secret-scan
+.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-frontend-all test-frontend-critical test-frontend-affiliate-auth-admin test-frontend-quality test-datamanagementd secret-scan
+
+PYTHON ?= python3
 
 FRONTEND_CRITICAL_VITEST := \
 	src/views/auth/__tests__/LinuxDoCallbackView.spec.ts \
@@ -6,6 +8,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/views/user/__tests__/PaymentView.spec.ts \
 	src/views/user/__tests__/PaymentResultView.spec.ts \
 	src/components/user/profile/__tests__/ProfileInfoCard.spec.ts \
+	src/i18n/__tests__/localeParity.spec.ts \
 	src/views/admin/__tests__/SettingsView.spec.ts
 
 FRONTEND_AFFILIATE_AUTH_ADMIN_VITEST := \
@@ -16,6 +19,14 @@ FRONTEND_AFFILIATE_AUTH_ADMIN_VITEST := \
 	src/views/auth/__tests__/RegisterView.spec.ts \
 	src/views/user/__tests__/AffiliateManagedView.spec.ts \
 	src/views/user/__tests__/AffiliateView.spec.ts
+
+FRONTEND_QUALITY_VITEST := \
+	src/api/__tests__/client.spec.ts \
+	src/api/__tests__/payment.spec.ts \
+	src/api/admin/__tests__/payment.spec.ts \
+	src/stores/__tests__/auth.spec.ts \
+	src/router/__tests__/guards.spec.ts \
+	src/utils/__tests__/markdown.spec.ts
 
 # 一键编译前后端
 build: build-frontend build-backend
@@ -42,8 +53,10 @@ test-backend:
 test-frontend:
 	@pnpm --dir frontend run lint:check
 	@pnpm --dir frontend run typecheck
-	@$(MAKE) test-frontend-critical
-	@$(MAKE) test-frontend-affiliate-auth-admin
+	@$(MAKE) test-frontend-all
+
+test-frontend-all:
+	@pnpm --dir frontend run test:run
 
 test-frontend-critical:
 	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST)
@@ -51,8 +64,11 @@ test-frontend-critical:
 test-frontend-affiliate-auth-admin:
 	@pnpm --dir frontend exec vitest run $(FRONTEND_AFFILIATE_AUTH_ADMIN_VITEST)
 
+test-frontend-quality:
+	@pnpm --dir frontend exec vitest run $(FRONTEND_QUALITY_VITEST)
+
 test-datamanagementd:
 	@echo "No in-repo datamanagementd tests (source not included)."
 
 secret-scan:
-	@python3 tools/secret_scan.py
+	@$(PYTHON) tools/secret_scan.py

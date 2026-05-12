@@ -86,10 +86,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 import Icon from '@/components/icons/Icon.vue'
 import { getPublicSettings } from '@/api/auth'
+import { renderMarkdown } from '@/utils/markdown'
 import { sanitizeUrl } from '@/utils/url'
 import type { LoginAgreementDocument, PublicSettings } from '@/types'
 
@@ -100,10 +99,6 @@ const settings = ref<PublicSettings | null>(null)
 const loading = ref(true)
 const loadError = ref(false)
 
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-})
 
 const documentId = computed(() => String(route.params.documentId || ''))
 const documents = computed(() => settings.value?.login_agreement_documents ?? [])
@@ -129,8 +124,7 @@ const renderedHtml = computed(() => {
   if (!content) {
     return ''
   }
-  const html = marked.parse(content) as string
-  return DOMPurify.sanitize(html)
+  return renderMarkdown(content)
 })
 
 const documentIcon = computed<LegalDocumentIcon>(() => {

@@ -12,6 +12,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 type affiliateDistributionRepository struct {
@@ -31,6 +32,7 @@ const (
 	affiliateDistributionSourceRootDefault      = "root_default"
 	affiliateInviterSourceAffiliateCode         = "affiliate_code"
 	affiliateInviterSourceDefaultRoot           = "default_root"
+	affiliateDistributionPaidCreditTolerance    = 1e-9
 )
 
 type affiliateDistributionQueryExecer interface {
@@ -1067,7 +1069,132 @@ WHERE usage_log_id = $1`, usageLogID)
 	return err
 }
 
+func (r *affiliateDistributionRepository) RecordPaidCredit(ctx context.Context, userID, sourceOrderID int64, amountUSD float64, creditedAt time.Time) (bool, error) {
+	if userID <= 0 || sourceOrderID <= 0 || amountUSD <= 0 || math.IsNaN(amountUSD) || math.IsInf(amountUSD, 0) {
+		return false, service.ErrAffiliateDistributionPaidCreditInvalidInput
+	}
+	if creditedAt.IsZero() {
+		creditedAt = time.Now().UTC()
+	} else {
+		creditedAt = creditedAt.UTC()
+	}
+	var applied bool
+	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		existing, found, err := r.loadPaidCreditEventBySourceOrderID(txCtx, txClient, sourceOrderID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if sameAffiliateDistributionPaidCreditEvent(existing, userID, amountUSD, creditedAt) {
+				return nil
+			}
+			return infraerrors.Conflict(
+				"AFFILIATE_DISTRIBUTION_PAID_CREDIT_CONFLICT",
+				fmt.Sprintf("source_order_id %d conflicts with existing paid credit event", sourceOrderID),
+			)
+		}
+		if _, err := ensureUserAffiliateWithClient(txCtx, txClient, userID); err != nil {
+			return err
+		}
+		if err := r.ensurePaidCreditBalanceRow(txCtx, txClient, userID); err != nil {
+			return err
+		}
+		if _, err := txClient.ExecContext(txCtx, `
+INSERT INTO affiliate_distribution_paid_credit_events (
+    user_id, source_order_id, amount_usd, credited_at, created_at, updated_at
+) VALUES ($1, $2, $3, $4, NOW(), NOW())`, userID, sourceOrderID, amountUSD, creditedAt); err != nil {
+			if !isAffiliateDistributionUniqueViolation(err) {
+				return err
+			}
+			existing, found, lookupErr := r.loadPaidCreditEventBySourceOrderID(txCtx, txClient, sourceOrderID)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if found && sameAffiliateDistributionPaidCreditEvent(existing, userID, amountUSD, creditedAt) {
+				return nil
+			}
+			return infraerrors.Conflict(
+				"AFFILIATE_DISTRIBUTION_PAID_CREDIT_CONFLICT",
+				fmt.Sprintf("source_order_id %d conflicts with existing paid credit event", sourceOrderID),
+			)
+		}
+		if _, err := txClient.ExecContext(txCtx, `
+UPDATE affiliate_distribution_paid_credit_balances
+SET paid_credit_usd = paid_credit_usd + $1,
+    last_credit_at = GREATEST(COALESCE(last_credit_at, $2), $2),
+    updated_at = NOW()
+WHERE user_id = $3`, amountUSD, creditedAt, userID); err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	return applied, err
+}
+
+func (r *affiliateDistributionRepository) ReversePaidCredit(ctx context.Context, userID, sourceOrderID int64, amountUSD float64, reversedAt time.Time) (bool, error) {
+	if userID <= 0 || sourceOrderID <= 0 || amountUSD <= 0 || math.IsNaN(amountUSD) || math.IsInf(amountUSD, 0) {
+		return false, service.ErrAffiliateDistributionPaidCreditInvalidInput
+	}
+	if reversedAt.IsZero() {
+		reversedAt = time.Now().UTC()
+	} else {
+		reversedAt = reversedAt.UTC()
+	}
+
+	var reversed bool
+	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		event, found, err := r.loadPaidCreditEventBySourceOrderID(txCtx, txClient, sourceOrderID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		if event.UserID != userID {
+			return infraerrors.Conflict(
+				"AFFILIATE_DISTRIBUTION_PAID_CREDIT_CONFLICT",
+				fmt.Sprintf("source_order_id %d belongs to a different paid credit user", sourceOrderID),
+			)
+		}
+		if err := r.ensurePaidCreditBalanceRow(txCtx, txClient, userID); err != nil {
+			return err
+		}
+		if err := r.lockPaidCreditBalanceRow(txCtx, txClient, userID); err != nil {
+			return err
+		}
+		alreadyReversed, err := r.sumPaidCreditReversalsWithTx(txCtx, txClient, event.ID)
+		if err != nil {
+			return err
+		}
+		remainingCredit := event.AmountUSD - alreadyReversed
+		if remainingCredit <= affiliateDistributionPaidCreditTolerance {
+			return nil
+		}
+		reverseAmount := math.Min(amountUSD, remainingCredit)
+		if reverseAmount <= affiliateDistributionPaidCreditTolerance || math.IsNaN(reverseAmount) || math.IsInf(reverseAmount, 0) {
+			return nil
+		}
+		settledReversed, err := r.reversePaidCreditAllocationsWithTx(txCtx, txClient, event.ID, reverseAmount)
+		if err != nil {
+			return err
+		}
+		if err := r.insertPaidCreditReversalWithTx(txCtx, txClient, event.ID, sourceOrderID, userID, reverseAmount, reversedAt); err != nil {
+			return err
+		}
+		if err := r.decrementPaidCreditBalanceForReversalWithTx(txCtx, txClient, userID, reverseAmount, settledReversed); err != nil {
+			return err
+		}
+		reversed = true
+		return nil
+	})
+	return reversed, err
+}
+
 func (r *affiliateDistributionRepository) SettleUsageDistribution(ctx context.Context, cmd service.AffiliateDistributionUsageSettlementCommand) error {
+	if cmd.UsageLogID <= 0 || cmd.UserID <= 0 {
+		return service.ErrAffiliateDistributionSettlementInvalidInput
+	}
 	if cmd.GroupID <= 0 {
 		return service.ErrAffiliateDistributionGroupIDRequired
 	}
@@ -1089,12 +1216,19 @@ func (r *affiliateDistributionRepository) SettleUsageDistribution(ctx context.Co
 		return nil
 	}
 	return r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		eligibleUsageUSD, err := r.reservePaidUsageForSettlementWithTx(txCtx, txClient, cmd.UserID, cmd.UsageLogID, usageUSD, cmd.UsageCreatedAt)
+		if err != nil {
+			return err
+		}
+		if eligibleUsageUSD <= 0 {
+			return nil
+		}
 		result, err := r.recordUsageSettlementWithTx(txCtx, txClient, service.RecordAffiliateUsageSettlementInput{
 			UsageLogID:     cmd.UsageLogID,
 			ConsumerUserID: cmd.UserID,
 			GroupID:        cmd.GroupID,
 			ModelKey:       model,
-			UsageAmountUSD: usageUSD,
+			UsageAmountUSD: eligibleUsageUSD,
 			SettlementAt:   cmd.UsageCreatedAt,
 			RootRate:       1.0,
 		})
@@ -1250,6 +1384,314 @@ WHERE user_id = $2`, rebateAmount, parentUserID); err != nil {
 	return true, nil
 }
 
+func (r *affiliateDistributionRepository) reservePaidUsageForSettlementWithTx(ctx context.Context, client affiliateDistributionQueryExecer, userID, usageLogID int64, usageAmountUSD float64, settlementAt time.Time) (float64, error) {
+	if userID <= 0 || usageLogID <= 0 || usageAmountUSD <= 0 || math.IsNaN(usageAmountUSD) || math.IsInf(usageAmountUSD, 0) {
+		return 0, service.ErrAffiliateDistributionSettlementInvalidInput
+	}
+	if settlementAt.IsZero() {
+		settlementAt = time.Now().UTC()
+	} else {
+		settlementAt = settlementAt.UTC()
+	}
+	if err := r.ensurePaidCreditBalanceRow(ctx, client, userID); err != nil {
+		return 0, err
+	}
+
+	inserted, existing, err := r.insertPaidUsageSettlementPlaceholder(ctx, client, userID, usageLogID, settlementAt)
+	if err != nil {
+		return 0, err
+	}
+	if !inserted {
+		return existing, nil
+	}
+	if err := r.lockPaidCreditBalanceRow(ctx, client, userID); err != nil {
+		return 0, err
+	}
+
+	availableCredits, err := r.listAvailablePaidCreditEventsForSettlement(ctx, client, userID, settlementAt)
+	if err != nil {
+		return 0, err
+	}
+	remaining := usageAmountUSD
+	eligible := 0.0
+	for _, credit := range availableCredits {
+		if remaining <= 0 {
+			break
+		}
+		allocateUSD := math.Min(remaining, credit.RemainingUSD)
+		if allocateUSD <= 0 || math.IsNaN(allocateUSD) || math.IsInf(allocateUSD, 0) {
+			continue
+		}
+		if err := r.insertPaidCreditAllocationWithTx(ctx, client, credit.CreditEventID, usageLogID, userID, allocateUSD); err != nil {
+			return 0, err
+		}
+		eligible += allocateUSD
+		remaining -= allocateUSD
+	}
+	if eligible > 0 {
+		if err := r.updatePaidUsageSettlementAmountWithTx(ctx, client, usageLogID, eligible); err != nil {
+			return 0, err
+		}
+		if err := r.bumpPaidCreditSettlementBalanceWithTx(ctx, client, userID, eligible, settlementAt); err != nil {
+			return 0, err
+		}
+	}
+	if eligible <= 0 || math.IsNaN(eligible) || math.IsInf(eligible, 0) {
+		return 0, nil
+	}
+	return eligible, nil
+}
+
+func (r *affiliateDistributionRepository) sumPaidCreditReversalsWithTx(ctx context.Context, client affiliateDistributionQueryExecer, creditEventID int64) (float64, error) {
+	var total float64
+	err := scanSingleRow(ctx, client, `
+SELECT COALESCE(SUM(amount_usd), 0)::double precision
+FROM affiliate_distribution_paid_credit_reversals
+WHERE credit_event_id = $1`, []any{creditEventID}, &total)
+	return total, err
+}
+
+func (r *affiliateDistributionRepository) insertPaidCreditReversalWithTx(ctx context.Context, client affiliateDistributionQueryExecer, creditEventID, sourceOrderID, userID int64, amountUSD float64, reversedAt time.Time) error {
+	_, err := client.ExecContext(ctx, `
+INSERT INTO affiliate_distribution_paid_credit_reversals (
+    credit_event_id, source_order_id, user_id, amount_usd, reason, reversed_at, created_at, updated_at
+) VALUES ($1, $2, $3, $4, 'refund', $5, NOW(), NOW())`, creditEventID, sourceOrderID, userID, amountUSD, reversedAt)
+	return err
+}
+
+func (r *affiliateDistributionRepository) decrementPaidCreditBalanceForReversalWithTx(ctx context.Context, client affiliateDistributionQueryExecer, userID int64, creditReversedUSD, settledReversedUSD float64) error {
+	_, err := client.ExecContext(ctx, `
+UPDATE affiliate_distribution_paid_credit_balances
+SET paid_credit_usd = GREATEST(paid_credit_usd - $1, 0),
+    settled_paid_usage_usd = GREATEST(settled_paid_usage_usd - $2, 0),
+    updated_at = NOW()
+WHERE user_id = $3`, creditReversedUSD, settledReversedUSD, userID)
+	return err
+}
+
+func (r *affiliateDistributionRepository) reversePaidCreditAllocationsWithTx(ctx context.Context, client affiliateDistributionQueryExecer, creditEventID int64, amountUSD float64) (float64, error) {
+	allocations, err := r.listPaidCreditAllocationsForReverseWithTx(ctx, client, creditEventID)
+	if err != nil {
+		return 0, err
+	}
+	remaining := amountUSD
+	settledReversed := 0.0
+	for _, allocation := range allocations {
+		if remaining <= affiliateDistributionPaidCreditTolerance {
+			break
+		}
+		allocationReverse := math.Min(remaining, allocation.AmountUSD)
+		if allocationReverse <= affiliateDistributionPaidCreditTolerance || math.IsNaN(allocationReverse) || math.IsInf(allocationReverse, 0) {
+			continue
+		}
+		actualSettledReversed, err := r.reducePaidUsageSettlementForReversalWithTx(ctx, client, allocation.UsageLogID, allocationReverse)
+		if err != nil {
+			return 0, err
+		}
+		if err := r.reducePaidCreditAllocationWithTx(ctx, client, creditEventID, allocation.UsageLogID, allocationReverse); err != nil {
+			return 0, err
+		}
+		settledReversed += actualSettledReversed
+		remaining -= allocationReverse
+	}
+	return settledReversed, nil
+}
+
+func (r *affiliateDistributionRepository) listPaidCreditAllocationsForReverseWithTx(ctx context.Context, client affiliateDistributionQueryExecer, creditEventID int64) ([]affiliateDistributionPaidCreditAllocation, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT usage_log_id, amount_usd::double precision
+FROM affiliate_distribution_paid_credit_allocations
+WHERE credit_event_id = $1
+ORDER BY created_at DESC, usage_log_id DESC
+FOR UPDATE`, creditEventID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	allocations := make([]affiliateDistributionPaidCreditAllocation, 0)
+	for rows.Next() {
+		var allocation affiliateDistributionPaidCreditAllocation
+		if err := rows.Scan(&allocation.UsageLogID, &allocation.AmountUSD); err != nil {
+			return nil, err
+		}
+		allocations = append(allocations, allocation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return allocations, nil
+}
+
+func (r *affiliateDistributionRepository) reducePaidCreditAllocationWithTx(ctx context.Context, client affiliateDistributionQueryExecer, creditEventID, usageLogID int64, amountUSD float64) error {
+	var current float64
+	err := scanSingleRow(ctx, client, `
+SELECT amount_usd::double precision
+FROM affiliate_distribution_paid_credit_allocations
+WHERE credit_event_id = $1 AND usage_log_id = $2
+FOR UPDATE`, []any{creditEventID, usageLogID}, &current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current-amountUSD <= affiliateDistributionPaidCreditTolerance {
+		_, err = client.ExecContext(ctx, `
+DELETE FROM affiliate_distribution_paid_credit_allocations
+WHERE credit_event_id = $1 AND usage_log_id = $2`, creditEventID, usageLogID)
+		return err
+	}
+	_, err = client.ExecContext(ctx, `
+UPDATE affiliate_distribution_paid_credit_allocations
+SET amount_usd = amount_usd - $1,
+    updated_at = NOW()
+WHERE credit_event_id = $2 AND usage_log_id = $3`, amountUSD, creditEventID, usageLogID)
+	return err
+}
+
+func (r *affiliateDistributionRepository) reducePaidUsageSettlementForReversalWithTx(ctx context.Context, client affiliateDistributionQueryExecer, usageLogID int64, amountUSD float64) (float64, error) {
+	var current float64
+	err := scanSingleRow(ctx, client, `
+SELECT usage_amount_usd::double precision
+FROM affiliate_distribution_paid_usage_settlements
+WHERE usage_log_id = $1
+FOR UPDATE`, []any{usageLogID}, &current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if current <= affiliateDistributionPaidCreditTolerance {
+		return 0, nil
+	}
+	actualReversal := math.Min(amountUSD, current)
+	if actualReversal <= affiliateDistributionPaidCreditTolerance || math.IsNaN(actualReversal) || math.IsInf(actualReversal, 0) {
+		return 0, nil
+	}
+	if err := r.applyUsageSettlementReversalWithTx(ctx, client, usageLogID, actualReversal, current); err != nil {
+		return 0, err
+	}
+	_, err = client.ExecContext(ctx, `
+UPDATE affiliate_distribution_paid_usage_settlements
+SET usage_amount_usd = GREATEST(usage_amount_usd - $1, 0),
+    updated_at = NOW()
+WHERE usage_log_id = $2`, actualReversal, usageLogID)
+	if err != nil {
+		return 0, err
+	}
+	return actualReversal, nil
+}
+
+func (r *affiliateDistributionRepository) applyUsageSettlementReversalWithTx(ctx context.Context, client affiliateDistributionQueryExecer, usageLogID int64, amountUSD, previousPaidUsageUSD float64) error {
+	if previousPaidUsageUSD <= affiliateDistributionPaidCreditTolerance {
+		return nil
+	}
+	adjustments, err := r.loadSettlementAdjustmentsForReversalWithTx(ctx, client, usageLogID)
+	if err != nil {
+		return err
+	}
+	if len(adjustments) == 0 {
+		return nil
+	}
+	ratio := amountUSD / previousPaidUsageUSD
+	if ratio > 1 {
+		ratio = 1
+	}
+	if ratio <= affiliateDistributionPaidCreditTolerance || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return nil
+	}
+	for _, adjustment := range adjustments {
+		usageDelta := math.Min(adjustment.UsageAmountUSD, adjustment.UsageAmountUSD*ratio)
+		revenueDelta := math.Min(adjustment.RevenueAmountUSD, adjustment.RevenueAmountUSD*ratio)
+		rebateDelta := math.Min(adjustment.RebateAmountRMB, adjustment.RebateAmountRMB*ratio)
+		fullReversal := ratio >= 1-affiliateDistributionPaidCreditTolerance || adjustment.UsageAmountUSD-usageDelta <= affiliateDistributionPaidCreditTolerance
+		if err := r.applySettlementAdjustmentReversalWithTx(ctx, client, usageLogID, adjustment, usageDelta, revenueDelta, rebateDelta, fullReversal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *affiliateDistributionRepository) loadSettlementAdjustmentsForReversalWithTx(ctx context.Context, client affiliateDistributionQueryExecer, usageLogID int64) ([]affiliateDistributionSettlementAdjustment, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT beneficiary_user_id,
+       settlement_day,
+       usage_amount_usd::double precision,
+       revenue_amount_usd::double precision,
+       rebate_amount::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1
+FOR UPDATE`, usageLogID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	adjustments := make([]affiliateDistributionSettlementAdjustment, 0)
+	for rows.Next() {
+		var adjustment affiliateDistributionSettlementAdjustment
+		if err := rows.Scan(
+			&adjustment.BeneficiaryUserID,
+			&adjustment.SettlementDay,
+			&adjustment.UsageAmountUSD,
+			&adjustment.RevenueAmountUSD,
+			&adjustment.RebateAmountRMB,
+		); err != nil {
+			return nil, err
+		}
+		adjustments = append(adjustments, adjustment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return adjustments, nil
+}
+
+func (r *affiliateDistributionRepository) applySettlementAdjustmentReversalWithTx(ctx context.Context, client affiliateDistributionQueryExecer, usageLogID int64, adjustment affiliateDistributionSettlementAdjustment, usageDelta, revenueDelta, rebateDelta float64, fullReversal bool) error {
+	if fullReversal {
+		if _, err := client.ExecContext(ctx, `
+DELETE FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, adjustment.BeneficiaryUserID); err != nil {
+			return err
+		}
+	} else {
+		if _, err := client.ExecContext(ctx, `
+UPDATE affiliate_distribution_usage_settlements
+SET usage_amount_usd = GREATEST(usage_amount_usd - $1, 0),
+    revenue_amount_usd = GREATEST(revenue_amount_usd - $2, 0),
+    rebate_amount = GREATEST(rebate_amount - $3, 0),
+    updated_at = NOW()
+WHERE usage_log_id = $4 AND beneficiary_user_id = $5`, usageDelta, revenueDelta, rebateDelta, usageLogID, adjustment.BeneficiaryUserID); err != nil {
+			return err
+		}
+	}
+	usageCountDelta := 0
+	if fullReversal {
+		usageCountDelta = 1
+	}
+	if _, err := client.ExecContext(ctx, `
+UPDATE affiliate_distribution_daily_metrics
+SET revenue_amount_usd = GREATEST(revenue_amount_usd - $1, 0),
+    rebate_amount = GREATEST(rebate_amount - $2, 0),
+    usage_count = GREATEST(usage_count - $3, 0),
+    updated_at = NOW()
+WHERE user_id = $4 AND metric_date = $5`, revenueDelta, rebateDelta, usageCountDelta, adjustment.BeneficiaryUserID, adjustment.SettlementDay); err != nil {
+		return err
+	}
+	if rebateDelta <= affiliateDistributionPaidCreditTolerance {
+		return nil
+	}
+	_, err := client.ExecContext(ctx, `
+UPDATE affiliate_distribution_rebate_balances
+SET current_amount = GREATEST(current_amount - $1, 0),
+    lifetime_amount = GREATEST(lifetime_amount - $1, 0),
+    updated_at = NOW()
+WHERE user_id = $2`, rebateDelta, adjustment.BeneficiaryUserID)
+	return err
+}
+
 func (r *affiliateDistributionRepository) getDailyTotals(ctx context.Context, userID int64, day time.Time) (float64, float64, error) {
 	var revenue float64
 	var rebate float64
@@ -1363,6 +1805,178 @@ INSERT INTO affiliate_distribution_rebate_balances (user_id, current_amount, lif
 VALUES ($1, 0, 0, NOW(), NOW())
 ON CONFLICT (user_id) DO NOTHING`, userID)
 	return err
+}
+
+func (r *affiliateDistributionRepository) ensurePaidCreditBalanceRow(ctx context.Context, client affiliateDistributionQueryExecer, userID int64) error {
+	_, err := client.ExecContext(ctx, `
+INSERT INTO affiliate_distribution_paid_credit_balances (user_id, paid_credit_usd, settled_paid_usage_usd, created_at, updated_at)
+VALUES ($1, 0, 0, NOW(), NOW())
+ON CONFLICT (user_id) DO NOTHING`, userID)
+	return err
+}
+
+type affiliateDistributionPaidCreditEvent struct {
+	ID         int64
+	UserID     int64
+	AmountUSD  float64
+	CreditedAt time.Time
+}
+
+type affiliateDistributionPaidCreditAvailability struct {
+	CreditEventID int64
+	RemainingUSD  float64
+}
+
+type affiliateDistributionPaidCreditAllocation struct {
+	UsageLogID int64
+	AmountUSD  float64
+}
+
+type affiliateDistributionSettlementAdjustment struct {
+	BeneficiaryUserID int64
+	SettlementDay     time.Time
+	UsageAmountUSD    float64
+	RevenueAmountUSD  float64
+	RebateAmountRMB   float64
+}
+
+func (r *affiliateDistributionRepository) loadPaidCreditEventBySourceOrderID(ctx context.Context, client affiliateDistributionQueryExecer, sourceOrderID int64) (affiliateDistributionPaidCreditEvent, bool, error) {
+	var existing affiliateDistributionPaidCreditEvent
+	err := scanSingleRow(ctx, client, `
+SELECT id, user_id, amount_usd::double precision, credited_at
+FROM affiliate_distribution_paid_credit_events
+WHERE source_order_id = $1
+LIMIT 1`, []any{sourceOrderID}, &existing.ID, &existing.UserID, &existing.AmountUSD, &existing.CreditedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return affiliateDistributionPaidCreditEvent{}, false, nil
+	}
+	if err != nil {
+		return affiliateDistributionPaidCreditEvent{}, false, err
+	}
+	return existing, true, nil
+}
+
+func (r *affiliateDistributionRepository) insertPaidUsageSettlementPlaceholder(ctx context.Context, client affiliateDistributionQueryExecer, userID, usageLogID int64, settlementAt time.Time) (bool, float64, error) {
+	res, err := client.ExecContext(ctx, `
+INSERT INTO affiliate_distribution_paid_usage_settlements (
+    usage_log_id, user_id, usage_amount_usd, settlement_day, settled_at, created_at, updated_at
+) VALUES ($1, $2, 0, $3, $4, NOW(), NOW())
+ON CONFLICT (usage_log_id) DO NOTHING`, usageLogID, userID, truncateToUTCDate(settlementAt), settlementAt)
+	if err != nil {
+		return false, 0, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected > 0 {
+		return true, 0, nil
+	}
+
+	var existing float64
+	if err := scanSingleRow(ctx, client, `
+SELECT COALESCE(usage_amount_usd, 0)::double precision
+FROM affiliate_distribution_paid_usage_settlements
+WHERE usage_log_id = $1
+LIMIT 1`, []any{usageLogID}, &existing); err != nil {
+		return false, 0, err
+	}
+	return false, existing, nil
+}
+
+func (r *affiliateDistributionRepository) lockPaidCreditBalanceRow(ctx context.Context, client affiliateDistributionQueryExecer, userID int64) error {
+	var locked bool
+	if err := scanSingleRow(ctx, client, `
+SELECT TRUE
+FROM affiliate_distribution_paid_credit_balances
+WHERE user_id = $1
+FOR UPDATE`, []any{userID}, &locked); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *affiliateDistributionRepository) listAvailablePaidCreditEventsForSettlement(ctx context.Context, client affiliateDistributionQueryExecer, userID int64, settlementAt time.Time) ([]affiliateDistributionPaidCreditAvailability, error) {
+	rows, err := client.QueryContext(ctx, `
+SELECT e.id,
+       GREATEST(
+           e.amount_usd - COALESCE(rev.reversed_usd, 0) - COALESCE(alloc.allocated_usd, 0),
+           0
+       )::double precision AS remaining_usd
+FROM affiliate_distribution_paid_credit_events e
+LEFT JOIN (
+    SELECT credit_event_id, COALESCE(SUM(amount_usd), 0)::double precision AS reversed_usd
+    FROM affiliate_distribution_paid_credit_reversals
+    GROUP BY credit_event_id
+) rev ON rev.credit_event_id = e.id
+LEFT JOIN (
+    SELECT credit_event_id, COALESCE(SUM(amount_usd), 0)::double precision AS allocated_usd
+    FROM affiliate_distribution_paid_credit_allocations
+    GROUP BY credit_event_id
+) alloc ON alloc.credit_event_id = e.id
+WHERE e.user_id = $1
+  AND e.credited_at <= $2
+  AND GREATEST(e.amount_usd - COALESCE(rev.reversed_usd, 0) - COALESCE(alloc.allocated_usd, 0), 0) > 0
+ORDER BY e.credited_at ASC, e.id ASC`, userID, settlementAt)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	credits := make([]affiliateDistributionPaidCreditAvailability, 0)
+	for rows.Next() {
+		var item affiliateDistributionPaidCreditAvailability
+		if err := rows.Scan(&item.CreditEventID, &item.RemainingUSD); err != nil {
+			return nil, err
+		}
+		credits = append(credits, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return credits, nil
+}
+
+func (r *affiliateDistributionRepository) insertPaidCreditAllocationWithTx(ctx context.Context, client affiliateDistributionQueryExecer, creditEventID, usageLogID, userID int64, amountUSD float64) error {
+	_, err := client.ExecContext(ctx, `
+INSERT INTO affiliate_distribution_paid_credit_allocations (
+    credit_event_id, usage_log_id, user_id, amount_usd, created_at, updated_at
+) VALUES ($1, $2, $3, $4, NOW(), NOW())`, creditEventID, usageLogID, userID, amountUSD)
+	return err
+}
+
+func (r *affiliateDistributionRepository) updatePaidUsageSettlementAmountWithTx(ctx context.Context, client affiliateDistributionQueryExecer, usageLogID int64, amountUSD float64) error {
+	_, err := client.ExecContext(ctx, `
+UPDATE affiliate_distribution_paid_usage_settlements
+SET usage_amount_usd = $1,
+    updated_at = NOW()
+WHERE usage_log_id = $2`, amountUSD, usageLogID)
+	return err
+}
+
+func (r *affiliateDistributionRepository) bumpPaidCreditSettlementBalanceWithTx(ctx context.Context, client affiliateDistributionQueryExecer, userID int64, amountUSD float64, settlementAt time.Time) error {
+	_, err := client.ExecContext(ctx, `
+UPDATE affiliate_distribution_paid_credit_balances
+SET settled_paid_usage_usd = settled_paid_usage_usd + $1,
+    last_settlement_at = GREATEST(COALESCE(last_settlement_at, $2), $2),
+    updated_at = NOW()
+WHERE user_id = $3`, amountUSD, settlementAt, userID)
+	return err
+}
+
+func sameAffiliateDistributionPaidCreditEvent(existing affiliateDistributionPaidCreditEvent, userID int64, amountUSD float64, creditedAt time.Time) bool {
+	if existing.UserID != userID {
+		return false
+	}
+	if math.Abs(existing.AmountUSD-amountUSD) > affiliateDistributionPaidCreditTolerance {
+		return false
+	}
+	return existing.CreditedAt.UTC().Equal(creditedAt.UTC())
+}
+
+func isAffiliateDistributionUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return string(pqErr.Code) == "23505"
+	}
+	return false
 }
 
 func normalizeAgentGroupRateInputs(rates []service.AgentGroupRateInput) []service.AgentGroupRateInput {

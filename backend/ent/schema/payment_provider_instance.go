@@ -1,14 +1,13 @@
 package schema
 
 import (
-	"time"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 )
 
 // PaymentProviderInstance holds the schema definition for the PaymentProviderInstance entity.
@@ -25,6 +24,12 @@ type PaymentProviderInstance struct {
 func (PaymentProviderInstance) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "payment_provider_instances"},
+	}
+}
+
+func (PaymentProviderInstance) Mixin() []ent.Mixin {
+	return []ent.Mixin{
+		mixins.TimeMixin{},
 	}
 }
 
@@ -55,14 +60,6 @@ func (PaymentProviderInstance) Fields() []ent.Field {
 			Default(false),
 		field.Bool("allow_user_refund").
 			Default(false),
-		field.Time("created_at").
-			Immutable().
-			Default(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
-		field.Time("updated_at").
-			Default(time.Now).
-			UpdateDefault(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
 	}
 }
 

@@ -292,7 +292,9 @@ func (r *usageCleanupRepository) DeleteUsageLogsBatch(ctx context.Context, filte
 	}
 	args = append(args, limit)
 	query := fmt.Sprintf(`
-		WITH target AS (
+		WITH maintenance AS (
+			SELECT set_config('sub2api.usage_log_maintenance', 'on', true)
+		), target AS (
 			SELECT id
 			FROM usage_logs AS u
 			WHERE %s
@@ -303,6 +305,10 @@ func (r *usageCleanupRepository) DeleteUsageLogsBatch(ctx context.Context, filte
 				AND NOT EXISTS (
 					SELECT 1 FROM affiliate_distribution_usage_jobs j
 					WHERE j.usage_log_id = u.id
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM affiliate_distribution_paid_usage_settlements p
+					WHERE p.usage_log_id = u.id
 				)
 			ORDER BY created_at ASC, id ASC
 			LIMIT $%d

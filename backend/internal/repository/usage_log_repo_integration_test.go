@@ -560,10 +560,11 @@ func (s *UsageLogRepoSuite) TestDelete() {
 	log := s.createUsageLog(user, apiKey, account, 10, 20, 0.5, time.Now())
 
 	err := s.repo.Delete(s.ctx, log.ID)
-	s.Require().NoError(err, "Delete")
+	s.Require().ErrorIs(err, service.ErrUsageLogImmutable, "Delete should reject direct mutation")
 
-	_, err = s.repo.GetByID(s.ctx, log.ID)
-	s.Require().Error(err, "expected error after delete")
+	got, err := s.repo.GetByID(s.ctx, log.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(log.ID, got.ID)
 }
 
 // --- ListByUser ---

@@ -4,11 +4,13 @@
 
 // ==================== Common Types ====================
 
-export interface SelectOption {
-  value: string | number | boolean | null
+export type SelectOptionValue = string | number | boolean | null
+
+export type SelectOption<TExtra extends Record<string, unknown> = Record<string, unknown>> = {
+  value: SelectOptionValue
   label: string
-  [key: string]: any // Support extra properties for custom templates
-}
+  disabled?: boolean
+} & TExtra
 
 export interface BasePaginationResponse<T> {
   items: T[]

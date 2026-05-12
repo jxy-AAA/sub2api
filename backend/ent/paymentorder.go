@@ -69,6 +69,12 @@ type PaymentOrder struct {
 	RefundReason *string `json:"refund_reason,omitempty"`
 	// RefundAt holds the value of the "refund_at" field.
 	RefundAt *time.Time `json:"refund_at,omitempty"`
+	// RefundGatewayConfirmedAt holds the value of the "refund_gateway_confirmed_at" field.
+	RefundGatewayConfirmedAt *time.Time `json:"refund_gateway_confirmed_at,omitempty"`
+	// RefundGatewayRefundID holds the value of the "refund_gateway_refund_id" field.
+	RefundGatewayRefundID *string `json:"refund_gateway_refund_id,omitempty"`
+	// RefundIdempotencyKey holds the value of the "refund_idempotency_key" field.
+	RefundIdempotencyKey *string `json:"refund_idempotency_key,omitempty"`
 	// ForceRefund holds the value of the "force_refund" field.
 	ForceRefund bool `json:"force_refund,omitempty"`
 	// RefundRequestedAt holds the value of the "refund_requested_at" field.
@@ -136,9 +142,9 @@ func (*PaymentOrder) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullFloat64)
 		case paymentorder.FieldID, paymentorder.FieldUserID, paymentorder.FieldPlanID, paymentorder.FieldSubscriptionGroupID, paymentorder.FieldSubscriptionDays:
 			values[i] = new(sql.NullInt64)
-		case paymentorder.FieldUserEmail, paymentorder.FieldUserName, paymentorder.FieldUserNotes, paymentorder.FieldRechargeCode, paymentorder.FieldOutTradeNo, paymentorder.FieldPaymentType, paymentorder.FieldPaymentTradeNo, paymentorder.FieldPayURL, paymentorder.FieldQrCode, paymentorder.FieldQrCodeImg, paymentorder.FieldOrderType, paymentorder.FieldProviderInstanceID, paymentorder.FieldProviderKey, paymentorder.FieldStatus, paymentorder.FieldRefundReason, paymentorder.FieldRefundRequestReason, paymentorder.FieldRefundRequestedBy, paymentorder.FieldFailedReason, paymentorder.FieldClientIP, paymentorder.FieldSrcHost, paymentorder.FieldSrcURL:
+		case paymentorder.FieldUserEmail, paymentorder.FieldUserName, paymentorder.FieldUserNotes, paymentorder.FieldRechargeCode, paymentorder.FieldOutTradeNo, paymentorder.FieldPaymentType, paymentorder.FieldPaymentTradeNo, paymentorder.FieldPayURL, paymentorder.FieldQrCode, paymentorder.FieldQrCodeImg, paymentorder.FieldOrderType, paymentorder.FieldProviderInstanceID, paymentorder.FieldProviderKey, paymentorder.FieldStatus, paymentorder.FieldRefundReason, paymentorder.FieldRefundGatewayRefundID, paymentorder.FieldRefundIdempotencyKey, paymentorder.FieldRefundRequestReason, paymentorder.FieldRefundRequestedBy, paymentorder.FieldFailedReason, paymentorder.FieldClientIP, paymentorder.FieldSrcHost, paymentorder.FieldSrcURL:
 			values[i] = new(sql.NullString)
-		case paymentorder.FieldRefundAt, paymentorder.FieldRefundRequestedAt, paymentorder.FieldExpiresAt, paymentorder.FieldPaidAt, paymentorder.FieldCompletedAt, paymentorder.FieldFailedAt, paymentorder.FieldCreatedAt, paymentorder.FieldUpdatedAt:
+		case paymentorder.FieldRefundAt, paymentorder.FieldRefundGatewayConfirmedAt, paymentorder.FieldRefundRequestedAt, paymentorder.FieldExpiresAt, paymentorder.FieldPaidAt, paymentorder.FieldCompletedAt, paymentorder.FieldFailedAt, paymentorder.FieldCreatedAt, paymentorder.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -323,6 +329,27 @@ func (_m *PaymentOrder) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.RefundAt = new(time.Time)
 				*_m.RefundAt = value.Time
+			}
+		case paymentorder.FieldRefundGatewayConfirmedAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field refund_gateway_confirmed_at", values[i])
+			} else if value.Valid {
+				_m.RefundGatewayConfirmedAt = new(time.Time)
+				*_m.RefundGatewayConfirmedAt = value.Time
+			}
+		case paymentorder.FieldRefundGatewayRefundID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field refund_gateway_refund_id", values[i])
+			} else if value.Valid {
+				_m.RefundGatewayRefundID = new(string)
+				*_m.RefundGatewayRefundID = value.String
+			}
+		case paymentorder.FieldRefundIdempotencyKey:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field refund_idempotency_key", values[i])
+			} else if value.Valid {
+				_m.RefundIdempotencyKey = new(string)
+				*_m.RefundIdempotencyKey = value.String
 			}
 		case paymentorder.FieldForceRefund:
 			if value, ok := values[i].(*sql.NullBool); !ok {
@@ -552,6 +579,21 @@ func (_m *PaymentOrder) String() string {
 	if v := _m.RefundAt; v != nil {
 		builder.WriteString("refund_at=")
 		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	if v := _m.RefundGatewayConfirmedAt; v != nil {
+		builder.WriteString("refund_gateway_confirmed_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	if v := _m.RefundGatewayRefundID; v != nil {
+		builder.WriteString("refund_gateway_refund_id=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	if v := _m.RefundIdempotencyKey; v != nil {
+		builder.WriteString("refund_idempotency_key=")
+		builder.WriteString(*v)
 	}
 	builder.WriteString(", ")
 	builder.WriteString("force_refund=")

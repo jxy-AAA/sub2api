@@ -1,8 +1,7 @@
 package schema
 
 import (
-	"time"
-
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 
 	"entgo.io/ent"
@@ -27,6 +26,12 @@ type PromoCode struct {
 func (PromoCode) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "promo_codes"},
+	}
+}
+
+func (PromoCode) Mixin() []ent.Mixin {
+	return []ent.Mixin{
+		mixins.TimeMixin{},
 	}
 }
 
@@ -61,14 +66,6 @@ func (PromoCode) Fields() []ent.Field {
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "text"}).
 			Comment("备注"),
-		field.Time("created_at").
-			Immutable().
-			Default(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
-		field.Time("updated_at").
-			Default(time.Now).
-			UpdateDefault(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
 	}
 }
 

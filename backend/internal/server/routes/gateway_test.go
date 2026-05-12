@@ -77,3 +77,26 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI images handler", path)
 	}
 }
+
+func TestAppendHandlersPreservesOrder(t *testing.T) {
+	seen := make([]string, 0, 3)
+	marker := func(name string) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			seen = append(seen, name)
+			c.Next()
+		}
+	}
+
+	router := gin.New()
+	router.POST("/test", appendHandlers(
+		[]gin.HandlerFunc{marker("base-1"), marker("base-2")},
+		marker("final"),
+	)...)
+
+	req := httptest.NewRequest(http.MethodPost, "/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, []string{"base-1", "base-2", "final"}, seen)
+}

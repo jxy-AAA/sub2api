@@ -60,6 +60,61 @@ type JWTClaims struct {
 	jwt.RegisteredClaims
 }
 
+type TokenIssuer struct {
+	cfg *config.Config
+}
+
+func NewTokenIssuer(cfg *config.Config) *TokenIssuer {
+	return &TokenIssuer{cfg: cfg}
+}
+
+func (i *TokenIssuer) GenerateToken(user *User) (string, error) {
+	if i == nil || i.cfg == nil {
+		return "", errors.New("token issuer not configured")
+	}
+	if user == nil {
+		return "", errors.New("user is required")
+	}
+
+	now := time.Now()
+	var expiresAt time.Time
+	if i.cfg.JWT.AccessTokenExpireMinutes > 0 {
+		expiresAt = now.Add(time.Duration(i.cfg.JWT.AccessTokenExpireMinutes) * time.Minute)
+	} else {
+		expiresAt = now.Add(time.Duration(i.cfg.JWT.ExpireHour) * time.Hour)
+	}
+
+	claims := &JWTClaims{
+		UserID:       user.ID,
+		Email:        user.Email,
+		Role:         user.Role,
+		TokenVersion: resolvedTokenVersion(user),
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(i.cfg.JWT.Secret))
+	if err != nil {
+		return "", fmt.Errorf("sign token: %w", err)
+	}
+
+	return tokenString, nil
+}
+
+func (i *TokenIssuer) GetAccessTokenExpiresIn() int {
+	if i == nil || i.cfg == nil {
+		return 0
+	}
+	if i.cfg.JWT.AccessTokenExpireMinutes > 0 {
+		return i.cfg.JWT.AccessTokenExpireMinutes * 60
+	}
+	return i.cfg.JWT.ExpireHour * 3600
+}
+
 // AuthService 认证服务
 type AuthService struct {
 	entClient          *dbent.Client
@@ -74,6 +129,7 @@ type AuthService struct {
 	promoService       *PromoService
 	affiliateService   *AffiliateService
 	defaultSubAssigner DefaultSubscriptionAssigner
+	tokenIssuer        *TokenIssuer
 }
 
 type DefaultSubscriptionAssigner interface {
@@ -114,6 +170,7 @@ func NewAuthService(
 		promoService:       promoService,
 		affiliateService:   affiliateService,
 		defaultSubAssigner: defaultSubAssigner,
+		tokenIssuer:        NewTokenIssuer(cfg),
 	}
 }
 
@@ -1160,6 +1217,13 @@ func isReservedEmail(email string) bool {
 // GenerateToken 生成JWT access token
 // 使用新的access_token_expire_minutes配置项（如果配置了），否则回退到expire_hour
 func (s *AuthService) GenerateToken(user *User) (string, error) {
+	if s == nil || s.tokenIssuer == nil {
+		return "", errors.New("token issuer not configured")
+	}
+	return s.tokenIssuer.GenerateToken(user)
+}
+
+func (s *AuthService) generateTokenWithConfig(user *User) (string, error) {
 	now := time.Now()
 	var expiresAt time.Time
 	if s.cfg.JWT.AccessTokenExpireMinutes > 0 {
@@ -1193,6 +1257,13 @@ func (s *AuthService) GenerateToken(user *User) (string, error) {
 // GetAccessTokenExpiresIn 返回Access Token的有效期（秒）
 // 用于前端设置刷新定时器
 func (s *AuthService) GetAccessTokenExpiresIn() int {
+	if s == nil || s.tokenIssuer == nil {
+		return 0
+	}
+	return s.tokenIssuer.GetAccessTokenExpiresIn()
+}
+
+func (s *AuthService) getAccessTokenExpiresInWithConfig() int {
 	if s.cfg.JWT.AccessTokenExpireMinutes > 0 {
 		return s.cfg.JWT.AccessTokenExpireMinutes * 60
 	}

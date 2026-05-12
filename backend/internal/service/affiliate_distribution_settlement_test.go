@@ -64,6 +64,7 @@ func TestAffiliateDistributionSettlementService_Idempotent(t *testing.T) {
 	cmd := AffiliateDistributionUsageSettlementCommand{
 		UsageLogID:     101,
 		UserID:         202,
+		GroupID:        303,
 		Model:          "gpt-5.1",
 		RequestedModel: "gpt-5.1",
 		TotalCost:      200,
@@ -123,9 +124,9 @@ func TestAffiliateDistributionSettlementService_SkipsDuplicatesWithoutProcessing
 	processor := &affiliateDistributionSettlementProcessorStub{}
 	svc := NewAffiliateDistributionSettlementService(store, processor)
 
-	_, err := svc.SettleUsage(context.Background(), AffiliateDistributionUsageSettlementCommand{UsageLogID: 1})
+	_, err := svc.SettleUsage(context.Background(), AffiliateDistributionUsageSettlementCommand{UsageLogID: 1, UserID: 2, GroupID: 3})
 	require.NoError(t, err)
-	_, err = svc.SettleUsage(context.Background(), AffiliateDistributionUsageSettlementCommand{UsageLogID: 1})
+	_, err = svc.SettleUsage(context.Background(), AffiliateDistributionUsageSettlementCommand{UsageLogID: 1, UserID: 2, GroupID: 3})
 	require.NoError(t, err)
 	require.Equal(t, 1, processor.calls)
 }
@@ -176,7 +177,7 @@ func TestAffiliateDistributionSettlementService_RetriesAfterFailure(t *testing.T
 	}
 	svc := NewAffiliateDistributionSettlementService(store, processor)
 
-	cmd := AffiliateDistributionUsageSettlementCommand{UsageLogID: 77}
+	cmd := AffiliateDistributionUsageSettlementCommand{UsageLogID: 77, UserID: 88, GroupID: 99}
 
 	applied, err := svc.SettleUsage(context.Background(), cmd)
 	require.Error(t, err)

@@ -5849,6 +5849,11 @@ import {
   normalizeRegistrationEmailSuffixDomains,
   parseRegistrationEmailSuffixWhitelistInput,
 } from "@/utils/registrationEmailPolicy";
+import {
+  buildAdminOAuthRedirectUrl,
+  isValidHttpUrl,
+  resolveBrowserOrigin,
+} from "@/utils/adminSettingsUrl";
 
 const { t, locale } = useI18n();
 const appStore = useAppStore();
@@ -6560,17 +6565,12 @@ const addQuotaNotifyEmail = () => {
   });
 };
 
-const currentOrigin =
-  typeof window !== "undefined" ? window.location.origin : "";
+const currentOrigin = resolveBrowserOrigin();
 
 // LinuxDo OAuth redirect URL suggestion
-const linuxdoRedirectUrlSuggestion = computed(() => {
-  if (typeof window === "undefined") return "";
-  const origin =
-    window.location.origin ||
-    `${window.location.protocol}//${window.location.host}`;
-  return `${origin}/api/v1/auth/oauth/linuxdo/callback`;
-});
+const linuxdoRedirectUrlSuggestion = computed(() =>
+  buildAdminOAuthRedirectUrl("linuxdo"),
+);
 
 async function setAndCopyLinuxdoRedirectUrl() {
   const url = linuxdoRedirectUrlSuggestion.value;
@@ -6585,21 +6585,13 @@ async function setAndCopyLinuxdoRedirectUrl() {
 
 type EmailOAuthProvider = "github" | "google";
 
-const githubOAuthRedirectUrlSuggestion = computed(() => {
-  if (typeof window === "undefined") return "";
-  const origin =
-    window.location.origin ||
-    `${window.location.protocol}//${window.location.host}`;
-  return `${origin}/api/v1/auth/oauth/github/callback`;
-});
+const githubOAuthRedirectUrlSuggestion = computed(() =>
+  buildAdminOAuthRedirectUrl("github"),
+);
 
-const googleOAuthRedirectUrlSuggestion = computed(() => {
-  if (typeof window === "undefined") return "";
-  const origin =
-    window.location.origin ||
-    `${window.location.protocol}//${window.location.host}`;
-  return `${origin}/api/v1/auth/oauth/google/callback`;
-});
+const googleOAuthRedirectUrlSuggestion = computed(() =>
+  buildAdminOAuthRedirectUrl("google"),
+);
 
 async function setAndCopyEmailOAuthRedirectUrl(provider: EmailOAuthProvider) {
   const url =
@@ -6619,13 +6611,9 @@ async function setAndCopyEmailOAuthRedirectUrl(provider: EmailOAuthProvider) {
   );
 }
 
-const wechatRedirectUrlSuggestion = computed(() => {
-  if (typeof window === "undefined") return "";
-  const origin =
-    window.location.origin ||
-    `${window.location.protocol}//${window.location.host}`;
-  return `${origin}/api/v1/auth/oauth/wechat/callback`;
-});
+const wechatRedirectUrlSuggestion = computed(() =>
+  buildAdminOAuthRedirectUrl("wechat"),
+);
 
 function syncWeChatConnectMode(preferredMode?: WeChatConnectMode) {
   if (form.wechat_connect_mp_enabled && form.wechat_connect_mobile_enabled) {
@@ -6688,13 +6676,9 @@ async function setAndCopyWeChatRedirectUrl() {
   );
 }
 
-const oidcRedirectUrlSuggestion = computed(() => {
-  if (typeof window === "undefined") return "";
-  const origin =
-    window.location.origin ||
-    `${window.location.protocol}//${window.location.host}`;
-  return `${origin}/api/v1/auth/oauth/oidc/callback`;
-});
+const oidcRedirectUrlSuggestion = computed(() =>
+  buildAdminOAuthRedirectUrl("oidc"),
+);
 
 async function setAndCopyOIDCRedirectUrl() {
   const url = oidcRedirectUrlSuggestion.value;
@@ -7135,15 +7119,6 @@ async function saveSettings() {
       return;
     }
     // Validate URL fields — novalidate disables browser-native checks, so we validate here
-    const isValidHttpUrl = (url: string): boolean => {
-      if (!url) return true;
-      try {
-        const u = new URL(url);
-        return u.protocol === "http:" || u.protocol === "https:";
-      } catch {
-        return false;
-      }
-    };
     // Optional URL fields: auto-clear invalid values so they don't cause backend 400 errors
     if (!isValidHttpUrl(form.frontend_url)) form.frontend_url = "";
     if (!isValidHttpUrl(form.doc_url)) form.doc_url = "";

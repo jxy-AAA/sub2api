@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration || contract
 
 package repository
 
@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,7 +40,9 @@ var (
 	integrationEntClient *dbent.Client
 	integrationRedis     *redisclient.Client
 
-	redisNamespaceSeq uint64
+	redisNamespaceSeq         uint64
+	committedEntClientLease   sync.Mutex
+	committedEntClientCallers sync.Map
 )
 
 func TestMain(m *testing.M) {
@@ -51,7 +54,6 @@ func TestMain(m *testing.M) {
 	}
 
 	if !dockerIsAvailable(ctx) {
-		// In CI we expect Docker to be available so integration tests should fail loudly.
 		if os.Getenv("CI") != "" {
 			log.Printf("docker is not available (CI=true); failing integration tests")
 			os.Exit(1)
@@ -75,10 +77,7 @@ func TestMain(m *testing.M) {
 	}
 	defer func() { _ = pgContainer.Terminate(ctx) }()
 
-	redisContainer, err := tcredis.Run(
-		ctx,
-		redisImageTag,
-	)
+	redisContainer, err := tcredis.Run(ctx, redisImageTag)
 	if err != nil {
 		log.Printf("failed to start redis container: %v", err)
 		os.Exit(1)
@@ -101,7 +100,6 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// 创建 ent client 用于集成测试
 	drv := entsql.OpenDB(dialect.Postgres, integrationDB)
 	integrationEntClient = dbent.NewClient(dbent.Driver(drv))
 
@@ -198,15 +196,36 @@ func testTx(t *testing.T) *sql.Tx {
 	return tx
 }
 
-// testEntClient 返回全局的 ent client，用于测试需要内部管理事务的代码（如 Create/Update 方法）。
-// 注意：此 client 的操作会真正写入数据库，测试结束后不会自动回滚。
+// testEntClient returns the shared committed ent client for legacy tests that
+// need nested ent-managed transactions. Prefer testEntTx for new tests so data
+// is rolled back automatically.
+//
+// Calls are serialized per test because this client writes committed rows into
+// the shared integration database and can otherwise leak state across parallel
+// tests.
 func testEntClient(t *testing.T) *dbent.Client {
+	return testEntClientCommitted(t)
+}
+
+// testEntClientCommitted makes the committed-write behavior explicit for new
+// tests that truly need shared committed state.
+func testEntClientCommitted(t *testing.T) *dbent.Client {
 	t.Helper()
+
+	leaseKey := committedEntClientLeaseKey(t.Name())
+	if _, loaded := committedEntClientCallers.LoadOrStore(leaseKey, struct{}{}); !loaded {
+		committedEntClientLease.Lock()
+		t.Cleanup(func() {
+			committedEntClientCallers.Delete(leaseKey)
+			committedEntClientLease.Unlock()
+		})
+	}
+
 	return integrationEntClient
 }
 
-// testEntTx 返回一个 ent 事务，用于需要事务隔离的测试。
-// 测试结束后会自动回滚，不会影响数据库状态。
+// testEntTx returns an isolated ent transaction for integration tests.
+// All writes are rolled back automatically during cleanup.
 func testEntTx(t *testing.T) *dbent.Tx {
 	t.Helper()
 
@@ -218,17 +237,14 @@ func testEntTx(t *testing.T) *dbent.Tx {
 	return tx
 }
 
-// testEntSQLTx 已弃用：不要在新测试中使用此函数。
-// 基于 *sql.Tx 创建的 ent client 在调用 client.Tx() 时会 panic。
-// 对于需要测试内部使用事务的代码，请使用 testEntClient。
-// 对于需要事务隔离的测试，请使用 testEntTx。
+// testEntSQLTx is intentionally disabled.
+// Use testEntClient for committed writes or testEntTx for isolated writes.
 //
 // Deprecated: Use testEntClient or testEntTx instead.
 func testEntSQLTx(t *testing.T) (*dbent.Client, *sql.Tx) {
 	t.Helper()
 
-	// 直接失败，避免旧测试误用导致的事务嵌套 panic。
-	t.Fatalf("testEntSQLTx 已弃用：请使用 testEntClient 或 testEntTx")
+	t.Fatalf("testEntSQLTx is disabled; use testEntClient or testEntTx")
 	return nil, nil
 }
 
@@ -279,6 +295,13 @@ func sanitizeRedisNamespace(name string) string {
 	name = strings.ReplaceAll(name, "/", "_")
 	name = strings.ReplaceAll(name, " ", "_")
 	return name
+}
+
+func committedEntClientLeaseKey(testName string) string {
+	if idx := strings.Index(testName, "/"); idx >= 0 {
+		return testName[:idx]
+	}
+	return testName
 }
 
 type prefixHook struct {
@@ -399,7 +422,6 @@ type IntegrationDBSuite struct {
 // SetupTest initializes ctx and client for each test method.
 func (s *IntegrationDBSuite) SetupTest() {
 	s.ctx = context.Background()
-	// 统一使用 ent.Tx，确保每个测试都有独立事务并自动回滚。
 	tx := testEntTx(s.T())
 	s.tx = tx
 	s.client = tx.Client()

@@ -1,13 +1,14 @@
 package middleware
 
 import (
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 var corsWarningOnce sync.Once
@@ -30,13 +31,15 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 
 	corsWarningOnce.Do(func() {
 		if len(allowedOrigins) == 0 {
-			log.Println("Warning: CORS allowed_origins not configured; cross-origin requests will be rejected.")
+			logger.L().Warn("cors.allowed_origins not configured; cross-origin requests will be rejected")
 		}
 		if wildcardWithSpecific {
-			log.Println("Warning: CORS allowed_origins includes '*'; wildcard will take precedence over explicit origins.")
+			logger.L().Warn("cors.allowed_origins includes wildcard and specific origins; wildcard takes precedence",
+				zap.Strings("allowed_origins", allowedOrigins),
+			)
 		}
 		if allowAll && allowCredentials {
-			log.Println("Warning: CORS allowed_origins set to '*', disabling allow_credentials.")
+			logger.L().Warn("cors.allowed_origins is wildcard; disabling credentials support")
 		}
 	})
 	if allowAll && allowCredentials {

@@ -280,21 +280,21 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 	if c == 0 {
 		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
 	}
+	gatewayConfirmed := s.isRefundGatewayConfirmed(ctx, p)
 	if p.DeductionType == payment.DeductionTypeBalance && p.BalanceToDeduct > 0 {
-		// Skip balance deduction on retry if previous attempt already deducted
-		// but failed to roll back (REFUND_ROLLBACK_FAILED in audit log).
-		if !s.hasAuditLog(ctx, p.OrderID, "REFUND_ROLLBACK_FAILED") {
+		// Skip balance deduction on retry if a previous attempt already reached an irreversible step.
+		if !s.hasAuditLog(ctx, p.OrderID, "REFUND_ROLLBACK_FAILED") && !gatewayConfirmed {
 			if err := s.userRepo.DeductBalance(ctx, p.Order.UserID, p.BalanceToDeduct); err != nil {
 				s.restoreStatus(ctx, p)
 				return nil, fmt.Errorf("deduction: %w", err)
 			}
 		} else {
-			slog.Warn("skipping balance deduction on retry (previous rollback failed)", "orderID", p.OrderID)
+			slog.Warn("skipping balance deduction on retry", "orderID", p.OrderID, "gatewayConfirmed", gatewayConfirmed)
 			p.BalanceToDeduct = 0
 		}
 	}
 	if p.DeductionType == payment.DeductionTypeSubscription && p.SubDaysToDeduct > 0 && p.SubscriptionID > 0 {
-		if !s.hasAuditLog(ctx, p.OrderID, "REFUND_ROLLBACK_FAILED") {
+		if !s.hasAuditLog(ctx, p.OrderID, "REFUND_ROLLBACK_FAILED") && !gatewayConfirmed {
 			_, err := s.subscriptionSvc.ExtendSubscription(ctx, p.SubscriptionID, -p.SubDaysToDeduct)
 			if err != nil {
 				if errors.Is(err, ErrAdjustWouldExpire) {
@@ -311,41 +311,103 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 				}
 			}
 		} else {
-			slog.Warn("skipping subscription deduction on retry (previous rollback failed)", "orderID", p.OrderID)
+			slog.Warn("skipping subscription deduction on retry", "orderID", p.OrderID, "gatewayConfirmed", gatewayConfirmed)
 			p.SubDaysToDeduct = 0
 		}
 	}
-	if err := s.gwRefund(ctx, p); err != nil {
-		return s.handleGwFail(ctx, p, err)
+	if gatewayConfirmed {
+		slog.Warn("skipping gateway refund on retry after confirmed gateway success", "orderID", p.OrderID)
+	} else {
+		refundResponse, err := s.gwRefund(ctx, p)
+		if err != nil {
+			return s.handleGwFail(ctx, p, err)
+		}
+		if err := s.markRefundGatewayConfirmed(ctx, p, refundResponse); err != nil {
+			failedReason := fmt.Sprintf("mark refund gateway confirmation: %v", err)
+			_, _ = s.entClient.PaymentOrder.UpdateOneID(p.OrderID).
+				SetStatus(OrderStatusRefundFailed).
+				SetFailedAt(time.Now()).
+				SetFailedReason(failedReason).
+				Save(ctx)
+			return nil, fmt.Errorf("mark refund gateway confirmation: %w", err)
+		}
 	}
 	return s.markRefundOk(ctx, p)
 }
 
-func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) error {
+func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) (*payment.RefundResponse, error) {
 	if p.Order.PaymentTradeNo == "" {
 		s.writeAuditLog(ctx, p.Order.ID, "REFUND_NO_TRADE_NO", "admin", map[string]any{"detail": "skipped"})
-		return nil
+		return &payment.RefundResponse{RefundID: refundRequestIDForOrder(p), Status: payment.ProviderStatusSuccess}, nil
 	}
 
 	// Use the exact provider instance that created this order, not a random one
 	// from the registry. Each instance has its own merchant credentials.
 	prov, err := s.getRefundProvider(ctx, p.Order)
 	if err != nil {
-		return fmt.Errorf("get refund provider: %w", err)
+		return nil, fmt.Errorf("get refund provider: %w", err)
 	}
 	if err := validateProviderSnapshotMetadata(p.Order, prov.ProviderKey(), providerMerchantIdentityMetadata(prov)); err != nil {
 		s.writeAuditLog(ctx, p.Order.ID, "REFUND_PROVIDER_METADATA_MISMATCH", "admin", map[string]any{
 			"detail": err.Error(),
 		})
+		return nil, err
+	}
+	refundResponse, err := prov.Refund(ctx, payment.RefundRequest{
+		TradeNo:         p.Order.PaymentTradeNo,
+		OrderID:         p.Order.OutTradeNo,
+		RefundRequestID: refundRequestIDForOrder(p),
+		Amount:          strconv.FormatFloat(p.GatewayAmount, 'f', 2, 64),
+		Reason:          p.Reason,
+	})
+	return refundResponse, err
+}
+
+func (s *PaymentService) isRefundGatewayConfirmed(ctx context.Context, p *RefundPlan) bool {
+	if p == nil || p.Order == nil {
+		return false
+	}
+	if p.Order.RefundGatewayConfirmedAt != nil {
+		return true
+	}
+	order, err := s.entClient.PaymentOrder.Get(ctx, p.OrderID)
+	return err == nil && order.RefundGatewayConfirmedAt != nil
+}
+
+func (s *PaymentService) markRefundGatewayConfirmed(ctx context.Context, p *RefundPlan, refundResponse *payment.RefundResponse) error {
+	if p == nil || p.Order == nil {
+		return nil
+	}
+	now := time.Now()
+	refundID := refundRequestIDForOrder(p)
+	if refundResponse != nil && strings.TrimSpace(refundResponse.RefundID) != "" {
+		refundID = strings.TrimSpace(refundResponse.RefundID)
+	}
+	update := s.entClient.PaymentOrder.UpdateOneID(p.OrderID).
+		SetRefundGatewayConfirmedAt(now).
+		SetRefundIdempotencyKey(refundRequestIDForOrder(p))
+	if refundID != "" {
+		update.SetRefundGatewayRefundID(refundID)
+	}
+	if _, err := update.Save(ctx); err != nil {
 		return err
 	}
-	_, err = prov.Refund(ctx, payment.RefundRequest{
-		TradeNo: p.Order.PaymentTradeNo,
-		OrderID: p.Order.OutTradeNo,
-		Amount:  strconv.FormatFloat(p.GatewayAmount, 'f', 2, 64),
-		Reason:  p.Reason,
+	s.writeAuditLog(ctx, p.OrderID, "REFUND_GATEWAY_CONFIRMED", "system", map[string]any{
+		"gatewayAmount": p.GatewayAmount,
+		"refundAmount":  p.RefundAmount,
+		"refundID":      refundID,
 	})
-	return err
+	return nil
+}
+
+func refundRequestIDForOrder(p *RefundPlan) string {
+	if p == nil || p.Order == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(p.Order.OutTradeNo); value != "" {
+		return value + "-refund"
+	}
+	return fmt.Sprintf("order-%d-refund", p.OrderID)
 }
 
 // getRefundProvider creates a provider using the order's original instance config.
@@ -379,12 +441,73 @@ func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*Refu
 		fs = OrderStatusPartiallyRefunded
 	}
 	now := time.Now()
-	_, err := s.entClient.PaymentOrder.UpdateOneID(p.OrderID).SetStatus(fs).SetRefundAmount(p.RefundAmount).SetRefundReason(p.Reason).SetRefundAt(now).SetForceRefund(p.Force).Save(ctx)
+	if _, err := s.reverseDistributionPaidCreditForRefund(ctx, p, now); err != nil {
+		failedReason := fmt.Sprintf("affiliate distribution paid credit reversal failed: %v", err)
+		_, _ = s.entClient.PaymentOrder.UpdateOneID(p.OrderID).
+			SetStatus(OrderStatusRefundFailed).
+			SetFailedAt(now).
+			SetFailedReason(failedReason).
+			Save(ctx)
+		return nil, fmt.Errorf("reverse affiliate distribution paid credit: %w", err)
+	}
+	_, err := s.entClient.PaymentOrder.UpdateOneID(p.OrderID).
+		SetStatus(fs).
+		SetRefundAmount(p.RefundAmount).
+		SetRefundReason(p.Reason).
+		SetRefundAt(now).
+		SetForceRefund(p.Force).
+		ClearFailedAt().
+		ClearFailedReason().
+		Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mark refund: %w", err)
 	}
 	s.writeAuditLog(ctx, p.OrderID, "REFUND_SUCCESS", "admin", map[string]any{"refundAmount": p.RefundAmount, "reason": p.Reason, "balanceDeducted": p.BalanceToDeduct, "force": p.Force})
 	return &RefundResult{Success: true, BalanceDeducted: p.BalanceToDeduct, SubDaysDeducted: p.SubDaysToDeduct}, nil
+}
+
+func (s *PaymentService) reverseDistributionPaidCreditForRefund(ctx context.Context, p *RefundPlan, reversedAt time.Time) (bool, error) {
+	if s == nil || p == nil || p.Order == nil || p.Order.OrderType != payment.OrderTypeBalance || p.RefundAmount <= 0 {
+		return false, nil
+	}
+	if p.Order.UserID <= 0 || p.OrderID <= 0 {
+		err := errors.New("invalid order identity for affiliate distribution paid credit reversal")
+		s.writeAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSAL_FAILED", "system", map[string]any{
+			"error": err.Error(),
+		})
+		slog.Warn("[PaymentService] affiliate distribution paid credit reversal skipped due to invalid order identity", "orderID", p.OrderID, "userID", p.Order.UserID)
+		return false, err
+	}
+	if s.affiliateService == nil {
+		err := errors.New("affiliate distribution service unavailable")
+		s.writeAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSAL_FAILED", "system", map[string]any{
+			"error": err.Error(),
+		})
+		slog.Warn("[PaymentService] affiliate distribution paid credit reversal service unavailable", "orderID", p.OrderID, "userID", p.Order.UserID)
+		return false, err
+	}
+	if reversedAt.IsZero() {
+		reversedAt = time.Now().UTC()
+	} else {
+		reversedAt = reversedAt.UTC()
+	}
+	reversed, err := s.affiliateService.ReverseDistributionPaidCredit(ctx, p.Order.UserID, p.OrderID, p.RefundAmount, reversedAt)
+	if err != nil {
+		s.writeAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSAL_FAILED", "system", map[string]any{
+			"error":      err.Error(),
+			"amount":     p.RefundAmount,
+			"reversedAt": reversedAt.Format(time.RFC3339Nano),
+		})
+		slog.Warn("[PaymentService] affiliate distribution paid credit reversal failed", "orderID", p.OrderID, "userID", p.Order.UserID, "error", err)
+		return false, err
+	}
+	if reversed && !s.hasAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSED") {
+		s.writeAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSED", "system", map[string]any{
+			"amount":     p.RefundAmount,
+			"reversedAt": reversedAt.Format(time.RFC3339Nano),
+		})
+	}
+	return reversed, nil
 }
 
 func (s *PaymentService) RollbackRefund(ctx context.Context, p *RefundPlan, gErr error) bool {

@@ -7,9 +7,12 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/model"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
+
+var ErrTLSFingerprintProfileInUse = infraerrors.Conflict("TLS_FINGERPRINT_PROFILE_IN_USE", "tls fingerprint profile is still referenced by active accounts")
 
 // TLSFingerprintProfileRepository 定义 TLS 指纹模板的数据访问接口
 type TLSFingerprintProfileRepository interface {

@@ -1,14 +1,13 @@
 package schema
 
 import (
-	"time"
-
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 )
 
 // SubscriptionPlan holds the schema definition for the SubscriptionPlan entity.
@@ -25,6 +24,12 @@ type SubscriptionPlan struct {
 func (SubscriptionPlan) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "subscription_plans"},
+	}
+}
+
+func (SubscriptionPlan) Mixin() []ent.Mixin {
+	return []ent.Mixin{
+		mixins.TimeMixin{},
 	}
 }
 
@@ -58,14 +63,6 @@ func (SubscriptionPlan) Fields() []ent.Field {
 			Default(true),
 		field.Int("sort_order").
 			Default(0),
-		field.Time("created_at").
-			Immutable().
-			Default(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
-		field.Time("updated_at").
-			Default(time.Now).
-			UpdateDefault(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
 	}
 }
 

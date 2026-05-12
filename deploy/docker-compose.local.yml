@@ -141,7 +141,7 @@ services:
       - SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS=${SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS:-}
 
       # =======================================================================
-      # Update Configuration (鍦ㄧ嚎鏇存柊閰嶇疆)
+      # Update Configuration
       # =======================================================================
       # Proxy for accessing GitHub (online updates + pricing data)
       # Examples: http://host:port, socks5://host:port
@@ -198,8 +198,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    # 娉ㄦ剰锛氫笉鏆撮湶绔彛鍒板涓绘満锛屽簲鐢ㄩ€氳繃鍐呴儴缃戠粶杩炴帴
-    # 濡傞渶璋冭瘯锛屽彲涓存椂娣诲姞锛歱orts: ["127.0.0.1:5433:5432"]
+    # Keep PostgreSQL internal-only. For temporary local debugging, publish a
+    # loopback port manually, for example: ports: ["127.0.0.1:5433:5432"]
 
   # ===========================================================================
   # Redis Cache
@@ -214,12 +214,21 @@ services:
         hard: 100000
     volumes:
       - redis_data:/data
+    tmpfs:
+      - /run/redis:size=1m,mode=0700
     command:
-      [
-        "sh",
-        "-c",
-        "exec redis-server --save 60 1 --appendonly yes --appendfsync everysec --requirepass \"$$REDIS_PASSWORD\"",
-      ]
+      - sh
+      - -ec
+      - |
+        umask 077
+        conf=/run/redis/redis.conf
+        cat > "$$conf" <<'EOF'
+        save 60 1
+        appendonly yes
+        appendfsync everysec
+        EOF
+        printf 'requirepass %s\n' "$$REDIS_PASSWORD" >> "$$conf"
+        exec redis-server "$$conf"
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}

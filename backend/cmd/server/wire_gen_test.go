@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestProvideServiceBuildInfo(t *testing.T) {
 	require.Equal(t, in.BuildType, out.BuildType)
 }
 
-func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
+func TestProvideCleanup_WithAggregatedDependencies_NoPanic(t *testing.T) {
 	cfg := &config.Config{}
 
 	oauthSvc := service.NewOAuthService(nil, nil)
@@ -48,39 +49,58 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
 	opsSystemLogSinkSvc := service.NewOpsSystemLogSink(nil)
 
-	cleanup := provideCleanup(
-		nil, // entClient
-		nil, // redis
-		&service.OpsMetricsCollector{},
-		&service.OpsAggregationService{},
-		&service.OpsAlertEvaluatorService{},
-		&service.OpsCleanupService{},
-		&service.OpsScheduledReportService{},
-		opsSystemLogSinkSvc,
-		schedulerSnapshotSvc,
-		tokenRefreshSvc,
-		accountExpirySvc,
-		subscriptionExpirySvc,
-		&service.UsageCleanupService{},
-		idempotencyCleanupSvc,
-		pricingSvc,
-		emailQueueSvc,
-		billingCacheSvc,
-		&service.UsageRecordWorkerPool{},
-		&service.SubscriptionService{},
-		oauthSvc,
-		openAIOAuthSvc,
-		geminiOAuthSvc,
-		antigravityOAuthSvc,
-		nil, // openAIGateway
-		nil, // scheduledTestRunner
-		nil, // backupSvc
-		nil, // paymentOrderExpiry
-		nil, // channelMonitorRunner
-		nil, // affiliateDistributionMonthlyReset
-	)
+	cleanupInfra := cleanupInfrastructure{}
+	cleanupSvcSet := cleanupServices{
+		OpsMetricsCollector:       &service.OpsMetricsCollector{},
+		OpsAggregationService:     &service.OpsAggregationService{},
+		OpsAlertEvaluatorService:  &service.OpsAlertEvaluatorService{},
+		OpsCleanupService:         &service.OpsCleanupService{},
+		OpsScheduledReportService: &service.OpsScheduledReportService{},
+		OpsSystemLogSink:          opsSystemLogSinkSvc,
+		SchedulerSnapshotService:  schedulerSnapshotSvc,
+		TokenRefreshService:       tokenRefreshSvc,
+		AccountExpiryService:      accountExpirySvc,
+		SubscriptionExpiryService: subscriptionExpirySvc,
+		UsageCleanupService:       &service.UsageCleanupService{},
+		IdempotencyCleanupService: idempotencyCleanupSvc,
+		PricingService:            pricingSvc,
+		EmailQueueService:         emailQueueSvc,
+		BillingCacheService:       billingCacheSvc,
+		UsageRecordWorkerPool:     &service.UsageRecordWorkerPool{},
+		SubscriptionService:       &service.SubscriptionService{},
+		OAuthService:              oauthSvc,
+		OpenAIOAuthService:        openAIOAuthSvc,
+		GeminiOAuthService:        geminiOAuthSvc,
+		AntigravityOAuthService:   antigravityOAuthSvc,
+	}
+
+	cleanup := provideCleanup(cleanupInfra, cleanupSvcSet)
 
 	require.NotPanics(t, func() {
 		cleanup()
 	})
+}
+
+func TestCleanupRegistry_RunExecutesSequentialAfterParallel(t *testing.T) {
+	registry := &CleanupRegistry{}
+	parallelDone := make(chan struct{})
+	sequentialObservedDone := false
+
+	registry.AddParallel("parallel", func() error {
+		close(parallelDone)
+		return nil
+	})
+	registry.AddSequential("sequential", func() error {
+		select {
+		case <-parallelDone:
+			sequentialObservedDone = true
+		default:
+			sequentialObservedDone = false
+		}
+		return nil
+	})
+
+	registry.Run(context.Background())
+
+	require.True(t, sequentialObservedDone)
 }

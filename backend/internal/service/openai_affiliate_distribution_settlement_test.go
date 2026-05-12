@@ -14,6 +14,7 @@ func TestOpenAIGatewayServiceRecordUsage_SettlesAffiliateDistributionAfterUsageL
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
 	settlementSvc := &gatewayAffiliateDistributionSettlementStub{}
+	groupID := int64(4000)
 	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
 	svc.SetAffiliateDistributionUsageSettlementService(settlementSvc)
 
@@ -27,7 +28,7 @@ func TestOpenAIGatewayServiceRecordUsage_SettlesAffiliateDistributionAfterUsageL
 			Model:    "gpt-5.1",
 			Duration: time.Second,
 		},
-		APIKey:  &APIKey{ID: 1000, Group: &Group{RateMultiplier: 1}},
+		APIKey:  &APIKey{ID: 1000, GroupID: &groupID, Group: &Group{ID: groupID, RateMultiplier: 1}},
 		User:    &User{ID: 2000},
 		Account: &Account{ID: 3000},
 	})
@@ -37,6 +38,7 @@ func TestOpenAIGatewayServiceRecordUsage_SettlesAffiliateDistributionAfterUsageL
 	require.NotNil(t, usageRepo.lastLog)
 	require.Equal(t, usageRepo.lastLog.ID, settlementSvc.last.UsageLogID)
 	require.Equal(t, usageRepo.lastLog.UserID, settlementSvc.last.UserID)
+	require.Equal(t, groupID, settlementSvc.last.GroupID)
 	require.Equal(t, usageRepo.lastLog.TotalCost, settlementSvc.last.TotalCost)
 	require.Equal(t, usageRepo.lastLog.ActualCost, settlementSvc.last.ActualCost)
 	require.Equal(t, usageRepo.lastLog.Model, settlementSvc.last.Model)

@@ -301,6 +301,48 @@ func (_c *PaymentOrderCreate) SetNillableRefundAt(v *time.Time) *PaymentOrderCre
 	return _c
 }
 
+// SetRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field.
+func (_c *PaymentOrderCreate) SetRefundGatewayConfirmedAt(v time.Time) *PaymentOrderCreate {
+	_c.mutation.SetRefundGatewayConfirmedAt(v)
+	return _c
+}
+
+// SetNillableRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field if the given value is not nil.
+func (_c *PaymentOrderCreate) SetNillableRefundGatewayConfirmedAt(v *time.Time) *PaymentOrderCreate {
+	if v != nil {
+		_c.SetRefundGatewayConfirmedAt(*v)
+	}
+	return _c
+}
+
+// SetRefundGatewayRefundID sets the "refund_gateway_refund_id" field.
+func (_c *PaymentOrderCreate) SetRefundGatewayRefundID(v string) *PaymentOrderCreate {
+	_c.mutation.SetRefundGatewayRefundID(v)
+	return _c
+}
+
+// SetNillableRefundGatewayRefundID sets the "refund_gateway_refund_id" field if the given value is not nil.
+func (_c *PaymentOrderCreate) SetNillableRefundGatewayRefundID(v *string) *PaymentOrderCreate {
+	if v != nil {
+		_c.SetRefundGatewayRefundID(*v)
+	}
+	return _c
+}
+
+// SetRefundIdempotencyKey sets the "refund_idempotency_key" field.
+func (_c *PaymentOrderCreate) SetRefundIdempotencyKey(v string) *PaymentOrderCreate {
+	_c.mutation.SetRefundIdempotencyKey(v)
+	return _c
+}
+
+// SetNillableRefundIdempotencyKey sets the "refund_idempotency_key" field if the given value is not nil.
+func (_c *PaymentOrderCreate) SetNillableRefundIdempotencyKey(v *string) *PaymentOrderCreate {
+	if v != nil {
+		_c.SetRefundIdempotencyKey(*v)
+	}
+	return _c
+}
+
 // SetForceRefund sets the "force_refund" field.
 func (_c *PaymentOrderCreate) SetForceRefund(v bool) *PaymentOrderCreate {
 	_c.mutation.SetForceRefund(v)
@@ -638,6 +680,16 @@ func (_c *PaymentOrderCreate) check() error {
 	if _, ok := _c.mutation.RefundAmount(); !ok {
 		return &ValidationError{Name: "refund_amount", err: errors.New(`ent: missing required field "PaymentOrder.refund_amount"`)}
 	}
+	if v, ok := _c.mutation.RefundGatewayRefundID(); ok {
+		if err := paymentorder.RefundGatewayRefundIDValidator(v); err != nil {
+			return &ValidationError{Name: "refund_gateway_refund_id", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.refund_gateway_refund_id": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.RefundIdempotencyKey(); ok {
+		if err := paymentorder.RefundIdempotencyKeyValidator(v); err != nil {
+			return &ValidationError{Name: "refund_idempotency_key", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.refund_idempotency_key": %w`, err)}
+		}
+	}
 	if _, ok := _c.mutation.ForceRefund(); !ok {
 		return &ValidationError{Name: "force_refund", err: errors.New(`ent: missing required field "PaymentOrder.force_refund"`)}
 	}
@@ -796,6 +848,18 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 	if value, ok := _c.mutation.RefundAt(); ok {
 		_spec.SetField(paymentorder.FieldRefundAt, field.TypeTime, value)
 		_node.RefundAt = &value
+	}
+	if value, ok := _c.mutation.RefundGatewayConfirmedAt(); ok {
+		_spec.SetField(paymentorder.FieldRefundGatewayConfirmedAt, field.TypeTime, value)
+		_node.RefundGatewayConfirmedAt = &value
+	}
+	if value, ok := _c.mutation.RefundGatewayRefundID(); ok {
+		_spec.SetField(paymentorder.FieldRefundGatewayRefundID, field.TypeString, value)
+		_node.RefundGatewayRefundID = &value
+	}
+	if value, ok := _c.mutation.RefundIdempotencyKey(); ok {
+		_spec.SetField(paymentorder.FieldRefundIdempotencyKey, field.TypeString, value)
+		_node.RefundIdempotencyKey = &value
 	}
 	if value, ok := _c.mutation.ForceRefund(); ok {
 		_spec.SetField(paymentorder.FieldForceRefund, field.TypeBool, value)
@@ -1333,6 +1397,60 @@ func (u *PaymentOrderUpsert) UpdateRefundAt() *PaymentOrderUpsert {
 // ClearRefundAt clears the value of the "refund_at" field.
 func (u *PaymentOrderUpsert) ClearRefundAt() *PaymentOrderUpsert {
 	u.SetNull(paymentorder.FieldRefundAt)
+	return u
+}
+
+// SetRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field.
+func (u *PaymentOrderUpsert) SetRefundGatewayConfirmedAt(v time.Time) *PaymentOrderUpsert {
+	u.Set(paymentorder.FieldRefundGatewayConfirmedAt, v)
+	return u
+}
+
+// UpdateRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field to the value that was provided on create.
+func (u *PaymentOrderUpsert) UpdateRefundGatewayConfirmedAt() *PaymentOrderUpsert {
+	u.SetExcluded(paymentorder.FieldRefundGatewayConfirmedAt)
+	return u
+}
+
+// ClearRefundGatewayConfirmedAt clears the value of the "refund_gateway_confirmed_at" field.
+func (u *PaymentOrderUpsert) ClearRefundGatewayConfirmedAt() *PaymentOrderUpsert {
+	u.SetNull(paymentorder.FieldRefundGatewayConfirmedAt)
+	return u
+}
+
+// SetRefundGatewayRefundID sets the "refund_gateway_refund_id" field.
+func (u *PaymentOrderUpsert) SetRefundGatewayRefundID(v string) *PaymentOrderUpsert {
+	u.Set(paymentorder.FieldRefundGatewayRefundID, v)
+	return u
+}
+
+// UpdateRefundGatewayRefundID sets the "refund_gateway_refund_id" field to the value that was provided on create.
+func (u *PaymentOrderUpsert) UpdateRefundGatewayRefundID() *PaymentOrderUpsert {
+	u.SetExcluded(paymentorder.FieldRefundGatewayRefundID)
+	return u
+}
+
+// ClearRefundGatewayRefundID clears the value of the "refund_gateway_refund_id" field.
+func (u *PaymentOrderUpsert) ClearRefundGatewayRefundID() *PaymentOrderUpsert {
+	u.SetNull(paymentorder.FieldRefundGatewayRefundID)
+	return u
+}
+
+// SetRefundIdempotencyKey sets the "refund_idempotency_key" field.
+func (u *PaymentOrderUpsert) SetRefundIdempotencyKey(v string) *PaymentOrderUpsert {
+	u.Set(paymentorder.FieldRefundIdempotencyKey, v)
+	return u
+}
+
+// UpdateRefundIdempotencyKey sets the "refund_idempotency_key" field to the value that was provided on create.
+func (u *PaymentOrderUpsert) UpdateRefundIdempotencyKey() *PaymentOrderUpsert {
+	u.SetExcluded(paymentorder.FieldRefundIdempotencyKey)
+	return u
+}
+
+// ClearRefundIdempotencyKey clears the value of the "refund_idempotency_key" field.
+func (u *PaymentOrderUpsert) ClearRefundIdempotencyKey() *PaymentOrderUpsert {
+	u.SetNull(paymentorder.FieldRefundIdempotencyKey)
 	return u
 }
 
@@ -2065,6 +2183,69 @@ func (u *PaymentOrderUpsertOne) UpdateRefundAt() *PaymentOrderUpsertOne {
 func (u *PaymentOrderUpsertOne) ClearRefundAt() *PaymentOrderUpsertOne {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.ClearRefundAt()
+	})
+}
+
+// SetRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field.
+func (u *PaymentOrderUpsertOne) SetRefundGatewayConfirmedAt(v time.Time) *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetRefundGatewayConfirmedAt(v)
+	})
+}
+
+// UpdateRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field to the value that was provided on create.
+func (u *PaymentOrderUpsertOne) UpdateRefundGatewayConfirmedAt() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateRefundGatewayConfirmedAt()
+	})
+}
+
+// ClearRefundGatewayConfirmedAt clears the value of the "refund_gateway_confirmed_at" field.
+func (u *PaymentOrderUpsertOne) ClearRefundGatewayConfirmedAt() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearRefundGatewayConfirmedAt()
+	})
+}
+
+// SetRefundGatewayRefundID sets the "refund_gateway_refund_id" field.
+func (u *PaymentOrderUpsertOne) SetRefundGatewayRefundID(v string) *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetRefundGatewayRefundID(v)
+	})
+}
+
+// UpdateRefundGatewayRefundID sets the "refund_gateway_refund_id" field to the value that was provided on create.
+func (u *PaymentOrderUpsertOne) UpdateRefundGatewayRefundID() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateRefundGatewayRefundID()
+	})
+}
+
+// ClearRefundGatewayRefundID clears the value of the "refund_gateway_refund_id" field.
+func (u *PaymentOrderUpsertOne) ClearRefundGatewayRefundID() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearRefundGatewayRefundID()
+	})
+}
+
+// SetRefundIdempotencyKey sets the "refund_idempotency_key" field.
+func (u *PaymentOrderUpsertOne) SetRefundIdempotencyKey(v string) *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetRefundIdempotencyKey(v)
+	})
+}
+
+// UpdateRefundIdempotencyKey sets the "refund_idempotency_key" field to the value that was provided on create.
+func (u *PaymentOrderUpsertOne) UpdateRefundIdempotencyKey() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateRefundIdempotencyKey()
+	})
+}
+
+// ClearRefundIdempotencyKey clears the value of the "refund_idempotency_key" field.
+func (u *PaymentOrderUpsertOne) ClearRefundIdempotencyKey() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearRefundIdempotencyKey()
 	})
 }
 
@@ -2997,6 +3178,69 @@ func (u *PaymentOrderUpsertBulk) UpdateRefundAt() *PaymentOrderUpsertBulk {
 func (u *PaymentOrderUpsertBulk) ClearRefundAt() *PaymentOrderUpsertBulk {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.ClearRefundAt()
+	})
+}
+
+// SetRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field.
+func (u *PaymentOrderUpsertBulk) SetRefundGatewayConfirmedAt(v time.Time) *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetRefundGatewayConfirmedAt(v)
+	})
+}
+
+// UpdateRefundGatewayConfirmedAt sets the "refund_gateway_confirmed_at" field to the value that was provided on create.
+func (u *PaymentOrderUpsertBulk) UpdateRefundGatewayConfirmedAt() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateRefundGatewayConfirmedAt()
+	})
+}
+
+// ClearRefundGatewayConfirmedAt clears the value of the "refund_gateway_confirmed_at" field.
+func (u *PaymentOrderUpsertBulk) ClearRefundGatewayConfirmedAt() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearRefundGatewayConfirmedAt()
+	})
+}
+
+// SetRefundGatewayRefundID sets the "refund_gateway_refund_id" field.
+func (u *PaymentOrderUpsertBulk) SetRefundGatewayRefundID(v string) *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetRefundGatewayRefundID(v)
+	})
+}
+
+// UpdateRefundGatewayRefundID sets the "refund_gateway_refund_id" field to the value that was provided on create.
+func (u *PaymentOrderUpsertBulk) UpdateRefundGatewayRefundID() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateRefundGatewayRefundID()
+	})
+}
+
+// ClearRefundGatewayRefundID clears the value of the "refund_gateway_refund_id" field.
+func (u *PaymentOrderUpsertBulk) ClearRefundGatewayRefundID() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearRefundGatewayRefundID()
+	})
+}
+
+// SetRefundIdempotencyKey sets the "refund_idempotency_key" field.
+func (u *PaymentOrderUpsertBulk) SetRefundIdempotencyKey(v string) *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetRefundIdempotencyKey(v)
+	})
+}
+
+// UpdateRefundIdempotencyKey sets the "refund_idempotency_key" field to the value that was provided on create.
+func (u *PaymentOrderUpsertBulk) UpdateRefundIdempotencyKey() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateRefundIdempotencyKey()
+	})
+}
+
+// ClearRefundIdempotencyKey clears the value of the "refund_idempotency_key" field.
+func (u *PaymentOrderUpsertBulk) ClearRefundIdempotencyKey() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearRefundIdempotencyKey()
 	})
 }
 

@@ -33,31 +33,31 @@ func TestRateLimiterFailureModes(t *testing.T) {
 
 	limiter := NewRateLimiter(rdb)
 
-	failOpenRouter := gin.New()
-	failOpenRouter.Use(limiter.Limit("test", 1, time.Second))
-	failOpenRouter.GET("/test", func(c *gin.Context) {
+	defaultRouter := gin.New()
+	defaultRouter.Use(limiter.Limit("test", 1, time.Second))
+	defaultRouter.GET("/test", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
 	recorder := httptest.NewRecorder()
-	failOpenRouter.ServeHTTP(recorder, req)
-	require.Equal(t, http.StatusOK, recorder.Code)
+	defaultRouter.ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusTooManyRequests, recorder.Code)
 
-	failCloseRouter := gin.New()
-	failCloseRouter.Use(limiter.LimitWithOptions("test", 1, time.Second, RateLimitOptions{
-		FailureMode: RateLimitFailClose,
+	failOpenRouter := gin.New()
+	failOpenRouter.Use(limiter.LimitWithOptions("test", 1, time.Second, RateLimitOptions{
+		FailureMode: RateLimitFailOpen,
 	}))
-	failCloseRouter.GET("/test", func(c *gin.Context) {
+	failOpenRouter.GET("/test", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req = httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
 	recorder = httptest.NewRecorder()
-	failCloseRouter.ServeHTTP(recorder, req)
-	require.Equal(t, http.StatusTooManyRequests, recorder.Code)
+	failOpenRouter.ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
 func TestRateLimiterDifferentIPsIndependent(t *testing.T) {

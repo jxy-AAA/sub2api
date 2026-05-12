@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Go](https://img.shields.io/badge/Go-1.25.7-00ADD8.svg)](https://golang.org/)
+[![Go](https://img.shields.io/badge/Go-1.26.3-00ADD8.svg)](https://golang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-4FC08D.svg)](https://vuejs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7+-DC382D.svg)](https://redis.io/)
@@ -122,10 +122,16 @@ Sub2API を拡張・統合するコミュニティプロジェクト:
 
 | コンポーネント | 技術 |
 |-----------|------------|
-| バックエンド | Go 1.25.7, Gin, Ent |
+| バックエンド | Go 1.26.3, Gin, Ent |
 | フロントエンド | Vue 3.4+, Vite 5+, TailwindCSS |
 | データベース | PostgreSQL 15+ |
 | キャッシュ/キュー | Redis 7+ |
+
+## ドキュメント
+
+- ドキュメント一覧: [docs/README.md](docs/README.md)
+- 開発ガイド: [DEV_GUIDE.md](DEV_GUIDE.md)
+- 変更履歴: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -402,7 +408,7 @@ docker volume ls | grep sub2api
 
 #### 前提条件
 
-- Go 1.21+
+- Go 1.26.3
 - Node.js 18+
 - PostgreSQL 15+
 - Redis 7+

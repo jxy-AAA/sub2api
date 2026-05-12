@@ -4,7 +4,16 @@
  */
 
 import { apiClient } from './client'
-import { clearAccessToken, getAccessToken as getStoredAccessToken, setAccessToken } from './tokenStorage'
+import {
+  clearPersistedSession,
+  getAccessToken as getStoredAccessToken,
+  getRefreshToken as getStoredRefreshToken,
+  getTokenExpiresAt as getStoredTokenExpiresAt,
+  setAccessToken,
+  setPersistedAuthUser,
+  setRefreshToken as setStoredRefreshToken,
+  setTokenExpiresIn
+} from './tokenStorage'
 import type {
   LoginRequest,
   RegisterRequest,
@@ -36,15 +45,8 @@ export function setAuthToken(token: string): void {
   setAccessToken(token)
 }
 
-/**
- * Keep refresh token in memory only
- */
-let inMemoryRefreshToken: string | null = null
-
 export function setRefreshToken(token: string): void {
-  const value = token.trim()
-  inMemoryRefreshToken = value || null
-  localStorage.removeItem('refresh_token')
+  setStoredRefreshToken(token)
 }
 
 /**
@@ -52,8 +54,7 @@ export function setRefreshToken(token: string): void {
  * Converts expires_in (seconds) to absolute timestamp (milliseconds)
  */
 export function setTokenExpiresAt(expiresIn: number): void {
-  const expiresAt = Date.now() + expiresIn * 1000
-  localStorage.setItem('token_expires_at', String(expiresAt))
+  setTokenExpiresIn(expiresIn)
 }
 
 /**
@@ -67,26 +68,32 @@ export function getAuthToken(): string | null {
  * Get refresh token from in-memory state
  */
 export function getRefreshToken(): string | null {
-  return inMemoryRefreshToken
+  return getStoredRefreshToken()
 }
 
 /**
  * Get token expiration timestamp from localStorage
  */
 export function getTokenExpiresAt(): number | null {
-  const value = localStorage.getItem('token_expires_at')
-  return value ? parseInt(value, 10) : null
+  return getStoredTokenExpiresAt()
 }
 
 /**
  * Clear authentication token from localStorage
  */
 export function clearAuthToken(): void {
-  clearAccessToken()
-  inMemoryRefreshToken = null
-  localStorage.removeItem('refresh_token')
-  localStorage.removeItem('auth_user')
-  localStorage.removeItem('token_expires_at')
+  clearPersistedSession()
+}
+
+function persistAuthResponse(data: AuthResponse): void {
+  setAuthToken(data.access_token)
+  if (data.refresh_token) {
+    setRefreshToken(data.refresh_token)
+  }
+  if (data.expires_in) {
+    setTokenExpiresAt(data.expires_in)
+  }
+  setPersistedAuthUser(data.user)
 }
 
 /**
@@ -99,14 +106,7 @@ export async function login(credentials: LoginRequest): Promise<LoginResponse> {
 
   // Only store token if 2FA is not required
   if (!isTotp2FARequired(data)) {
-    setAuthToken(data.access_token)
-    if (data.refresh_token) {
-      setRefreshToken(data.refresh_token)
-    }
-    if (data.expires_in) {
-      setTokenExpiresAt(data.expires_in)
-    }
-    localStorage.setItem('auth_user', JSON.stringify(data.user))
+    persistAuthResponse(data)
   }
 
   return data
@@ -120,15 +120,7 @@ export async function login(credentials: LoginRequest): Promise<LoginResponse> {
 export async function login2FA(request: TotpLogin2FARequest): Promise<AuthResponse> {
   const { data } = await apiClient.post<AuthResponse>('/auth/login/2fa', request)
 
-  // Store token and user data
-  setAuthToken(data.access_token)
-  if (data.refresh_token) {
-    setRefreshToken(data.refresh_token)
-  }
-  if (data.expires_in) {
-    setTokenExpiresAt(data.expires_in)
-  }
-  localStorage.setItem('auth_user', JSON.stringify(data.user))
+  persistAuthResponse(data)
 
   return data
 }
@@ -141,15 +133,7 @@ export async function login2FA(request: TotpLogin2FARequest): Promise<AuthRespon
 export async function register(userData: RegisterRequest): Promise<AuthResponse> {
   const { data } = await apiClient.post<AuthResponse>('/auth/register', userData)
 
-  // Store token and user data
-  setAuthToken(data.access_token)
-  if (data.refresh_token) {
-    setRefreshToken(data.refresh_token)
-  }
-  if (data.expires_in) {
-    setTokenExpiresAt(data.expires_in)
-  }
-  localStorage.setItem('auth_user', JSON.stringify(data.user))
+  persistAuthResponse(data)
 
   return data
 }

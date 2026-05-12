@@ -9,6 +9,7 @@ import { useAppStore } from '@/stores/app'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
 import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
 import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
+import { resolveNavigationGuardRedirect } from './guards'
 import { resolveDocumentTitle } from './title'
 
 /**
@@ -695,54 +696,23 @@ let authInitialized = false
 const navigationLoading = useNavigationLoadingState()
 // 延迟初始化预加载，传入 router 实例
 let routePrefetch: ReturnType<typeof useRoutePrefetch> | null = null
-const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/setup', '/payment/result', '/legal']
-const BACKEND_MODE_CALLBACK_PATHS = [
-  '/auth/callback',
-  '/auth/linuxdo/callback',
-  '/auth/oidc/callback',
-  '/auth/wechat/callback',
-  '/auth/wechat/payment/callback',
-]
-const BACKEND_MODE_PENDING_AUTH_PATHS = ['/register', '/email-verify']
 
-function isBackendModePublicRouteAllowed(
-  path: string,
-  hasPendingAuthSession: boolean,
-  hasPendingRegistrationChallenge: boolean
-): boolean {
-  if (BACKEND_MODE_ALLOWED_PATHS.some((allowedPath) => path === allowedPath || path.startsWith(allowedPath))) {
-    return true
-  }
-
-  if (BACKEND_MODE_CALLBACK_PATHS.some((callbackPath) => path === callbackPath)) {
-    return true
-  }
-
-  if (
-    (hasPendingAuthSession || hasPendingRegistrationChallenge)
-    && BACKEND_MODE_PENDING_AUTH_PATHS.some((allowedPath) => path === allowedPath)
-  ) {
-    return true
-  }
-
-  return false
-}
-
-router.beforeEach((to, _from, next) => {
-  // 开始导航加载状态
+router.beforeEach(async (to, _from, next) => {
   navigationLoading.startNavigation()
 
   const authStore = useAuthStore()
 
-  // Restore auth state from localStorage on first navigation (page refresh)
   if (!authInitialized) {
-    authStore.checkAuth()
-    authInitialized = true
+    try {
+      await authStore.checkAuth()
+    } catch (error) {
+      console.error('Failed to initialize auth state:', error)
+    } finally {
+      authInitialized = true
+    }
   }
 
-  // Set page title
   const appStore = useAppStore()
-  // For custom pages, use menu item label as document title
   if (to.name === 'CustomPage') {
     const id = to.params.id as string
     const publicItems = appStore.cachedPublicSettings?.custom_menu_items ?? []
@@ -759,121 +729,35 @@ router.beforeEach((to, _from, next) => {
     document.title = resolveDocumentTitle(to.meta.title, appStore.siteName, to.meta.titleKey as string)
   }
 
-  // Check if route requires authentication
-  const requiresAuth = to.meta.requiresAuth !== false // Default to true
-  const requiresAdmin = to.meta.requiresAdmin === true
+  const redirect = resolveNavigationGuardRedirect(
+    {
+      path: to.path,
+      fullPath: to.fullPath,
+      meta: to.meta,
+    },
+    {
+      isAuthenticated: authStore.isAuthenticated,
+      isAdmin: authStore.isAdmin,
+      isSimpleMode: authStore.isSimpleMode,
+      hasPendingAuthSession: authStore.hasPendingAuthSession,
+      hasPendingRegistrationChallenge: authStore.hasPendingRegistrationChallenge,
+    },
+    {
+      backendModeEnabled: appStore.backendModeEnabled,
+      publicSettings: appStore.cachedPublicSettings,
+    },
+  )
 
-  // If route doesn't require auth, allow access
-  if (!requiresAuth) {
-    if (authStore.isAuthenticated && to.path === '/email-verify') {
+  if (redirect) {
+    if (authStore.isAuthenticated && to.path === '/email-verify' && to.meta.requiresAuth === false) {
       authStore.clearPendingAuthSession()
       authStore.clearPendingRegistrationChallenge()
-      if (appStore.backendModeEnabled && !authStore.isAdmin) {
-        next('/login')
-        return
-      }
-      next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
-      return
     }
 
-    // If already authenticated and trying to access login/register, redirect to appropriate dashboard
-    if (authStore.isAuthenticated && (to.path === '/login' || to.path === '/register')) {
-      // In backend mode, non-admin users should NOT be redirected away from login
-      // (they are blocked from all protected routes, so redirecting would cause a loop)
-      if (appStore.backendModeEnabled && !authStore.isAdmin) {
-        next()
-        return
-      }
-      // Admin users go to admin dashboard, regular users go to user dashboard
-      next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
-      return
-    }
-    // Backend mode: block public pages for unauthenticated users (except login, key-usage, setup)
-    if (appStore.backendModeEnabled && !authStore.isAuthenticated) {
-      const isAllowed = isBackendModePublicRouteAllowed(
-        to.path,
-        authStore.hasPendingAuthSession,
-        authStore.hasPendingRegistrationChallenge
-      )
-      if (!isAllowed) {
-        next('/login')
-        return
-      }
-    }
-    next()
+    next(redirect)
     return
   }
 
-  // Route requires authentication
-  if (!authStore.isAuthenticated) {
-    // Not authenticated, redirect to login
-    next({
-      path: '/login',
-      query: { redirect: to.fullPath } // Save intended destination
-    })
-    return
-  }
-
-  // Check admin requirement
-  if (requiresAdmin && !authStore.isAdmin) {
-    // User is authenticated but not admin, redirect to user dashboard
-    next('/dashboard')
-    return
-  }
-
-
-  // Check payment requirement (internal payment system only)
-  if (to.meta.requiresPayment) {
-    const paymentEnabled = appStore.cachedPublicSettings?.payment_enabled
-    if (!paymentEnabled) {
-      next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
-      return
-    }
-  }
-
-  if (to.meta.requiresRiskControl) {
-    const riskControlEnabled = appStore.cachedPublicSettings?.risk_control_enabled === true
-    if (!riskControlEnabled) {
-      next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
-      return
-    }
-  }
-
-  // 简易模式下限制访问某些页面
-  if (authStore.isSimpleMode) {
-    const restrictedPaths = [
-      '/admin/groups',
-      '/admin/subscriptions',
-      '/admin/redeem',
-      '/subscriptions',
-      '/redeem'
-    ]
-
-    if (restrictedPaths.some((path) => to.path.startsWith(path))) {
-      // 简易模式下访问受限页面,重定向到仪表板
-      next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
-      return
-    }
-  }
-
-  // Backend mode: admin gets full access, non-admin blocked
-  if (appStore.backendModeEnabled) {
-    if (authStore.isAuthenticated && authStore.isAdmin) {
-      next()
-      return
-    }
-    const isAllowed = isBackendModePublicRouteAllowed(
-      to.path,
-      authStore.hasPendingAuthSession,
-      authStore.hasPendingRegistrationChallenge
-    )
-    if (!isAllowed) {
-      next('/login')
-      return
-    }
-  }
-
-  // All checks passed, allow navigation
   next()
 })
 

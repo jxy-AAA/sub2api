@@ -61,15 +61,25 @@ func (Account) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "text"}),
 
 		// platform: 所属平台，如 "claude", "gemini", "openai" 等
-		field.String("platform").
-			MaxLen(50).
-			NotEmpty(),
+		field.Enum("platform").
+			Values(
+				domain.PlatformAnthropic,
+				domain.PlatformOpenAI,
+				domain.PlatformGemini,
+				domain.PlatformAntigravity,
+			),
 
 		// type: 认证类型，如 "api_key", "oauth", "cookie" 等
 		// 不同类型决定了 credentials 中存储的数据结构
-		field.String("type").
-			MaxLen(20).
-			NotEmpty(),
+		field.Enum("type").
+			Values(
+				domain.AccountTypeOAuth,
+				domain.AccountTypeSetupToken,
+				domain.AccountTypeAPIKey,
+				domain.AccountTypeUpstream,
+				domain.AccountTypeBedrock,
+				domain.AccountTypeServiceAccount,
+			),
 
 		// credentials: 认证凭证，以 JSONB 格式存储
 		// 结构取决于 type 字段：
@@ -111,8 +121,12 @@ func (Account) Fields() []ent.Field {
 			Default(1.0),
 
 		// status: 账户状态，如 "active", "error", "disabled"
-		field.String("status").
-			MaxLen(20).
+		field.Enum("status").
+			Values(
+				domain.StatusActive,
+				domain.StatusDisabled,
+				domain.StatusError,
+			).
 			Default(domain.StatusActive),
 
 		// error_message: 错误信息，记录账户异常时的详细信息

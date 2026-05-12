@@ -1,7 +1,8 @@
 package schema
 
 import (
-	"time"
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
+	"github.com/Wei-Shaw/sub2api/internal/payment"
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
@@ -26,6 +27,12 @@ type PaymentOrder struct {
 func (PaymentOrder) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		entsql.Annotation{Table: "payment_orders"},
+	}
+}
+
+func (PaymentOrder) Mixin() []ent.Mixin {
+	return []ent.Mixin{
+		mixins.TimeMixin{},
 	}
 }
 
@@ -75,9 +82,12 @@ func (PaymentOrder) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "text"}),
 
 		// 订单类型 & 订阅关联
-		field.String("order_type").
-			MaxLen(20).
-			Default("balance"),
+		field.Enum("order_type").
+			Values(
+				payment.OrderTypeBalance,
+				payment.OrderTypeSubscription,
+			).
+			Default(payment.OrderTypeBalance),
 		field.Int64("plan_id").
 			Optional().
 			Nillable(),
@@ -100,9 +110,22 @@ func (PaymentOrder) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
 		// 状态
-		field.String("status").
-			MaxLen(30).
-			Default("PENDING"),
+		field.Enum("status").
+			Values(
+				payment.OrderStatusPending,
+				payment.OrderStatusPaid,
+				payment.OrderStatusRecharging,
+				payment.OrderStatusCompleted,
+				payment.OrderStatusExpired,
+				payment.OrderStatusCancelled,
+				payment.OrderStatusFailed,
+				payment.OrderStatusRefundRequested,
+				payment.OrderStatusRefunding,
+				payment.OrderStatusPartiallyRefunded,
+				payment.OrderStatusRefunded,
+				payment.OrderStatusRefundFailed,
+			).
+			Default(payment.OrderStatusPending),
 
 		// 退款信息
 		field.Float("refund_amount").
@@ -116,6 +139,18 @@ func (PaymentOrder) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
+		field.Time("refund_gateway_confirmed_at").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
+		field.String("refund_gateway_refund_id").
+			MaxLen(128).
+			Optional().
+			Nillable(),
+		field.String("refund_idempotency_key").
+			MaxLen(128).
+			Optional().
+			Nillable(),
 		field.Bool("force_refund").
 			Default(false),
 		field.Time("refund_requested_at").
@@ -162,14 +197,6 @@ func (PaymentOrder) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "text"}),
 
 		// 时间戳
-		field.Time("created_at").
-			Immutable().
-			Default(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
-		field.Time("updated_at").
-			Default(time.Now).
-			UpdateDefault(time.Now).
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
 	}
 }
 

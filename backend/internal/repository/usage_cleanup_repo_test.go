@@ -430,7 +430,7 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatchProtectsAffiliateReferencedLo
 	end := start.Add(24 * time.Hour)
 	filters := service.UsageCleanupFilters{StartTime: start, EndTime: end}
 
-	mock.ExpectQuery(`WITH target AS \([\s\S]*affiliate_distribution_usage_settlements[\s\S]*affiliate_distribution_usage_jobs[\s\S]*DELETE FROM usage_logs`).
+	mock.ExpectQuery(`WITH maintenance AS \([\s\S]*set_config\('sub2api\.usage_log_maintenance', 'on', true\)[\s\S]*target AS \([\s\S]*affiliate_distribution_usage_settlements[\s\S]*affiliate_distribution_usage_jobs[\s\S]*affiliate_distribution_paid_usage_settlements[\s\S]*DELETE FROM usage_logs`).
 		WithArgs(start, end, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(99)))
 

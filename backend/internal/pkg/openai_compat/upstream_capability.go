@@ -12,9 +12,8 @@
 // 设计取舍：
 //   - 不维护静态 host 白名单——避免新增厂商时必须改代码（讨论沉淀于
 //     pensieve/short-term/knowledge/upstream-capability-detection-design-tradeoffs）
-//   - 标记缺失时默认 true（即"走 Responses"），保持与重构前老代码完全一致的存量
-//     账号行为（"现状即证据"原则；详见
-//     pensieve/short-term/maxims/preserve-existing-runtime-behavior-when-replacing-logic-in-stateful-systems）
+//   - 标记缺失时默认 false（即"先走原生 Chat Completions"），优先避免第三方兼容
+//     上游在冷启动 / 探测失败窗口内命中 /v1/responses 404。
 package openai_compat
 
 // AccountResponsesSupport 描述账号上游对 OpenAI Responses API 的支持状态。
@@ -24,7 +23,8 @@ type AccountResponsesSupport int
 
 const (
 	// ResponsesSupportUnknown 表示账号尚未完成能力探测（extra 字段缺失）。
-	// 上游路由层应按"现状即证据"原则默认走 Responses，保持与重构前一致。
+	// 对 APIKey 路由层来说，这一状态应保守地先走原生 Chat Completions，
+	// 避免将第三方兼容上游误路由到 /v1/responses。
 	ResponsesSupportUnknown AccountResponsesSupport = iota
 
 	// ResponsesSupportYes 探测确认上游支持 /v1/responses。
@@ -42,7 +42,7 @@ const ExtraKeyResponsesSupported = "openai_responses_supported"
 // ResolveResponsesSupport 从账号的 extra map 中读取探测标记。
 //
 // 标记缺失或类型不匹配时返回 ResponsesSupportUnknown——调用方应按
-// "未探测=保留旧行为=走 Responses" 处理（参见 ShouldUseResponsesAPI）。
+// "未探测=尚不可信任 Responses 能力" 处理（参见 ShouldUseResponsesAPI）。
 func ResolveResponsesSupport(extra map[string]any) AccountResponsesSupport {
 	if extra == nil {
 		return ResponsesSupportUnknown
@@ -64,12 +64,13 @@ func ResolveResponsesSupport(extra map[string]any) AccountResponsesSupport {
 // ShouldUseResponsesAPI 判断 OpenAI APIKey 账号的入站 /v1/chat/completions 请求
 // 是否应走"CC→Responses 转换 + 上游 /v1/responses"路径。
 //
-// 返回 true 的两种情况：
-//  1. 账号已探测确认支持 Responses
-//  2. 账号未探测（标记缺失）——按"现状即证据"原则保留旧行为
+// 仅当账号已探测确认支持 Responses 时返回 true。
 //
-// 仅当账号已探测且确认不支持时返回 false，此时调用方应走 CC 直转路径
-// （详见 internal/service/openai_gateway_chat_completions_raw.go）。
+// 对 OpenAI APIKey 账号来说：
+//   - true  -> 走 CC→Responses 转换 + 上游 /v1/responses
+//   - false -> 走 CC 直转路径（含未探测、类型异常、明确不支持）
+//
+// OAuth 账号不使用本判定做路由分流；调用方会先按账号类型判断。
 func ShouldUseResponsesAPI(extra map[string]any) bool {
-	return ResolveResponsesSupport(extra) != ResponsesSupportNo
+	return ResolveResponsesSupport(extra) == ResponsesSupportYes
 }
