@@ -827,16 +827,17 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		return allow, nil
 	}
 
-	return s.checkSync(ctx, input, cfg, content, hashText, nil, true), nil
+	return s.checkSync(ctx, input, cfg, content, hashText, nil, true)
 }
 
-func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
+func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) (*ContentModerationDecision, error) {
 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
 	start := time.Now()
 	result, err := s.callModeration(ctx, cfg, content.ModerationInput())
 	latency := int(time.Since(start).Milliseconds())
 	if err != nil {
-		slog.Warn("content_moderation.audit_api_failed",
+		failClosed := shouldFailClosedContentModeration(cfg, queueDelay, allowBlock)
+		logArgs := []any{
 			"user_id", input.UserID,
 			"api_key_id", input.APIKeyID,
 			"group_id", contentModerationLogGroupID(input.GroupID),
@@ -846,15 +847,25 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 			"allow_block", allowBlock,
 			"queue_delay_ms", queueDelay,
 			"latency_ms", latency,
-			"error", err)
+			"fail_closed", failClosed,
+			"error", err,
+		}
+		if failClosed {
+			slog.Error("content_moderation.audit_api_failed_blocking", logArgs...)
+		} else {
+			slog.Warn("content_moderation.audit_api_failed", logArgs...)
+		}
 		if queueDelay != nil {
 			s.asyncErrors.Add(1)
 		}
-		if cfg.RecordNonHits {
+		if s.repo != nil && (cfg.RecordNonHits || failClosed) {
 			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, nil, content.ExcerptText(), &latency, queueDelay, err.Error())
 			_ = s.repo.CreateLog(ctx, log)
 		}
-		return allow
+		if failClosed {
+			return buildContentModerationErrorDecision(cfg), buildContentModerationCheckError(err, true)
+		}
+		return allow, nil
 	}
 
 	flagged, highestCategory, highestScore := evaluateModerationScores(result.CategoryScores, cfg.Thresholds)
@@ -901,7 +912,7 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 			HighestScore:    highestScore,
 			CategoryScores:  result.CategoryScores,
 			Action:          action,
-		}
+		}, nil
 	}
 	return &ContentModerationDecision{
 		Allowed:         true,
@@ -911,7 +922,41 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		HighestScore:    highestScore,
 		CategoryScores:  result.CategoryScores,
 		Action:          action,
+	}, nil
+}
+
+func shouldFailClosedContentModeration(cfg *ContentModerationConfig, queueDelay *int, allowBlock bool) bool {
+	return cfg != nil && cfg.Mode == ContentModerationModePreBlock && allowBlock && queueDelay == nil
+}
+
+func buildContentModerationErrorDecision(cfg *ContentModerationConfig) *ContentModerationDecision {
+	statusCode := defaultContentModerationBlockHTTPStatus
+	message := defaultContentModerationBlockMessage
+	if cfg != nil {
+		if cfg.BlockStatus >= 400 && cfg.BlockStatus <= 599 {
+			statusCode = cfg.BlockStatus
+		}
+		if strings.TrimSpace(cfg.BlockMessage) != "" {
+			message = cfg.BlockMessage
+		}
 	}
+	return &ContentModerationDecision{
+		Allowed:    false,
+		Blocked:    true,
+		Message:    message,
+		StatusCode: statusCode,
+		Action:     ContentModerationActionError,
+	}
+}
+
+func buildContentModerationCheckError(err error, failClosed bool) error {
+	if err == nil {
+		return nil
+	}
+	if failClosed {
+		return fmt.Errorf("content moderation blocking check failed: %w", err)
+	}
+	return fmt.Errorf("content moderation check failed: %w", err)
 }
 
 func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string) {
@@ -969,7 +1014,7 @@ func (s *ContentModerationService) worker(id int) {
 			s.asyncActive.Add(1)
 			defer s.asyncActive.Add(-1)
 			queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
-			_ = s.checkSync(ctx, task.input, cfg, task.content, task.inputHash, &queueDelay, false)
+			_, _ = s.checkSync(ctx, task.input, cfg, task.content, task.inputHash, &queueDelay, false)
 			s.asyncProcessed.Add(1)
 		}()
 	}

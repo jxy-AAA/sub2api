@@ -900,28 +900,14 @@ func (s *APIKeyService) UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cos
 		return nil
 	}
 
-	// Use repository to atomically increment quota_used
-	newQuotaUsed, err := s.apiKeyRepo.IncrementQuotaUsed(ctx, apiKeyID, cost)
-	if err != nil {
+	// Legacy fallback for repositories that only expose IncrementQuotaUsed.
+	// Do not follow with GetByID -> Update: that read-modify-write sequence can
+	// overwrite a newer quota_used value produced by another concurrent request.
+	// Repositories should implement IncrementQuotaUsedAndGetState for full
+	// quota-exhausted status synchronization in the same atomic DB statement.
+	if _, err := s.apiKeyRepo.IncrementQuotaUsed(ctx, apiKeyID, cost); err != nil {
 		return fmt.Errorf("increment quota used: %w", err)
 	}
-
-	// Check if quota is now exhausted and update status if needed
-	apiKey, err := s.apiKeyRepo.GetByID(ctx, apiKeyID)
-	if err != nil {
-		return nil // Don't fail the request, just log
-	}
-
-	// If quota is set and now exhausted, update status
-	if apiKey.Quota > 0 && newQuotaUsed >= apiKey.Quota {
-		apiKey.Status = StatusAPIKeyQuotaExhausted
-		if err := s.apiKeyRepo.Update(ctx, apiKey); err != nil {
-			return nil // Don't fail the request
-		}
-		// Invalidate cache so next request sees the new status
-		s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
-	}
-
 	return nil
 }
 

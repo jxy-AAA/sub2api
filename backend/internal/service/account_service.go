@@ -10,8 +10,13 @@ import (
 )
 
 var (
-	ErrAccountNotFound = infraerrors.NotFound("ACCOUNT_NOT_FOUND", "account not found")
-	ErrAccountNilInput = infraerrors.BadRequest("ACCOUNT_NIL_INPUT", "account input cannot be nil")
+	ErrAccountNotFound                              = infraerrors.NotFound("ACCOUNT_NOT_FOUND", "account not found")
+	ErrAccountNilInput                              = infraerrors.BadRequest("ACCOUNT_NIL_INPUT", "account input cannot be nil")
+	ErrAccountInvalidPlatform                       = infraerrors.BadRequest("ACCOUNT_INVALID_PLATFORM", "account platform is invalid")
+	ErrAccountInvalidType                           = infraerrors.BadRequest("ACCOUNT_INVALID_TYPE", "account type is invalid")
+	ErrAccountInvalidStatus                         = infraerrors.BadRequest("ACCOUNT_INVALID_STATUS", "account status is invalid")
+	ErrAccountInvalidTLSFingerprintProfileReference = infraerrors.BadRequest("ACCOUNT_INVALID_TLS_FINGERPRINT_PROFILE_REFERENCE", "tls fingerprint profile reference must be a positive integer, 0, or -1")
+	ErrAccountTLSFingerprintProfileNotFound         = infraerrors.BadRequest("ACCOUNT_TLS_FINGERPRINT_PROFILE_NOT_FOUND", "tls fingerprint profile does not exist")
 )
 
 const AccountListGroupUngrouped int64 = -1
@@ -20,18 +25,10 @@ const AccountPrivacyModeUnsetFilter = "__unset__"
 type AccountRepository interface {
 	Create(ctx context.Context, account *Account) error
 	GetByID(ctx context.Context, id int64) (*Account, error)
-	// GetByIDs fetches accounts by IDs in a single query.
-	// It should return all accounts found (missing IDs are ignored).
 	GetByIDs(ctx context.Context, ids []int64) ([]*Account, error)
-	// ExistsByID 检查账号是否存在，仅返回布尔值，用于删除前的轻量级存在性检查
 	ExistsByID(ctx context.Context, id int64) (bool, error)
-	// GetByCRSAccountID finds an account previously synced from CRS.
-	// Returns (nil, nil) if not found.
 	GetByCRSAccountID(ctx context.Context, crsAccountID string) (*Account, error)
-	// FindByExtraField 根据 extra 字段中的键值对查找账号
 	FindByExtraField(ctx context.Context, key string, value any) ([]Account, error)
-	// ListCRSAccountIDs returns a map of crs_account_id -> local account ID
-	// for all accounts that have been synced from CRS.
 	ListCRSAccountIDs(ctx context.Context) (map[string]int64, error)
 	Update(ctx context.Context, account *Account) error
 	Delete(ctx context.Context, id int64) error
@@ -70,14 +67,10 @@ type AccountRepository interface {
 	UpdateSessionWindow(ctx context.Context, id int64, start, end *time.Time, status string) error
 	UpdateExtra(ctx context.Context, id int64, updates map[string]any) error
 	BulkUpdate(ctx context.Context, ids []int64, updates AccountBulkUpdate) (int64, error)
-	// IncrementQuotaUsed 原子递增 API Key 账号的配额用量（总/日/周）
 	IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error
-	// ResetQuotaUsed 重置 API Key 账号所有维度的配额用量为 0
 	ResetQuotaUsed(ctx context.Context, id int64) error
 }
 
-// AccountBulkUpdate describes the fields that can be updated in a bulk operation.
-// Nil pointers mean "do not change".
 type AccountBulkUpdate struct {
 	Name           *string
 	ProxyID        *int64
@@ -91,7 +84,6 @@ type AccountBulkUpdate struct {
 	Extra          map[string]any
 }
 
-// CreateAccountRequest 创建账号请求
 type CreateAccountRequest struct {
 	Name               string         `json:"name"`
 	Notes              *string        `json:"notes"`
@@ -107,7 +99,6 @@ type CreateAccountRequest struct {
 	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
 }
 
-// UpdateAccountRequest 更新账号请求
 type UpdateAccountRequest struct {
 	Name               *string         `json:"name"`
 	Notes              *string         `json:"notes"`
@@ -122,7 +113,6 @@ type UpdateAccountRequest struct {
 	AutoPauseOnExpired *bool           `json:"auto_pause_on_expired"`
 }
 
-// AccountService 账号管理服务
 type AccountService struct {
 	accountRepo AccountRepository
 	groupRepo   GroupRepository
@@ -132,7 +122,10 @@ type groupExistenceBatchChecker interface {
 	ExistsByIDs(ctx context.Context, ids []int64) (map[int64]bool, error)
 }
 
-// NewAccountService 创建账号服务实例
+type accountTransactionRunner interface {
+	WithTx(ctx context.Context, fn func(txCtx context.Context) error) error
+}
+
 func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository) *AccountService {
 	return &AccountService{
 		accountRepo: accountRepo,
@@ -140,16 +133,13 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 	}
 }
 
-// Create 创建账号
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
-	// 验证分组是否存在（如果指定了分组）
 	if len(req.GroupIDs) > 0 {
 		if err := s.validateGroupIDsExist(ctx, req.GroupIDs); err != nil {
 			return nil, err
 		}
 	}
 
-	// 创建账号
 	account := &Account{
 		Name:        req.Name,
 		Notes:       normalizeAccountNotes(req.Notes),
@@ -169,34 +159,45 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		account.AutoPauseOnExpired = true
 	}
 
+	if err := s.validateRequireOAuthOnlyGroups(ctx, account.Type, req.GroupIDs); err != nil {
+		return nil, err
+	}
+
+	if txRunner, ok := s.accountRepo.(accountTransactionRunner); ok {
+		if err := txRunner.WithTx(ctx, func(txCtx context.Context) error {
+			if err := s.accountRepo.Create(txCtx, account); err != nil {
+				return fmt.Errorf("create account: %w", err)
+			}
+			if len(req.GroupIDs) > 0 {
+				if err := s.accountRepo.BindGroups(txCtx, account.ID, req.GroupIDs); err != nil {
+					return fmt.Errorf("bind groups: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+		account.GroupIDs = copyAccountGroupIDs(req.GroupIDs)
+		return account, nil
+	}
+
 	if err := s.accountRepo.Create(ctx, account); err != nil {
 		return nil, fmt.Errorf("create account: %w", err)
 	}
-
-	// require_oauth_only 检查：apikey 类型账号不可加入限制分组
-	if account.Type == AccountTypeAPIKey && len(req.GroupIDs) > 0 {
-		for _, gid := range req.GroupIDs {
-			g, err := s.groupRepo.GetByID(ctx, gid)
-			if err != nil {
-				return nil, err
-			}
-			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini) {
-				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
-			}
-		}
-	}
-
-	// 绑定分组
 	if len(req.GroupIDs) > 0 {
 		if err := s.accountRepo.BindGroups(ctx, account.ID, req.GroupIDs); err != nil {
+			rollbackErr := s.accountRepo.Delete(ctx, account.ID)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("bind groups: %w (rollback create failed: %v)", err, rollbackErr)
+			}
 			return nil, fmt.Errorf("bind groups: %w", err)
 		}
 	}
 
+	account.GroupIDs = copyAccountGroupIDs(req.GroupIDs)
 	return account, nil
 }
 
-// GetByID 根据ID获取账号
 func (s *AccountService) GetByID(ctx context.Context, id int64) (*Account, error) {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
@@ -205,16 +206,14 @@ func (s *AccountService) GetByID(ctx context.Context, id int64) (*Account, error
 	return account, nil
 }
 
-// List 获取账号列表
 func (s *AccountService) List(ctx context.Context, params pagination.PaginationParams) ([]Account, *pagination.PaginationResult, error) {
-	accounts, pagination, err := s.accountRepo.List(ctx, params)
+	accounts, paginationResult, err := s.accountRepo.List(ctx, params)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list accounts: %w", err)
 	}
-	return accounts, pagination, nil
+	return accounts, paginationResult, nil
 }
 
-// ListByPlatform 根据平台获取账号列表
 func (s *AccountService) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	accounts, err := s.accountRepo.ListByPlatform(ctx, platform)
 	if err != nil {
@@ -223,7 +222,6 @@ func (s *AccountService) ListByPlatform(ctx context.Context, platform string) ([
 	return accounts, nil
 }
 
-// ListByGroup 根据分组获取账号列表
 func (s *AccountService) ListByGroup(ctx context.Context, groupID int64) ([]Account, error) {
 	accounts, err := s.accountRepo.ListByGroup(ctx, groupID)
 	if err != nil {
@@ -232,96 +230,100 @@ func (s *AccountService) ListByGroup(ctx context.Context, groupID int64) ([]Acco
 	return accounts, nil
 }
 
-// Update 更新账号
 func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccountRequest) (*Account, error) {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("get account: %w", err)
 	}
 
-	// 更新字段
+	original := cloneAccount(account)
+	updated := cloneAccount(account)
+
 	if req.Name != nil {
-		account.Name = *req.Name
+		updated.Name = *req.Name
 	}
 	if req.Notes != nil {
-		account.Notes = normalizeAccountNotes(req.Notes)
+		updated.Notes = normalizeAccountNotes(req.Notes)
 	}
-
 	if req.Credentials != nil {
-		account.Credentials = *req.Credentials
+		updated.Credentials = *req.Credentials
 	}
-
 	if req.Extra != nil {
-		account.Extra = *req.Extra
+		updated.Extra = *req.Extra
 	}
-
 	if req.ProxyID != nil {
-		account.ProxyID = req.ProxyID
+		updated.ProxyID = req.ProxyID
 	}
-
 	if req.Concurrency != nil {
-		account.Concurrency = *req.Concurrency
+		updated.Concurrency = *req.Concurrency
 	}
-
 	if req.Priority != nil {
-		account.Priority = *req.Priority
+		updated.Priority = *req.Priority
 	}
-
 	if req.Status != nil {
-		account.Status = *req.Status
+		updated.Status = *req.Status
 	}
 	if req.ExpiresAt != nil {
-		account.ExpiresAt = req.ExpiresAt
+		updated.ExpiresAt = req.ExpiresAt
 	}
 	if req.AutoPauseOnExpired != nil {
-		account.AutoPauseOnExpired = *req.AutoPauseOnExpired
+		updated.AutoPauseOnExpired = *req.AutoPauseOnExpired
 	}
 
-	// 先验证分组是否存在（在任何写操作之前）
 	if req.GroupIDs != nil {
 		if err := s.validateGroupIDsExist(ctx, *req.GroupIDs); err != nil {
 			return nil, err
 		}
 	}
 
-	// 执行更新
-	if err := s.accountRepo.Update(ctx, account); err != nil {
+	targetGroupIDs := copyAccountGroupIDs(updated.GroupIDs)
+	if req.GroupIDs != nil {
+		targetGroupIDs = copyAccountGroupIDs(*req.GroupIDs)
+	}
+	if err := s.validateRequireOAuthOnlyGroups(ctx, updated.Type, targetGroupIDs); err != nil {
+		return nil, err
+	}
+
+	if txRunner, ok := s.accountRepo.(accountTransactionRunner); ok {
+		if err := txRunner.WithTx(ctx, func(txCtx context.Context) error {
+			if err := s.accountRepo.Update(txCtx, updated); err != nil {
+				return fmt.Errorf("update account: %w", err)
+			}
+			if req.GroupIDs != nil {
+				if err := s.accountRepo.BindGroups(txCtx, updated.ID, targetGroupIDs); err != nil {
+					return fmt.Errorf("bind groups: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+		updated.GroupIDs = targetGroupIDs
+		return updated, nil
+	}
+
+	if err := s.accountRepo.Update(ctx, updated); err != nil {
 		return nil, fmt.Errorf("update account: %w", err)
 	}
-
-	// require_oauth_only 检查
-	if account.Type == AccountTypeAPIKey && req.GroupIDs != nil {
-		for _, gid := range *req.GroupIDs {
-			g, err := s.groupRepo.GetByID(ctx, gid)
-			if err != nil {
-				return nil, err
-			}
-			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini) {
-				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
-			}
-		}
-	}
-
-	// 绑定分组
 	if req.GroupIDs != nil {
-		if err := s.accountRepo.BindGroups(ctx, account.ID, *req.GroupIDs); err != nil {
+		if err := s.accountRepo.BindGroups(ctx, updated.ID, targetGroupIDs); err != nil {
+			rollbackErr := s.restoreAccountState(ctx, original)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("bind groups: %w (rollback update failed: %v)", err, rollbackErr)
+			}
 			return nil, fmt.Errorf("bind groups: %w", err)
 		}
 	}
 
-	return account, nil
+	updated.GroupIDs = targetGroupIDs
+	return updated, nil
 }
 
-// Delete 删除账号
-// 优化：使用 ExistsByID 替代 GetByID 进行存在性检查，
-// 避免加载完整账号对象及其关联数据，提升删除操作的性能
 func (s *AccountService) Delete(ctx context.Context, id int64) error {
-	// 使用轻量级的存在性检查，而非加载完整账号对象
 	exists, err := s.accountRepo.ExistsByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("check account: %w", err)
 	}
-	// 明确返回账号不存在错误，便于调用方区分错误类型
 	if !exists {
 		return ErrAccountNotFound
 	}
@@ -329,7 +331,6 @@ func (s *AccountService) Delete(ctx context.Context, id int64) error {
 	if err := s.accountRepo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
-
 	return nil
 }
 
@@ -366,7 +367,131 @@ func (s *AccountService) validateGroupIDsExist(ctx context.Context, groupIDs []i
 	return nil
 }
 
-// UpdateStatus 更新账号状态
+func (s *AccountService) validateRequireOAuthOnlyGroups(ctx context.Context, accountType string, groupIDs []int64) error {
+	if accountType != AccountTypeAPIKey || len(groupIDs) == 0 {
+		return nil
+	}
+	if s.groupRepo == nil {
+		return fmt.Errorf("group repository not configured")
+	}
+
+	for _, groupID := range groupIDs {
+		group, err := s.groupRepo.GetByID(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		if !group.RequireOAuthOnly {
+			continue
+		}
+		switch group.Platform {
+		case PlatformOpenAI, PlatformAntigravity, PlatformAnthropic, PlatformGemini:
+			return fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", group.Name)
+		}
+	}
+	return nil
+}
+
+func (s *AccountService) restoreAccountState(ctx context.Context, account *Account) error {
+	if account == nil {
+		return nil
+	}
+	if err := s.accountRepo.Update(ctx, cloneAccount(account)); err != nil {
+		return fmt.Errorf("restore account: %w", err)
+	}
+	if err := s.accountRepo.BindGroups(ctx, account.ID, copyAccountGroupIDs(account.GroupIDs)); err != nil {
+		return fmt.Errorf("restore groups: %w", err)
+	}
+	return nil
+}
+
+func cloneAccount(account *Account) *Account {
+	if account == nil {
+		return nil
+	}
+
+	cloned := *account
+	cloned.Notes = cloneStringPointer(account.Notes)
+	cloned.ProxyID = cloneInt64Pointer(account.ProxyID)
+	cloned.RateMultiplier = cloneFloat64Pointer(account.RateMultiplier)
+	cloned.LoadFactor = cloneIntPointer(account.LoadFactor)
+	cloned.LastUsedAt = cloneTimePointer(account.LastUsedAt)
+	cloned.ExpiresAt = cloneTimePointer(account.ExpiresAt)
+	cloned.RateLimitedAt = cloneTimePointer(account.RateLimitedAt)
+	cloned.RateLimitResetAt = cloneTimePointer(account.RateLimitResetAt)
+	cloned.OverloadUntil = cloneTimePointer(account.OverloadUntil)
+	cloned.TempUnschedulableUntil = cloneTimePointer(account.TempUnschedulableUntil)
+	cloned.SessionWindowStart = cloneTimePointer(account.SessionWindowStart)
+	cloned.SessionWindowEnd = cloneTimePointer(account.SessionWindowEnd)
+	cloned.Credentials = cloneAnyMap(account.Credentials)
+	cloned.Extra = cloneAnyMap(account.Extra)
+	cloned.GroupIDs = copyAccountGroupIDs(account.GroupIDs)
+	if len(account.Groups) > 0 {
+		cloned.Groups = append([]*Group(nil), account.Groups...)
+	}
+	if len(account.AccountGroups) > 0 {
+		cloned.AccountGroups = append([]AccountGroup(nil), account.AccountGroups...)
+	}
+	return &cloned
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func copyAccountGroupIDs(groupIDs []int64) []int64 {
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	return append([]int64(nil), groupIDs...)
+}
+
+func cloneStringPointer(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneInt64Pointer(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneFloat64Pointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func (s *AccountService) UpdateStatus(ctx context.Context, id int64, status string, errorMessage string) error {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
@@ -379,11 +504,9 @@ func (s *AccountService) UpdateStatus(ctx context.Context, id int64, status stri
 	if err := s.accountRepo.Update(ctx, account); err != nil {
 		return fmt.Errorf("update account: %w", err)
 	}
-
 	return nil
 }
 
-// UpdateLastUsed 更新最后使用时间
 func (s *AccountService) UpdateLastUsed(ctx context.Context, id int64) error {
 	if err := s.accountRepo.UpdateLastUsed(ctx, id); err != nil {
 		return fmt.Errorf("update last used: %w", err)
@@ -391,33 +514,26 @@ func (s *AccountService) UpdateLastUsed(ctx context.Context, id int64) error {
 	return nil
 }
 
-// GetCredential 获取账号凭证（安全访问）
 func (s *AccountService) GetCredential(ctx context.Context, id int64, key string) (string, error) {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("get account: %w", err)
 	}
-
 	return account.GetCredential(key), nil
 }
 
-// TestCredentials 测试账号凭证是否有效（需要实现具体平台的测试逻辑）
 func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("get account: %w", err)
 	}
 
-	// 根据平台执行不同的测试逻辑
 	switch account.Platform {
 	case PlatformAnthropic:
-		// TODO: 测试Anthropic API凭证
 		return nil
 	case PlatformOpenAI:
-		// TODO: 测试OpenAI API凭证
 		return nil
 	case PlatformGemini:
-		// TODO: 测试Gemini API凭证
 		return nil
 	default:
 		return fmt.Errorf("unsupported platform: %s", account.Platform)

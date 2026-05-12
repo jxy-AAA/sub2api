@@ -14,7 +14,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +25,7 @@ import (
 	dbgroup "github.com/Wei-Shaw/sub2api/ent/group"
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
 	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
+	dbtlsfingerprintprofile "github.com/Wei-Shaw/sub2api/ent/tlsfingerprintprofile"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -76,12 +77,172 @@ func newAccountRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, schedul
 	return &accountRepository{client: client, sql: sqlq, schedulerCache: schedulerCache}
 }
 
+var validAccountPlatforms = map[string]struct{}{
+	service.PlatformAnthropic:   {},
+	service.PlatformOpenAI:      {},
+	service.PlatformGemini:      {},
+	service.PlatformAntigravity: {},
+}
+
+var validAccountTypes = map[string]struct{}{
+	service.AccountTypeOAuth:          {},
+	service.AccountTypeSetupToken:     {},
+	service.AccountTypeAPIKey:         {},
+	service.AccountTypeUpstream:       {},
+	service.AccountTypeBedrock:        {},
+	service.AccountTypeServiceAccount: {},
+}
+
+var validAccountStatuses = map[string]struct{}{
+	service.StatusActive:   {},
+	service.StatusDisabled: {},
+	service.StatusError:    {},
+}
+
+func validateStringMembership(value string, allowed map[string]struct{}, err error) error {
+	if _, ok := allowed[strings.TrimSpace(value)]; ok {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", err, value)
+}
+
+func extractTLSFingerprintProfileReference(extra map[string]any) (int64, bool, error) {
+	if len(extra) == 0 {
+		return 0, false, nil
+	}
+	raw, ok := extra["tls_fingerprint_profile_id"]
+	if !ok || raw == nil {
+		return 0, false, nil
+	}
+	switch value := raw.(type) {
+	case float64:
+		return int64(value), true, nil
+	case int64:
+		return value, true, nil
+	case int:
+		return int64(value), true, nil
+	case json.Number:
+		parsed, parseErr := value.Int64()
+		if parseErr != nil {
+			return 0, true, service.ErrAccountInvalidTLSFingerprintProfileReference
+		}
+		return parsed, true, nil
+	case string:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return 0, false, nil
+		}
+		parsed, parseErr := strconv.ParseInt(trimmed, 10, 64)
+		if parseErr != nil {
+			return 0, true, service.ErrAccountInvalidTLSFingerprintProfileReference
+		}
+		return parsed, true, nil
+	default:
+		return 0, true, service.ErrAccountInvalidTLSFingerprintProfileReference
+	}
+}
+
+func (r *accountRepository) validateTLSFingerprintProfileReference(ctx context.Context, extra map[string]any) error {
+	profileID, present, err := extractTLSFingerprintProfileReference(extra)
+	if err != nil {
+		return err
+	}
+	if !present || profileID == 0 || profileID == -1 {
+		return nil
+	}
+	if profileID < -1 {
+		return service.ErrAccountInvalidTLSFingerprintProfileReference
+	}
+
+	var exists bool
+	if r.sql != nil {
+		rows, queryErr := r.sql.QueryContext(ctx, "SELECT EXISTS(SELECT 1 FROM tls_fingerprint_profiles WHERE id = $1)", profileID)
+		if queryErr != nil {
+			return queryErr
+		}
+		defer func() { _ = rows.Close() }()
+		if rows.Next() {
+			if scanErr := rows.Scan(&exists); scanErr != nil {
+				return scanErr
+			}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return rowsErr
+		}
+	} else if r.client != nil {
+		exists, err = r.client.TLSFingerprintProfile.Query().Where(dbtlsfingerprintprofile.IDEQ(profileID)).Exist(ctx)
+		if err != nil {
+			return err
+		}
+	} else {
+		return service.ErrAccountTLSFingerprintProfileNotFound
+	}
+	if !exists {
+		return fmt.Errorf("%w: %d", service.ErrAccountTLSFingerprintProfileNotFound, profileID)
+	}
+	return nil
+}
+
+func (r *accountRepository) validateAccountForPersistence(ctx context.Context, account *service.Account) error {
+	if account == nil {
+		return service.ErrAccountNilInput
+	}
+	if err := validateStringMembership(account.Platform, validAccountPlatforms, service.ErrAccountInvalidPlatform); err != nil {
+		return err
+	}
+	if err := validateStringMembership(account.Type, validAccountTypes, service.ErrAccountInvalidType); err != nil {
+		return err
+	}
+	if err := validateStringMembership(account.Status, validAccountStatuses, service.ErrAccountInvalidStatus); err != nil {
+		return err
+	}
+	return r.validateTLSFingerprintProfileReference(ctx, account.Extra)
+}
+
+func (r *accountRepository) validateBulkUpdate(ctx context.Context, updates service.AccountBulkUpdate) error {
+	if updates.Status != nil {
+		if err := validateStringMembership(*updates.Status, validAccountStatuses, service.ErrAccountInvalidStatus); err != nil {
+			return err
+		}
+	}
+	return r.validateTLSFingerprintProfileReference(ctx, updates.Extra)
+}
+
+func accountSQLExecutorFromContext(ctx context.Context, defaultExec sqlExecutor) sqlExecutor {
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return tx
+	}
+	return defaultExec
+}
+
+func (r *accountRepository) WithTx(ctx context.Context, fn func(txCtx context.Context) error) error {
+	if dbent.TxFromContext(ctx) != nil {
+		return fn(ctx)
+	}
+
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	txCtx := dbent.NewTxContext(ctx, tx)
+	if err := fn(txCtx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (r *accountRepository) Create(ctx context.Context, account *service.Account) error {
 	if account == nil {
 		return service.ErrAccountNilInput
 	}
+	if err := r.validateAccountForPersistence(ctx, account); err != nil {
+		return err
+	}
 
-	builder := r.client.Account.Create().
+	client := clientFromContext(ctx, r.client)
+	builder := client.Account.Create().
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
 		SetPlatform(account.Platform).
@@ -138,7 +299,7 @@ func (r *accountRepository) Create(ctx context.Context, account *service.Account
 	account.ID = created.ID
 	account.CreatedAt = created.CreatedAt
 	account.UpdatedAt = created.UpdatedAt
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
+	if err := enqueueSchedulerOutbox(ctx, accountSQLExecutorFromContext(ctx, r.sql), service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account create failed: account=%d err=%v", account.ID, err)
 	}
 	return nil
@@ -317,8 +478,12 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 	if account == nil {
 		return nil
 	}
+	if err := r.validateAccountForPersistence(ctx, account); err != nil {
+		return err
+	}
 
-	builder := r.client.Account.UpdateOneID(account.ID).
+	client := clientFromContext(ctx, r.client)
+	builder := client.Account.UpdateOneID(account.ID).
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
 		SetPlatform(account.Platform).
@@ -395,7 +560,7 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
 	}
 	account.UpdatedAt = updated.UpdatedAt
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
+	if err := enqueueSchedulerOutbox(ctx, accountSQLExecutorFromContext(ctx, r.sql), service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account update failed: account=%d err=%v", account.ID, err)
 	}
 	// 普通账号编辑（如 model_mapping / credentials）也需要立即刷新单账号快照，
@@ -416,42 +581,46 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 }
 
 func (r *accountRepository) Delete(ctx context.Context, id int64) error {
-	groupIDs, err := r.loadAccountGroupIDs(ctx, id)
+	txCtx := ctx
+	// 使用事务保证账号与关联分组的删除原子性，并在外层事务存在时复用它。
+	var txClient *dbent.Client
+	var ownedTx *dbent.Tx
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		txClient = tx.Client()
+	} else {
+		var err error
+		ownedTx, err = r.client.Tx(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = ownedTx.Rollback() }()
+		txCtx = dbent.NewTxContext(ctx, ownedTx)
+		txClient = ownedTx.Client()
+	}
+
+	groupIDs, err := r.loadAccountGroupIDs(txCtx, id)
 	if err != nil {
 		return err
 	}
-	// 使用事务保证账号与关联分组的删除原子性
-	tx, err := r.client.Tx(ctx)
-	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+
+	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(id)).Exec(txCtx); err != nil {
+		return err
+	}
+	if _, err := txClient.ExecContext(txCtx, "DELETE FROM scheduled_test_plans WHERE account_id = $1", id); err != nil {
+		return err
+	}
+	if _, err := txClient.Account.Delete().Where(dbaccount.IDEQ(id)).Exec(txCtx); err != nil {
+		return err
+	}
+	if err := enqueueSchedulerOutbox(txCtx, accountSQLExecutorFromContext(txCtx, r.sql), service.SchedulerOutboxEventAccountChanged, &id, nil, buildSchedulerGroupPayload(groupIDs)); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account delete failed: account=%d err=%v", id, err)
 		return err
 	}
 
-	var txClient *dbent.Client
-	if err == nil {
-		defer func() { _ = tx.Rollback() }()
-		txClient = tx.Client()
-	} else {
-		// 已处于外部事务中（ErrTxStarted），复用当前 client
-		txClient = r.client
-	}
-
-	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(id)).Exec(ctx); err != nil {
-		return err
-	}
-	if _, err := txClient.ExecContext(ctx, "DELETE FROM scheduled_test_plans WHERE account_id = $1", id); err != nil {
-		return err
-	}
-	if _, err := txClient.Account.Delete().Where(dbaccount.IDEQ(id)).Exec(ctx); err != nil {
-		return err
-	}
-
-	if tx != nil {
-		if err := tx.Commit(); err != nil {
+	if ownedTx != nil {
+		if err := ownedTx.Commit(); err != nil {
 			return err
 		}
-	}
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, buildSchedulerGroupPayload(groupIDs)); err != nil {
-		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account delete failed: account=%d err=%v", id, err)
 	}
 	return nil
 }
@@ -803,34 +972,68 @@ func (r *accountRepository) ClearError(ctx context.Context, id int64) error {
 }
 
 func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID int64, priority int) error {
-	_, err := r.client.AccountGroup.Create().
+	txCtx := ctx
+	var ownedTx *dbent.Tx
+	if dbent.TxFromContext(ctx) == nil {
+		var err error
+		ownedTx, err = r.client.Tx(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = ownedTx.Rollback() }()
+		txCtx = dbent.NewTxContext(ctx, ownedTx)
+	}
+
+	client := clientFromContext(txCtx, r.client)
+	_, err := client.AccountGroup.Create().
 		SetAccountID(accountID).
 		SetGroupID(groupID).
 		SetPriority(priority).
-		Save(ctx)
+		Save(txCtx)
 	if err != nil {
 		return err
 	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
+	if err := enqueueSchedulerOutbox(txCtx, accountSQLExecutorFromContext(txCtx, r.sql), service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue add to group failed: account=%d group=%d err=%v", accountID, groupID, err)
+		return err
+	}
+	if ownedTx != nil {
+		return ownedTx.Commit()
 	}
 	return nil
 }
 
 func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, groupID int64) error {
-	_, err := r.client.AccountGroup.Delete().
+	txCtx := ctx
+	var ownedTx *dbent.Tx
+	if dbent.TxFromContext(ctx) == nil {
+		var err error
+		ownedTx, err = r.client.Tx(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = ownedTx.Rollback() }()
+		txCtx = dbent.NewTxContext(ctx, ownedTx)
+	}
+
+	client := clientFromContext(txCtx, r.client)
+	_, err := client.AccountGroup.Delete().
 		Where(
 			dbaccountgroup.AccountIDEQ(accountID),
 			dbaccountgroup.GroupIDEQ(groupID),
 		).
-		Exec(ctx)
+		Exec(txCtx)
 	if err != nil {
 		return err
 	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
+	if err := enqueueSchedulerOutbox(txCtx, accountSQLExecutorFromContext(txCtx, r.sql), service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue remove from group failed: account=%d group=%d err=%v", accountID, groupID, err)
+		return err
+	}
+	if ownedTx != nil {
+		return ownedTx.Commit()
 	}
 	return nil
 }
@@ -853,57 +1056,55 @@ func (r *accountRepository) GetGroups(ctx context.Context, accountID int64) ([]s
 }
 
 func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
-	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
+	txCtx := ctx
+	var txClient *dbent.Client
+	var ownedTx *dbent.Tx
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		txClient = tx.Client()
+	} else {
+		var err error
+		ownedTx, err = r.client.Tx(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = ownedTx.Rollback() }()
+		txCtx = dbent.NewTxContext(ctx, ownedTx)
+		txClient = ownedTx.Client()
+	}
+
+	existingGroupIDs, err := r.loadAccountGroupIDs(txCtx, accountID)
 	if err != nil {
 		return err
 	}
-	// 使用事务保证删除旧绑定与创建新绑定的原子性
-	tx, err := r.client.Tx(ctx)
-	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+
+	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID)).Exec(txCtx); err != nil {
 		return err
 	}
 
-	var txClient *dbent.Client
-	if err == nil {
-		defer func() { _ = tx.Rollback() }()
-		txClient = tx.Client()
-	} else {
-		// 已处于外部事务中（ErrTxStarted），复用当前 client
-		txClient = r.client
-	}
-
-	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID)).Exec(ctx); err != nil {
-		return err
-	}
-
-	if len(groupIDs) == 0 {
-		if tx != nil {
-			return tx.Commit()
+	if len(groupIDs) > 0 {
+		builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
+		for i, groupID := range groupIDs {
+			builders = append(builders, txClient.AccountGroup.Create().
+				SetAccountID(accountID).
+				SetGroupID(groupID).
+				SetPriority(i+1),
+			)
 		}
-		return nil
-	}
-
-	builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
-	for i, groupID := range groupIDs {
-		builders = append(builders, txClient.AccountGroup.Create().
-			SetAccountID(accountID).
-			SetGroupID(groupID).
-			SetPriority(i+1),
-		)
-	}
-
-	if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
-		return err
-	}
-
-	if tx != nil {
-		if err := tx.Commit(); err != nil {
+		if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(txCtx); err != nil {
 			return err
 		}
 	}
+
 	payload := buildSchedulerGroupPayload(mergeGroupIDs(existingGroupIDs, groupIDs))
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
+	if err := enqueueSchedulerOutbox(txCtx, accountSQLExecutorFromContext(txCtx, r.sql), service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bind groups failed: account=%d err=%v", accountID, err)
+		return err
+	}
+
+	if ownedTx != nil {
+		if err := ownedTx.Commit(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1298,6 +1499,9 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	}
 
 	// 使用 JSONB 合并操作实现原子更新，避免读-改-写的并发丢失更新问题
+	if err := r.validateTLSFingerprintProfileReference(ctx, updates); err != nil {
+		return err
+	}
 	payload, err := json.Marshal(updates)
 	if err != nil {
 		return err
@@ -1366,6 +1570,9 @@ func isSchedulerNeutralExtraKey(key string) bool {
 func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates service.AccountBulkUpdate) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
+	}
+	if err := r.validateBulkUpdate(ctx, updates); err != nil {
+		return 0, err
 	}
 
 	setClauses := make([]string, 0, 8)
@@ -1667,7 +1874,8 @@ func (r *accountRepository) loadAccountGroups(ctx context.Context, accountIDs []
 }
 
 func (r *accountRepository) loadAccountGroupIDs(ctx context.Context, accountID int64) ([]int64, error) {
-	entries, err := r.client.AccountGroup.
+	client := clientFromContext(ctx, r.client)
+	entries, err := client.AccountGroup.
 		Query().
 		Where(dbaccountgroup.AccountIDEQ(accountID)).
 		All(ctx)

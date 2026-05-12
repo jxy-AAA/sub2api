@@ -634,6 +634,122 @@ func TestContentModerationCheck_PreBlockBlocksCodexResponsesLatestUserInput(t *t
 	require.Equal(t, "latest blocked prompt", moderationRequest.Input)
 }
 
+func TestContentModerationCheck_PreBlockBlocksWhenModerationAPIUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModePreBlock
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.RetryCount = 0
+	cfg.BlockStatus = http.StatusServiceUnavailable
+	cfg.BlockMessage = "内容审核服务暂时不可用，请稍后重试"
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		repo,
+		&contentModerationTestHashCache{},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		UserID:   1001,
+		Endpoint: "/chat/completions",
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		Protocol: ContentModerationProtocolOpenAIChat,
+		Body:     []byte(`{"messages":[{"role":"user","content":"please check this"}]}`),
+	})
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "content moderation blocking check failed")
+	require.ErrorContains(t, err, "moderation api status 500")
+	require.NotNil(t, decision)
+	require.False(t, decision.Allowed)
+	require.True(t, decision.Blocked)
+	require.False(t, decision.Flagged)
+	require.Equal(t, ContentModerationActionError, decision.Action)
+	require.Equal(t, http.StatusServiceUnavailable, decision.StatusCode)
+	require.Equal(t, "内容审核服务暂时不可用，请稍后重试", decision.Message)
+	require.Len(t, repo.logs, 1)
+	require.Equal(t, ContentModerationActionError, repo.logs[0].Action)
+	require.False(t, repo.logs[0].Flagged)
+	require.Equal(t, ContentModerationModePreBlock, repo.logs[0].Mode)
+	require.Contains(t, repo.logs[0].Error, "moderation api status 500")
+}
+
+func TestContentModerationCheck_ObserveModerationAPIFailureAllowsAsync(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModeObserve
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.RetryCount = 0
+	cfg.RecordNonHits = true
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		repo,
+		&contentModerationTestHashCache{},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		UserID:   1001,
+		Endpoint: "/chat/completions",
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		Protocol: ContentModerationProtocolOpenAIChat,
+		Body:     []byte(`{"messages":[{"role":"user","content":"observe failure prompt"}]}`),
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.True(t, decision.Allowed)
+	require.False(t, decision.Blocked)
+	require.Equal(t, ContentModerationActionAllow, decision.Action)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for len(repo.logs) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	require.Len(t, repo.logs, 1)
+	require.Equal(t, ContentModerationActionError, repo.logs[0].Action)
+	require.False(t, repo.logs[0].Flagged)
+	require.Equal(t, ContentModerationModeObserve, repo.logs[0].Mode)
+	require.EqualValues(t, 1, svc.asyncErrors.Load())
+}
+
 func TestBuildContentModerationTestAuditResult_UsesConfiguredThresholdsOnly(t *testing.T) {
 	result := buildContentModerationTestAuditResult(&moderationAPIResult{
 		Flagged: true,
@@ -940,11 +1056,12 @@ func TestContentModerationCheck_AsyncFlaggedWritesRedisHashCache(t *testing.T) {
 		nil,
 	)
 
-	decision := svc.checkSync(context.Background(), ContentModerationCheckInput{
+	decision, err := svc.checkSync(context.Background(), ContentModerationCheckInput{
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     []byte(`{"messages":[{"role":"user","content":"bad prompt"}]}`),
 	}, cfg, ContentModerationInput{Text: "bad prompt"}, strings.Repeat("b", 64), contentModerationIntPtr(25), false)
 
+	require.NoError(t, err)
 	require.False(t, decision.Blocked)
 	require.Len(t, hashCache.recorded, 1)
 	require.Len(t, repo.logs, 1)

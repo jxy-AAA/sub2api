@@ -3,11 +3,19 @@
 package payment
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestInstanceSupportsType(t *testing.T) {
@@ -494,52 +502,60 @@ func TestDecryptConfig_PlaintextAndLegacyCompat(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		stored string
-		key    []byte
-		want   map[string]string
+		name    string
+		stored  string
+		key     []byte
+		want    map[string]string
+		wantErr bool
 	}{
 		{
-			name:   "empty stored returns nil map",
-			stored: "",
-			key:    key,
-			want:   nil,
+			name:    "empty stored returns nil map",
+			stored:  "",
+			key:     key,
+			want:    nil,
+			wantErr: false,
 		},
 		{
-			name:   "plaintext JSON parses directly",
-			stored: plaintextJSON,
-			key:    nil,
-			want:   map[string]string{"appId": "app-123", "secret": "sec-xyz"},
+			name:    "plaintext JSON parses directly",
+			stored:  plaintextJSON,
+			key:     nil,
+			want:    map[string]string{"appId": "app-123", "secret": "sec-xyz"},
+			wantErr: false,
 		},
 		{
-			name:   "plaintext JSON works even with key present",
-			stored: plaintextJSON,
-			key:    key,
-			want:   map[string]string{"appId": "app-123", "secret": "sec-xyz"},
+			name:    "plaintext JSON works even with key present",
+			stored:  plaintextJSON,
+			key:     key,
+			want:    map[string]string{"appId": "app-123", "secret": "sec-xyz"},
+			wantErr: false,
 		},
 		{
-			name:   "legacy ciphertext with correct key decrypts",
-			stored: legacyEncrypted,
-			key:    key,
-			want:   map[string]string{"appId": "app-123", "secret": "sec-xyz"},
+			name:    "legacy ciphertext with correct key decrypts",
+			stored:  legacyEncrypted,
+			key:     key,
+			want:    map[string]string{"appId": "app-123", "secret": "sec-xyz"},
+			wantErr: false,
 		},
 		{
-			name:   "legacy ciphertext with no key treated as empty",
-			stored: legacyEncrypted,
-			key:    nil,
-			want:   nil,
+			name:    "legacy ciphertext with no key returns error",
+			stored:  legacyEncrypted,
+			key:     nil,
+			want:    nil,
+			wantErr: true,
 		},
 		{
-			name:   "legacy ciphertext with wrong key treated as empty",
-			stored: legacyEncrypted,
-			key:    wrongKey,
-			want:   nil,
+			name:    "legacy ciphertext with wrong key returns error",
+			stored:  legacyEncrypted,
+			key:     wrongKey,
+			want:    nil,
+			wantErr: true,
 		},
 		{
-			name:   "garbage data treated as empty",
-			stored: "not-json-and-not-ciphertext",
-			key:    key,
-			want:   nil,
+			name:    "garbage data returns error",
+			stored:  "not-json-and-not-ciphertext",
+			key:     key,
+			want:    nil,
+			wantErr: true,
 		},
 	}
 
@@ -548,6 +564,15 @@ func TestDecryptConfig_PlaintextAndLegacyCompat(t *testing.T) {
 			t.Parallel()
 			lb := NewDefaultLoadBalancer(nil, tt.key)
 			got, err := lb.decryptConfig(tt.stored)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("decryptConfig expected error, got nil")
+				}
+				if got != nil {
+					t.Fatalf("decryptConfig returned config %v with error %v, want nil config", got, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("decryptConfig unexpected error: %v", err)
 			}
@@ -571,6 +596,100 @@ func stringMapEqual(a, b map[string]string) bool {
 	return true
 }
 
+func TestSelectInstanceSkipsUnreadableConfigInstance(t *testing.T) {
+	client, rawDB := newLoadBalancerTestClient(t)
+	ctx := context.Background()
+
+	badInstanceID := insertLoadBalancerTestInstance(t, rawDB, TypeEasyPay, "broken", string(TypeAlipay), "not-json-and-not-ciphertext", 1)
+	goodInstanceID := insertLoadBalancerTestInstance(t, rawDB, TypeEasyPay, "healthy", string(TypeAlipay), `{"pid":"merchant-1","pkey":"secret-1","apiBase":"https://pay.example.com","notifyUrl":"https://notify.example.com","returnUrl":"https://return.example.com"}`, 2)
+
+	lb := NewDefaultLoadBalancer(client, nil)
+	selection, err := lb.SelectInstance(ctx, TypeEasyPay, TypeAlipay, StrategyRoundRobin, 88)
+	if err != nil {
+		t.Fatalf("SelectInstance returned error: %v", err)
+	}
+	if selection.InstanceID != fmt.Sprintf("%d", goodInstanceID) {
+		t.Fatalf("SelectInstance picked instance %s, want %d (bad instance %d should be skipped)", selection.InstanceID, goodInstanceID, badInstanceID)
+	}
+	if selection.ProviderKey != TypeEasyPay {
+		t.Fatalf("ProviderKey = %q, want %q", selection.ProviderKey, TypeEasyPay)
+	}
+	if selection.Config["pid"] != "merchant-1" {
+		t.Fatalf("selected config = %v, want decrypted healthy config", selection.Config)
+	}
+}
+
+func TestSelectInstanceSkipsInstanceWithMissingRequiredConfigKey(t *testing.T) {
+	client, rawDB := newLoadBalancerTestClient(t)
+	ctx := context.Background()
+
+	badInstanceID := insertLoadBalancerTestInstance(t, rawDB, TypeEasyPay, "missing-pkey", string(TypeAlipay), `{"pid":"merchant-bad","apiBase":"https://pay.example.com","notifyUrl":"https://notify.example.com","returnUrl":"https://return.example.com"}`, 1)
+	goodInstanceID := insertLoadBalancerTestInstance(t, rawDB, TypeEasyPay, "healthy", string(TypeAlipay), `{"pid":"merchant-good","pkey":"secret-1","apiBase":"https://pay.example.com","notifyUrl":"https://notify.example.com","returnUrl":"https://return.example.com"}`, 2)
+
+	lb := NewDefaultLoadBalancer(client, nil)
+	selection, err := lb.SelectInstance(ctx, TypeEasyPay, TypeAlipay, StrategyRoundRobin, 88)
+	if err != nil {
+		t.Fatalf("SelectInstance returned error: %v", err)
+	}
+	if selection.InstanceID != fmt.Sprintf("%d", goodInstanceID) {
+		t.Fatalf("SelectInstance picked instance %s, want %d (bad instance %d should be skipped)", selection.InstanceID, goodInstanceID, badInstanceID)
+	}
+	if selection.Config["pkey"] != "secret-1" {
+		t.Fatalf("selected config = %v, want healthy instance config", selection.Config)
+	}
+}
+
+func TestSelectInstanceReturnsClearErrorWhenAllMatchingConfigsUnreadable(t *testing.T) {
+	client, rawDB := newLoadBalancerTestClient(t)
+	ctx := context.Background()
+
+	insertLoadBalancerTestInstance(t, rawDB, TypeEasyPay, "broken-only", string(TypeAlipay), "not-json-and-not-ciphertext", 1)
+
+	lb := NewDefaultLoadBalancer(client, nil)
+	_, err := lb.SelectInstance(ctx, TypeEasyPay, TypeAlipay, StrategyRoundRobin, 88)
+	if err == nil {
+		t.Fatal("SelectInstance expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "all matching instances have unusable config") {
+		t.Fatalf("SelectInstance error = %q, want unreadable-config message", err)
+	}
+}
+
+func TestSelectInstanceReturnsClearErrorWhenAllMatchingConfigsInvalid(t *testing.T) {
+	client, rawDB := newLoadBalancerTestClient(t)
+	ctx := context.Background()
+
+	insertLoadBalancerTestInstance(t, rawDB, TypeEasyPay, "missing-pkey", string(TypeAlipay), `{"pid":"merchant-bad","apiBase":"https://pay.example.com","notifyUrl":"https://notify.example.com","returnUrl":"https://return.example.com"}`, 1)
+
+	lb := NewDefaultLoadBalancer(client, nil)
+	_, err := lb.SelectInstance(ctx, TypeEasyPay, TypeAlipay, StrategyRoundRobin, 88)
+	if err == nil {
+		t.Fatal("SelectInstance expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "all matching instances have unusable config") {
+		t.Fatalf("SelectInstance error = %q, want unusable-config message", err)
+	}
+	if !strings.Contains(err.Error(), "missing required key pkey") {
+		t.Fatalf("SelectInstance error = %q, want missing-key detail", err)
+	}
+}
+
+func TestGetInstanceConfigReturnsErrorForInvalidProviderConfig(t *testing.T) {
+	client, rawDB := newLoadBalancerTestClient(t)
+	ctx := context.Background()
+
+	instanceID := insertLoadBalancerTestInstance(t, rawDB, TypeEasyPay, "missing-pkey", string(TypeAlipay), `{"pid":"merchant-bad","apiBase":"https://pay.example.com","notifyUrl":"https://notify.example.com","returnUrl":"https://return.example.com"}`, 1)
+
+	lb := NewDefaultLoadBalancer(client, nil)
+	_, err := lb.GetInstanceConfig(ctx, instanceID)
+	if err == nil {
+		t.Fatal("GetInstanceConfig expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing required key pkey") {
+		t.Fatalf("GetInstanceConfig error = %q, want missing-key detail", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -590,4 +709,66 @@ func int64SliceEqual(a, b []int64) bool {
 		}
 	}
 	return true
+}
+
+func newLoadBalancerTestClient(t *testing.T) (*dbent.Client, *sql.DB) {
+	t.Helper()
+
+	dbName := fmt.Sprintf(
+		"file:%s?mode=memory&cache=shared",
+		strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()),
+	)
+	db, err := sql.Open("sqlite", dbName)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatalf("enable foreign keys: %v", err)
+	}
+
+	drv := entsql.OpenDB(dialect.SQLite, db)
+	client := dbent.NewClient(dbent.Driver(drv))
+	if err := client.Schema.Create(context.Background()); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client, db
+}
+
+func insertLoadBalancerTestInstance(
+	t *testing.T,
+	db *sql.DB,
+	providerKey, name, supportedTypes, config string,
+	sortOrder int,
+) int64 {
+	t.Helper()
+
+	now := time.Now().UTC()
+	result, err := db.Exec(
+		`INSERT INTO payment_provider_instances
+			(provider_key, name, config, supported_types, enabled, payment_mode, sort_order, limits, refund_enabled, allow_user_refund, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		providerKey,
+		name,
+		config,
+		supportedTypes,
+		true,
+		"",
+		sortOrder,
+		"",
+		false,
+		false,
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("insert payment provider instance: %v", err)
+	}
+	instanceID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("payment provider instance last insert id: %v", err)
+	}
+	return instanceID
 }

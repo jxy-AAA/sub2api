@@ -73,6 +73,7 @@ func wxpayJSAPIAppIDFromContext(ctx context.Context) string {
 // instanceCandidate pairs an instance with its pre-fetched daily usage.
 type instanceCandidate struct {
 	inst      *dbent.PaymentProviderInstance
+	config    map[string]string
 	dailyUsed float64 // includes PENDING orders
 }
 
@@ -111,7 +112,7 @@ func (lb *DefaultLoadBalancer) SelectInstance(
 
 	// Step 4: pick by strategy.
 	selected := lb.pickByStrategy(available, strategy)
-	return lb.buildSelection(selected.inst)
+	return lb.buildSelection(selected)
 }
 
 // queryEnabledInstances returns enabled instances that support paymentType.
@@ -122,7 +123,7 @@ func (lb *DefaultLoadBalancer) queryEnabledInstances(
 	ctx context.Context,
 	providerKey string,
 	paymentType PaymentType,
-) ([]*dbent.PaymentProviderInstance, error) {
+) ([]instanceCandidate, error) {
 	query := lb.db.PaymentProviderInstance.Query().
 		Where(paymentproviderinstance.Enabled(true))
 	if providerKey != "" {
@@ -135,30 +136,54 @@ func (lb *DefaultLoadBalancer) queryEnabledInstances(
 		return nil, fmt.Errorf("query provider instances: %w", err)
 	}
 
-	var matched []*dbent.PaymentProviderInstance
+	var matched []instanceCandidate
 	expectedWxpayJSAPIAppID := wxpayJSAPIAppIDFromContext(ctx)
+	typeMatchedCount := 0
+	unusableConfigCount := 0
+	var firstConfigErr error
 	for _, inst := range instances {
+		matchesType := false
 		// Stripe: match by provider_key because supported_types lists sub-types (card,link,alipay,wxpay),
 		// not "stripe" itself. The checkout page aggregates all sub-types under "stripe".
 		if paymentType == TypeStripe {
 			if inst.ProviderKey == TypeStripe {
-				matched = append(matched, inst)
+				matchesType = true
 			}
 		} else if InstanceSupportsType(inst.SupportedTypes, paymentType) {
-			if expectedWxpayJSAPIAppID != "" && normalizeVisibleMethodSupportType(paymentType) == TypeWxpay && inst.ProviderKey == TypeWxpay {
-				config, cfgErr := lb.decryptConfig(inst.Config)
-				if cfgErr != nil {
-					slog.Warn("skip wxpay instance with unreadable config during jsapi filtering", "instance_id", inst.ID, "error", cfgErr)
-					continue
-				}
-				if resolveWxpayJSAPIAppID(config) != expectedWxpayJSAPIAppID {
-					continue
-				}
-			}
-			matched = append(matched, inst)
+			matchesType = true
 		}
+		if !matchesType {
+			continue
+		}
+
+		typeMatchedCount++
+		config, cfgErr := lb.loadInstanceConfig(inst)
+		if cfgErr != nil {
+			unusableConfigCount++
+			if firstConfigErr == nil {
+				firstConfigErr = cfgErr
+			}
+			slog.Warn("skip payment instance with unusable config",
+				"instance_id", inst.ID,
+				"provider", inst.ProviderKey,
+				"payment_type", paymentType,
+				"error", cfgErr)
+			continue
+		}
+		if expectedWxpayJSAPIAppID != "" && normalizeVisibleMethodSupportType(paymentType) == TypeWxpay && inst.ProviderKey == TypeWxpay {
+			if resolveWxpayJSAPIAppID(config) != expectedWxpayJSAPIAppID {
+				continue
+			}
+		}
+		matched = append(matched, instanceCandidate{inst: inst, config: config})
 	}
 	if len(matched) == 0 {
+		if typeMatchedCount > 0 && unusableConfigCount == typeMatchedCount {
+			if providerKey != "" {
+				return nil, fmt.Errorf("no eligible instance for provider %s and payment type %s: all matching instances have unusable config: %w", providerKey, paymentType, firstConfigErr)
+			}
+			return nil, fmt.Errorf("no eligible instance for payment type %s: all matching instances have unusable config: %w", paymentType, firstConfigErr)
+		}
 		return nil, fmt.Errorf("no enabled instance for payment type %s", paymentType)
 	}
 	return matched, nil
@@ -168,14 +193,14 @@ func (lb *DefaultLoadBalancer) queryEnabledInstances(
 // Usage includes PENDING orders to avoid over-committing capacity.
 func (lb *DefaultLoadBalancer) attachDailyUsage(
 	ctx context.Context,
-	instances []*dbent.PaymentProviderInstance,
+	instances []instanceCandidate,
 ) []instanceCandidate {
 	todayStart := startOfDay(time.Now())
 
 	// Collect instance IDs.
 	ids := make([]string, len(instances))
 	for i, inst := range instances {
-		ids[i] = fmt.Sprintf("%d", inst.ID)
+		ids[i] = fmt.Sprintf("%d", inst.inst.ID)
 	}
 
 	// Batch query: sum pay_amount grouped by provider_instance_id.
@@ -207,10 +232,8 @@ func (lb *DefaultLoadBalancer) attachDailyUsage(
 
 	candidates := make([]instanceCandidate, len(instances))
 	for i, inst := range instances {
-		candidates[i] = instanceCandidate{
-			inst:      inst,
-			dailyUsed: usageMap[fmt.Sprintf("%d", inst.ID)],
-		}
+		candidates[i] = inst
+		candidates[i].dailyUsed = usageMap[fmt.Sprintf("%d", inst.inst.ID)]
 	}
 	return candidates
 }
@@ -292,33 +315,88 @@ func pickLeastAmount(candidates []instanceCandidate) instanceCandidate {
 	return best
 }
 
-func (lb *DefaultLoadBalancer) buildSelection(selected *dbent.PaymentProviderInstance) (*InstanceSelection, error) {
-	config, err := lb.decryptConfig(selected.Config)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt instance %d config: %w", selected.ID, err)
-	}
+func (lb *DefaultLoadBalancer) buildSelection(selected instanceCandidate) (*InstanceSelection, error) {
+	config := cloneStringMap(selected.config)
 	if config == nil {
 		config = map[string]string{}
 	}
 
-	if selected.PaymentMode != "" {
-		config["paymentMode"] = selected.PaymentMode
+	if selected.inst.PaymentMode != "" {
+		config["paymentMode"] = selected.inst.PaymentMode
 	}
 
 	return &InstanceSelection{
-		InstanceID:     fmt.Sprintf("%d", selected.ID),
-		ProviderKey:    selected.ProviderKey,
+		InstanceID:     fmt.Sprintf("%d", selected.inst.ID),
+		ProviderKey:    selected.inst.ProviderKey,
 		Config:         config,
-		SupportedTypes: selected.SupportedTypes,
-		PaymentMode:    selected.PaymentMode,
+		SupportedTypes: selected.inst.SupportedTypes,
+		PaymentMode:    selected.inst.PaymentMode,
 	}, nil
+}
+
+func (lb *DefaultLoadBalancer) loadInstanceConfig(inst *dbent.PaymentProviderInstance) (map[string]string, error) {
+	config, err := lb.decryptConfig(inst.Config)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt instance %d config: %w", inst.ID, err)
+	}
+	if config == nil {
+		config = map[string]string{}
+	}
+	if err := validateProviderConfig(inst.ProviderKey, config); err != nil {
+		return nil, fmt.Errorf("instance %d: %w", inst.ID, err)
+	}
+	return config, nil
+}
+
+func validateProviderConfig(providerKey string, config map[string]string) error {
+	switch strings.TrimSpace(providerKey) {
+	case TypeEasyPay:
+		return requireProviderConfigKeys(providerKey, config, "pid", "pkey", "apiBase", "notifyUrl", "returnUrl")
+	case TypeStripe:
+		return requireProviderConfigKeys(providerKey, config, "secretKey")
+	case TypeWxpay:
+		if err := requireProviderConfigKeys(providerKey, config, "appId", "mchId", "privateKey", "apiV3Key", "certSerial", "publicKey", "publicKeyId"); err != nil {
+			return err
+		}
+		if len(strings.TrimSpace(config["apiV3Key"])) != 32 {
+			return fmt.Errorf("payment provider config invalid for %s: invalid key length for apiV3Key", providerKey)
+		}
+	case TypeAlipay:
+		if err := requireProviderConfigKeys(providerKey, config, "appId", "privateKey"); err != nil {
+			return err
+		}
+		if strings.TrimSpace(config["publicKey"]) == "" && strings.TrimSpace(config["alipayPublicKey"]) == "" {
+			return fmt.Errorf("payment provider config invalid for %s: missing required key publicKey (or alipayPublicKey)", providerKey)
+		}
+	}
+	return nil
+}
+
+func requireProviderConfigKeys(providerKey string, config map[string]string, keys ...string) error {
+	for _, key := range keys {
+		if strings.TrimSpace(config[key]) == "" {
+			return fmt.Errorf("payment provider config invalid for %s: missing required key %s", providerKey, key)
+		}
+	}
+	return nil
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(src))
+	for key, value := range src {
+		clone[key] = value
+	}
+	return clone
 }
 
 // decryptConfig parses a stored provider config.
 // New records are plaintext JSON; legacy records are AES-256-GCM ciphertext.
-// Unreadable values (legacy ciphertext without a valid key, or malformed data)
-// are treated as empty so the service keeps running while the admin re-enters
-// the config via the UI.
+// Empty values are treated as not-yet-configured. Non-empty unreadable values
+// fail closed so runtime selection can skip broken instances instead of routing
+// orders into provider-construction failures.
 //
 // TODO(deprecated-legacy-ciphertext): The AES fallback branch below is a
 // transitional compatibility shim for pre-plaintext records. Remove it (and
@@ -331,19 +409,19 @@ func (lb *DefaultLoadBalancer) decryptConfig(stored string) (map[string]string, 
 	var config map[string]string
 	if err := json.Unmarshal([]byte(stored), &config); err == nil {
 		return config, nil
+	} else if len(lb.encryptionKey) != AES256KeySize {
+		return nil, fmt.Errorf("payment provider config unreadable: plaintext JSON parse failed: %w", err)
 	}
 	// Deprecated: legacy AES-256-GCM ciphertext fallback — scheduled for removal.
-	if len(lb.encryptionKey) == AES256KeySize {
-		//nolint:staticcheck // SA1019: intentional legacy fallback, scheduled for removal
-		if plaintext, err := Decrypt(stored, lb.encryptionKey); err == nil {
-			if err := json.Unmarshal([]byte(plaintext), &config); err == nil {
-				return config, nil
-			}
-		}
+	//nolint:staticcheck // SA1019: intentional legacy fallback, scheduled for removal
+	plaintext, err := Decrypt(stored, lb.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("payment provider config unreadable: plaintext JSON parse failed and legacy decrypt failed: %w", err)
 	}
-	slog.Warn("payment provider config unreadable, treating as empty for re-entry",
-		"stored_len", len(stored))
-	return nil, nil
+	if err := json.Unmarshal([]byte(plaintext), &config); err != nil {
+		return nil, fmt.Errorf("payment provider config unreadable: legacy decrypted payload is not valid JSON: %w", err)
+	}
+	return config, nil
 }
 
 // GetInstanceDailyAmount returns the total completed order amount for an instance today.
@@ -425,5 +503,5 @@ func (lb *DefaultLoadBalancer) GetInstanceConfig(ctx context.Context, instanceID
 	if err != nil {
 		return nil, fmt.Errorf("get instance %d: %w", instanceID, err)
 	}
-	return lb.decryptConfig(inst.Config)
+	return lb.loadInstanceConfig(inst)
 }

@@ -96,52 +96,60 @@ func startOpsErrorLogWorkers() {
 	}
 
 	workerCount, queueSize := opsErrorLogConfig()
-	opsErrorLogQueue = make(chan opsErrorLogJob, queueSize)
+	queue := make(chan opsErrorLogJob, queueSize)
+	opsErrorLogQueue = queue
 	opsErrorLogQueueLen.Store(0)
 
 	opsErrorLogWorkersWg.Add(workerCount)
 	for i := 0; i < workerCount; i++ {
-		go func() {
-			defer opsErrorLogWorkersWg.Done()
-			for {
-				job, ok := <-opsErrorLogQueue
+		go runOpsErrorLogWorker(queue)
+	}
+}
+
+func runOpsErrorLogWorker(queue <-chan opsErrorLogJob) {
+	defer opsErrorLogWorkersWg.Done()
+
+	if queue == nil {
+		return
+	}
+
+	for {
+		job, ok := <-queue
+		if !ok {
+			return
+		}
+		opsErrorLogQueueLen.Add(-1)
+		batch := make([]opsErrorLogJob, 0, opsErrorLogBatchSize)
+		batch = append(batch, job)
+
+		timer := time.NewTimer(opsErrorLogBatchWindow)
+	batchLoop:
+		for len(batch) < opsErrorLogBatchSize {
+			select {
+			case nextJob, ok := <-queue:
 				if !ok {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					flushOpsErrorLogBatch(batch)
 					return
 				}
 				opsErrorLogQueueLen.Add(-1)
-				batch := make([]opsErrorLogJob, 0, opsErrorLogBatchSize)
-				batch = append(batch, job)
-
-				timer := time.NewTimer(opsErrorLogBatchWindow)
-			batchLoop:
-				for len(batch) < opsErrorLogBatchSize {
-					select {
-					case nextJob, ok := <-opsErrorLogQueue:
-						if !ok {
-							if !timer.Stop() {
-								select {
-								case <-timer.C:
-								default:
-								}
-							}
-							flushOpsErrorLogBatch(batch)
-							return
-						}
-						opsErrorLogQueueLen.Add(-1)
-						batch = append(batch, nextJob)
-					case <-timer.C:
-						break batchLoop
-					}
-				}
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				flushOpsErrorLogBatch(batch)
+				batch = append(batch, nextJob)
+			case <-timer.C:
+				break batchLoop
 			}
-		}()
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		flushOpsErrorLogBatch(batch)
 	}
 }
 
@@ -199,13 +207,14 @@ func enqueueOpsErrorLog(ops *service.OpsService, entry *service.OpsInsertErrorLo
 	opsErrorLogOnce.Do(startOpsErrorLogWorkers)
 
 	opsErrorLogMu.RLock()
+	queue := opsErrorLogQueue
 	defer opsErrorLogMu.RUnlock()
-	if opsErrorLogStopping || opsErrorLogQueue == nil {
+	if opsErrorLogStopping || queue == nil {
 		return
 	}
 
 	select {
-	case opsErrorLogQueue <- opsErrorLogJob{ops: ops, entry: entry}:
+	case queue <- opsErrorLogJob{ops: ops, entry: entry}:
 		opsErrorLogQueueLen.Add(1)
 		opsErrorLogEnqueued.Add(1)
 	default:

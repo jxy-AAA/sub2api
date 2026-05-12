@@ -60,7 +60,22 @@ func runContentModeration(c *gin.Context, reqLog *zap.Logger, svc *service.Conte
 	decision, err := svc.Check(c.Request.Context(), input)
 	if err != nil {
 		if reqLog != nil {
-			reqLog.Warn("content_moderation.check_failed", zap.Error(err))
+			fields := []zap.Field{
+				zap.String("request_id", input.RequestID),
+				zap.Error(err),
+			}
+			if decision != nil {
+				fields = append(fields,
+					zap.Bool("allowed", decision.Allowed),
+					zap.Bool("blocked", decision.Blocked),
+					zap.String("action", decision.Action),
+					zap.Int("status_code", decision.StatusCode),
+				)
+			}
+			reqLog.Warn("content_moderation.check_failed", fields...)
+		}
+		if decision != nil {
+			return decision
 		}
 		return nil
 	}

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -106,6 +107,55 @@ func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {
 	require.Equal(t, int64(1), OpsErrorLogEnqueuedTotal())
 	require.Equal(t, int64(1), OpsErrorLogDroppedTotal())
 	require.Equal(t, int64(1), OpsErrorLogQueueLength())
+}
+
+func TestRunOpsErrorLogWorker_ExitsAfterGlobalQueueCleared(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+
+	queue := make(chan opsErrorLogJob)
+	done := make(chan struct{})
+
+	opsErrorLogWorkersWg.Add(1)
+	go func() {
+		runOpsErrorLogWorker(queue)
+		close(done)
+	}()
+
+	opsErrorLogMu.Lock()
+	opsErrorLogQueue = nil
+	opsErrorLogMu.Unlock()
+
+	close(queue)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not exit after its bound queue was closed")
+	}
+}
+
+func TestStopOpsErrorLogWorkers_ClosesBoundQueueAndDrains(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+
+	startOpsErrorLogWorkers()
+
+	opsErrorLogMu.RLock()
+	queue := opsErrorLogQueue
+	opsErrorLogMu.RUnlock()
+
+	require.NotNil(t, queue)
+
+	drained := StopOpsErrorLogWorkers()
+	require.True(t, drained)
+	require.Equal(t, int64(0), OpsErrorLogQueueLength())
+	require.Equal(t, 0, OpsErrorLogQueueCapacity())
+
+	select {
+	case _, ok := <-queue:
+		require.False(t, ok, "queue should be closed during stop")
+	default:
+		t.Fatal("expected closed queue to return immediately")
+	}
 }
 
 func TestAttachOpsRequestBodyToEntry_EarlyReturnBranches(t *testing.T) {

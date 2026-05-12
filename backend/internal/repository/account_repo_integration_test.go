@@ -4,13 +4,17 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -89,6 +93,236 @@ func (s *AccountRepoSuite) SetupTest() {
 
 func TestAccountRepoSuite(t *testing.T) {
 	suite.Run(t, new(AccountRepoSuite))
+}
+
+func TestAccountRepository_Delete_RollsBackInsideWithTx(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClientCommitted(t)
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+
+	group := mustCreateGroup(t, client, &service.Group{Name: uniqueAccountRepoIntegrationName("group-delete-withtx")})
+	accountModel := mustCreateAccount(t, client, &service.Account{Name: uniqueAccountRepoIntegrationName("account-delete-withtx")})
+	mustBindAccountToGroup(t, client, accountModel.ID, group.ID, 1)
+
+	rollbackErr := errors.New("force account delete rollback")
+	err := repo.WithTx(ctx, func(txCtx context.Context) error {
+		require.NoError(t, repo.Delete(txCtx, accountModel.ID))
+
+		tx := dbent.TxFromContext(txCtx)
+		require.NotNil(t, tx)
+
+		exists, err := tx.Client().Account.Query().Where(account.IDEQ(accountModel.ID)).Exist(txCtx)
+		require.NoError(t, err)
+		require.False(t, exists, "account should be deleted inside tx before rollback")
+
+		bindingCount, err := tx.Client().AccountGroup.Query().
+			Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+			Count(txCtx)
+		require.NoError(t, err)
+		require.Zero(t, bindingCount, "binding should be deleted inside tx before rollback")
+
+		return rollbackErr
+	})
+	require.ErrorIs(t, err, rollbackErr)
+
+	got, err := repo.GetByID(ctx, accountModel.ID)
+	require.NoError(t, err)
+	require.Equal(t, accountModel.ID, got.ID)
+
+	bindingCount, err := client.AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, bindingCount, "outer rollback should preserve committed binding")
+
+	require.Zero(t, countSchedulerOutboxEventsForAccount(t, ctx, service.SchedulerOutboxEventAccountChanged, accountModel.ID))
+}
+
+func TestAccountRepository_Delete_RollsBackInsideExternalTxContext(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClientCommitted(t)
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+
+	group := mustCreateGroup(t, client, &service.Group{Name: uniqueAccountRepoIntegrationName("group-delete-txctx")})
+	accountModel := mustCreateAccount(t, client, &service.Account{Name: uniqueAccountRepoIntegrationName("account-delete-txctx")})
+	mustBindAccountToGroup(t, client, accountModel.ID, group.ID, 1)
+
+	outerTx, err := integrationEntClient.Tx(ctx)
+	require.NoError(t, err)
+	rolledBack := false
+	t.Cleanup(func() {
+		if !rolledBack {
+			_ = outerTx.Rollback()
+		}
+	})
+
+	txCtx := dbent.NewTxContext(ctx, outerTx)
+	require.NoError(t, repo.Delete(txCtx, accountModel.ID))
+
+	exists, err := outerTx.Client().Account.Query().Where(account.IDEQ(accountModel.ID)).Exist(txCtx)
+	require.NoError(t, err)
+	require.False(t, exists, "account should be deleted inside explicit outer tx before rollback")
+
+	bindingCount, err := outerTx.Client().AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+		Count(txCtx)
+	require.NoError(t, err)
+	require.Zero(t, bindingCount, "binding should be deleted inside explicit outer tx before rollback")
+
+	require.NoError(t, outerTx.Rollback())
+	rolledBack = true
+
+	got, err := repo.GetByID(ctx, accountModel.ID)
+	require.NoError(t, err)
+	require.Equal(t, accountModel.ID, got.ID)
+
+	bindingCount, err = client.AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, bindingCount, "rollback should preserve committed binding")
+
+	require.Zero(t, countSchedulerOutboxEventsForAccount(t, ctx, service.SchedulerOutboxEventAccountChanged, accountModel.ID))
+}
+
+func TestAccountRepository_AddToGroup_RollsBackInsideWithTx(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClientCommitted(t)
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+
+	group := mustCreateGroup(t, client, &service.Group{Name: uniqueAccountRepoIntegrationName("group-add-withtx")})
+	accountModel := mustCreateAccount(t, client, &service.Account{Name: uniqueAccountRepoIntegrationName("account-add-withtx")})
+
+	rollbackErr := errors.New("force add-to-group rollback")
+	err := repo.WithTx(ctx, func(txCtx context.Context) error {
+		require.NoError(t, repo.AddToGroup(txCtx, accountModel.ID, group.ID, 7))
+
+		tx := dbent.TxFromContext(txCtx)
+		require.NotNil(t, tx)
+
+		bindingCount, err := tx.Client().AccountGroup.Query().
+			Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+			Count(txCtx)
+		require.NoError(t, err)
+		require.Equal(t, 1, bindingCount, "binding should be visible inside tx before rollback")
+
+		return rollbackErr
+	})
+	require.ErrorIs(t, err, rollbackErr)
+
+	bindingCount, err := client.AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, bindingCount, "rollback should discard new binding")
+
+	require.Zero(t, countSchedulerOutboxEventsForAccount(t, ctx, service.SchedulerOutboxEventAccountGroupsChanged, accountModel.ID))
+}
+
+func TestAccountRepository_RemoveFromGroup_RollsBackInsideExternalTxContext(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClientCommitted(t)
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+
+	group := mustCreateGroup(t, client, &service.Group{Name: uniqueAccountRepoIntegrationName("group-remove-txctx")})
+	accountModel := mustCreateAccount(t, client, &service.Account{Name: uniqueAccountRepoIntegrationName("account-remove-txctx")})
+	mustBindAccountToGroup(t, client, accountModel.ID, group.ID, 1)
+
+	outerTx, err := integrationEntClient.Tx(ctx)
+	require.NoError(t, err)
+	rolledBack := false
+	t.Cleanup(func() {
+		if !rolledBack {
+			_ = outerTx.Rollback()
+		}
+	})
+
+	txCtx := dbent.NewTxContext(ctx, outerTx)
+	require.NoError(t, repo.RemoveFromGroup(txCtx, accountModel.ID, group.ID))
+
+	bindingCount, err := outerTx.Client().AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+		Count(txCtx)
+	require.NoError(t, err)
+	require.Zero(t, bindingCount, "binding should be removed inside explicit outer tx before rollback")
+
+	require.NoError(t, outerTx.Rollback())
+	rolledBack = true
+
+	bindingCount, err = client.AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, bindingCount, "rollback should preserve original binding")
+
+	require.Zero(t, countSchedulerOutboxEventsForAccount(t, ctx, service.SchedulerOutboxEventAccountGroupsChanged, accountModel.ID))
+}
+
+func TestAccountRepository_BindGroups_RollsBackInsideWithTx(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClientCommitted(t)
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+
+	existingGroup := mustCreateGroup(t, client, &service.Group{Name: uniqueAccountRepoIntegrationName("group-bind-existing")})
+	newGroup := mustCreateGroup(t, client, &service.Group{Name: uniqueAccountRepoIntegrationName("group-bind-new")})
+	accountModel := mustCreateAccount(t, client, &service.Account{Name: uniqueAccountRepoIntegrationName("account-bind-withtx")})
+	mustBindAccountToGroup(t, client, accountModel.ID, existingGroup.ID, 1)
+
+	rollbackErr := errors.New("force bind-groups rollback")
+	err := repo.WithTx(ctx, func(txCtx context.Context) error {
+		require.NoError(t, repo.BindGroups(txCtx, accountModel.ID, []int64{newGroup.ID}))
+
+		tx := dbent.TxFromContext(txCtx)
+		require.NotNil(t, tx)
+
+		existingCount, err := tx.Client().AccountGroup.Query().
+			Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(existingGroup.ID)).
+			Count(txCtx)
+		require.NoError(t, err)
+		require.Zero(t, existingCount, "old binding should be removed inside tx before rollback")
+
+		newCount, err := tx.Client().AccountGroup.Query().
+			Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(newGroup.ID)).
+			Count(txCtx)
+		require.NoError(t, err)
+		require.Equal(t, 1, newCount, "new binding should be visible inside tx before rollback")
+
+		return rollbackErr
+	})
+	require.ErrorIs(t, err, rollbackErr)
+
+	existingCount, err := client.AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(existingGroup.ID)).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, existingCount, "rollback should preserve original binding")
+
+	newCount, err := client.AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(newGroup.ID)).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, newCount, "rollback should discard replacement binding")
+
+	require.Zero(t, countSchedulerOutboxEventsForAccount(t, ctx, service.SchedulerOutboxEventAccountGroupsChanged, accountModel.ID))
+}
+
+func TestAccountRepository_BindGroupsEmptyList_WritesOutboxInTransaction(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClientCommitted(t)
+	repo := newAccountRepositoryWithSQL(client, integrationDB, nil)
+
+	group := mustCreateGroup(t, client, &service.Group{Name: uniqueAccountRepoIntegrationName("group-bind-empty")})
+	accountModel := mustCreateAccount(t, client, &service.Account{Name: uniqueAccountRepoIntegrationName("account-bind-empty")})
+	mustBindAccountToGroup(t, client, accountModel.ID, group.ID, 1)
+
+	require.NoError(t, repo.BindGroups(ctx, accountModel.ID, nil))
+
+	bindingCount, err := client.AccountGroup.Query().
+		Where(accountgroup.AccountIDEQ(accountModel.ID), accountgroup.GroupIDEQ(group.ID)).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, bindingCount, "empty BindGroups should clear bindings")
+	require.Equal(t, 1, countSchedulerOutboxEventsForAccount(t, ctx, service.SchedulerOutboxEventAccountGroupsChanged, accountModel.ID))
 }
 
 // --- Create / GetByID / Update / Delete ---
@@ -992,4 +1226,22 @@ func idsOfAccounts(accounts []service.Account) []int64 {
 		out = append(out, accounts[i].ID)
 	}
 	return out
+}
+
+func uniqueAccountRepoIntegrationName(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}
+
+func countSchedulerOutboxEventsForAccount(t *testing.T, ctx context.Context, eventType string, accountID int64) int {
+	t.Helper()
+
+	var count int
+	err := integrationDB.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM scheduler_outbox WHERE event_type = $1 AND account_id = $2",
+		eventType,
+		accountID,
+	).Scan(&count)
+	require.NoError(t, err)
+	return count
 }

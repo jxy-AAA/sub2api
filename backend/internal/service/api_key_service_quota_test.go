@@ -77,6 +77,7 @@ func (s *quotaStateCacheStub) SubscribeAuthCacheInvalidation(context.Context, fu
 
 type quotaBaseAPIKeyRepoStub struct {
 	getByIDCalls int
+	updateCalls  int
 }
 
 func (s *quotaBaseAPIKeyRepoStub) Create(context.Context, *APIKey) error {
@@ -96,7 +97,8 @@ func (s *quotaBaseAPIKeyRepoStub) GetByKeyForAuth(context.Context, string) (*API
 	panic("unexpected GetByKeyForAuth call")
 }
 func (s *quotaBaseAPIKeyRepoStub) Update(context.Context, *APIKey) error {
-	panic("unexpected Update call")
+	s.updateCalls++
+	return nil
 }
 func (s *quotaBaseAPIKeyRepoStub) Delete(context.Context, int64) error {
 	panic("unexpected Delete call")
@@ -170,4 +172,38 @@ func TestAPIKeyService_UpdateQuotaUsed_UsesAtomicStatePath(t *testing.T) {
 	require.Equal(t, 1, repo.stateCalls)
 	require.Equal(t, 0, repo.getByIDCalls, "fast path should not re-read API key by id")
 	require.Equal(t, []string{svc.authCacheKey("sk-test-quota")}, cache.deleteAuthKeys)
+}
+
+type quotaIncrementOnlyRepoStub struct {
+	quotaBaseAPIKeyRepoStub
+	incrementCalls int
+	lastID         int64
+	lastAmount     float64
+	incrementErr   error
+}
+
+func (s *quotaIncrementOnlyRepoStub) IncrementQuotaUsed(_ context.Context, id int64, amount float64) (float64, error) {
+	s.incrementCalls++
+	s.lastID = id
+	s.lastAmount = amount
+	if s.incrementErr != nil {
+		return 0, s.incrementErr
+	}
+	return amount, nil
+}
+
+func TestAPIKeyService_UpdateQuotaUsed_FallbackAvoidsReadModifyWrite(t *testing.T) {
+	repo := &quotaIncrementOnlyRepoStub{}
+	svc := &APIKeyService{
+		apiKeyRepo: repo,
+		cache:      &quotaStateCacheStub{},
+	}
+
+	err := svc.UpdateQuotaUsed(context.Background(), 202, 3.5)
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.incrementCalls)
+	require.Equal(t, int64(202), repo.lastID)
+	require.Equal(t, 3.5, repo.lastAmount)
+	require.Equal(t, 0, repo.getByIDCalls, "fallback should not re-read API key by id")
+	require.Equal(t, 0, repo.updateCalls, "fallback should not write back a potentially stale quota_used value")
 }
