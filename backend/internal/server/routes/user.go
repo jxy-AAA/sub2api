@@ -84,6 +84,11 @@ func RegisterUserRoutes(
 			channels.GET("/available", h.AvailableChannel.List)
 		}
 
+		modelMarket := authenticated.Group("/model-market")
+		{
+			modelMarket.GET("/models", h.ModelMarket.List)
+		}
+
 		usage := authenticated.Group("/usage")
 		{
 			usage.GET("", h.Usage.List)

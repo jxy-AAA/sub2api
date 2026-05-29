@@ -82,8 +82,11 @@ export const paymentAPI = {
   },
 
   /** Legacy-compatible public order lookup by out_trade_no */
-  verifyOrderPublic(outTradeNo: string) {
-    return apiClient.post<PaymentOrder>('/payment/public/orders/verify', { out_trade_no: outTradeNo })
+  verifyOrderPublic(outTradeNo: string, lookupToken?: string) {
+    return apiClient.post<PaymentOrder>('/payment/public/orders/verify', {
+      out_trade_no: outTradeNo,
+      ...(lookupToken ? { lookup_token: lookupToken } : {}),
+    })
   },
 
   /** Resolve an order from a signed resume token without auth */

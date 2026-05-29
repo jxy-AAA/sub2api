@@ -1454,7 +1454,7 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 
 	// anthropic/gemini 分组支持混合调度（包含启用了 mixed_scheduling 的 antigravity 账户）
 	// 注意：强制平台模式不走混合调度
-	if (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform {
+	if (IsAnthropicProtocolPlatform(platform) || platform == PlatformGemini) && !hasForcePlatform {
 		account, err := s.selectAccountWithMixedScheduling(ctx, groupID, sessionHash, requestedModel, excludedIDs, platform)
 		if err != nil {
 			return nil, err
@@ -1593,7 +1593,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	preferOAuth := platform == PlatformGemini
-	if s.debugModelRoutingEnabled() && platform == PlatformAnthropic && requestedModel != "" {
+	if s.debugModelRoutingEnabled() && IsAnthropicProtocolPlatform(platform) && requestedModel != "" {
 		logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] load-aware enabled: group_id=%v model=%s session=%s platform=%s", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), platform)
 	}
 
@@ -1622,7 +1622,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	// 获取模型路由配置（仅 anthropic 平台）
 	var routingAccountIDs []int64
-	if group != nil && requestedModel != "" && group.Platform == PlatformAnthropic {
+	if group != nil && requestedModel != "" && IsAnthropicProtocolPlatform(group.Platform) {
 		routingAccountIDs = group.GetRoutingAccountIDs(requestedModel)
 		if s.debugModelRoutingEnabled() {
 			logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] context group routing: group_id=%d model=%s enabled=%v rules=%d matched_ids=%v session=%s sticky_account=%d",
@@ -2202,7 +2202,7 @@ func (s *GatewayService) ResolveGroupByID(ctx context.Context, groupID int64) (*
 }
 
 func (s *GatewayService) routingAccountIDsForRequest(ctx context.Context, groupID *int64, requestedModel string, platform string) []int64 {
-	if groupID == nil || requestedModel == "" || platform != PlatformAnthropic {
+	if groupID == nil || requestedModel == "" || !IsAnthropicProtocolPlatform(platform) {
 		return nil
 	}
 	group, err := s.resolveGroupByID(ctx, *groupID)
@@ -2212,8 +2212,8 @@ func (s *GatewayService) routingAccountIDsForRequest(ctx context.Context, groupI
 		}
 		return nil
 	}
-	// Preserve existing behavior: model routing only applies to anthropic groups.
-	if group.Platform != PlatformAnthropic {
+	// Model routing applies to the Anthropic protocol family, including compatible providers.
+	if !IsAnthropicProtocolPlatform(group.Platform) {
 		if s.debugModelRoutingEnabled() {
 			logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] skip: non-anthropic group platform: group_id=%d group_platform=%s model=%s", group.ID, group.Platform, requestedModel)
 		}
@@ -2317,9 +2317,9 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 		}
 		return accounts, useMixed, err
 	}
-	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+	useMixed := (IsAnthropicProtocolPlatform(platform) || platform == PlatformGemini) && !hasForcePlatform
 	if useMixed {
-		platforms := []string{platform, PlatformAntigravity}
+		platforms := append(ProtocolCompatiblePlatforms(platform), PlatformAntigravity)
 		var accounts []Account
 		var err error
 		if groupID != nil {
@@ -2339,6 +2339,9 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 		filtered := make([]Account, 0, len(accounts))
 		for _, acc := range accounts {
 			if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
+				continue
+			}
+			if acc.Platform != PlatformAntigravity && !SameProtocolPlatform(acc.Platform, platform) {
 				continue
 			}
 			filtered = append(filtered, acc)
@@ -2362,13 +2365,26 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 
 	var accounts []Account
 	var err error
+	platforms := ProtocolCompatiblePlatforms(platform)
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
+		if len(platforms) > 1 {
+			accounts, err = s.accountRepo.ListSchedulableByPlatforms(ctx, platforms)
+		} else {
+			accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
+		}
 	} else if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+		if len(platforms) > 1 {
+			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, platforms)
+		} else {
+			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+		}
 		// 分组内无账号则返回空列表，由上层处理错误，不再回退到全平台查询
 	} else {
-		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, platform)
+		if len(platforms) > 1 {
+			accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, platforms)
+		} else {
+			accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, platform)
+		}
 	}
 	if err != nil {
 		slog.Debug("account_scheduling_list_failed",
@@ -2409,12 +2425,12 @@ func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform 
 		return false
 	}
 	if useMixed {
-		if account.Platform == platform {
+		if SameProtocolPlatform(account.Platform, platform) {
 			return true
 		}
 		return account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()
 	}
-	return account.Platform == platform
+	return SameProtocolPlatform(account.Platform, platform)
 }
 
 func (s *GatewayService) isAccountSchedulableForSelection(account *Account) bool {
@@ -3357,7 +3373,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
 						if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
-							if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+							if SameProtocolPlatform(account.Platform, nativePlatform) || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 								if s.debugModelRoutingEnabled() {
 									logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy mixed routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 								}
@@ -3478,7 +3494,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
 					if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
-						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+						if SameProtocolPlatform(account.Platform, nativePlatform) || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 							return account, nil
 						}
 					}
@@ -3719,12 +3735,12 @@ func isPlatformFilteredForSelection(acc *Account, platform string, allowMixedSch
 		if acc.Platform == PlatformAntigravity {
 			return !acc.IsMixedSchedulingEnabled()
 		}
-		return acc.Platform != platform
+		return !SameProtocolPlatform(acc.Platform, platform)
 	}
 	if strings.TrimSpace(platform) == "" {
 		return false
 	}
-	return acc.Platform != platform
+	return !SameProtocolPlatform(acc.Platform, platform)
 }
 
 func appendSelectionFailureSampleID(samples []int64, id int64) []int64 {
@@ -3794,11 +3810,17 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 		return ok
 	}
 	// OpenAI 透传模式：仅替换认证，允许所有模型
-	if account.Platform == PlatformOpenAI && account.IsOpenAIPassthroughEnabled() {
+	if account.IsOpenAI() && account.IsOpenAIPassthroughEnabled() {
+		if strings.TrimSpace(requestedModel) == "" {
+			return true
+		}
+		if len(account.GetModelMapping()) > 0 {
+			return account.IsModelSupported(requestedModel)
+		}
 		return true
 	}
 	// OAuth/SetupToken 账号使用 Anthropic 标准映射（短ID → 长ID）
-	if account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+	if account.IsAnthropic() && !account.IsStaticKeyAccount() {
 		if account.Type == AccountTypeServiceAccount {
 			requestedModel = normalizeVertexAnthropicModelID(claude.NormalizeModelID(requestedModel))
 		} else {
@@ -3815,7 +3837,7 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 	case AccountTypeOAuth, AccountTypeSetupToken:
 		// Both oauth and setup-token use OAuth token flow
 		return s.getOAuthToken(ctx, account)
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeUpstream:
 		apiKey := account.GetCredential("api_key")
 		if apiKey == "" {
 			return "", "", errors.New("api_key not found in credentials")
@@ -4391,6 +4413,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
 	}
+	clientTraceMeta := map[string]any{
+		"model":  parsed.Model,
+		"stream": parsed.Stream,
+	}
+	if account != nil {
+		clientTraceMeta["account_id"] = account.ID
+		clientTraceMeta["account_type"] = string(account.Type)
+	}
+	captureGatewayClientRequest(c, inferGatewayTraceProtocol(c, "anthropic"), parsed.Body, clientTraceMeta)
 
 	// Web Search 模拟：纯 web_search 请求时，直接调用搜索 API 构造响应
 	if account != nil && s.shouldEmulateWebSearch(ctx, account, parsed.GroupID, parsed.Body) {
@@ -4585,6 +4616,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		if err != nil {
 			return nil, err
 		}
+		captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "anthropic"), upstreamReq, body, map[string]any{
+			"account_id":     account.ID,
+			"account_type":   string(account.Type),
+			"original_model": originalModel,
+			"upstream_model": reqModel,
+			"stream":         reqStream,
+			"attempt":        attempt,
+		})
 
 		// 发送请求
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
@@ -5076,6 +5115,15 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		if err != nil {
 			return nil, err
 		}
+		captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "anthropic"), upstreamReq, input.Body, map[string]any{
+			"account_id":     account.ID,
+			"account_type":   string(account.Type),
+			"original_model": input.OriginalModel,
+			"upstream_model": input.RequestModel,
+			"stream":         input.RequestStream,
+			"passthrough":    true,
+			"attempt":        attempt,
+		})
 
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 		if err != nil {
@@ -5240,7 +5288,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		firstTokenMs = streamResult.firstTokenMs
 		clientDisconnect = streamResult.clientDisconnect
 	} else {
-		usage, err = s.handleNonStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account)
+		usage, err = s.handleNonStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.RequestModel)
 		if err != nil {
 			return nil, err
 		}
@@ -5295,6 +5343,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 			}
 		}
 	}
+	applyAccountCredentialHeaders(req.Header, account)
 
 	// 覆盖入站鉴权残留，并注入上游认证
 	req.Header.Del("authorization")
@@ -5348,6 +5397,14 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "anthropic"), resp, traceBuf, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": model,
+		"upstream_model": model,
+		"stream":         true,
+	})
 
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
@@ -5444,6 +5501,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 
 			line := ev.line
+			traceBuf.WriteLine(line)
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
 				if anthropicStreamEventIsTerminal("", trimmed) {
@@ -5616,6 +5674,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
+	model string,
 ) (*ClaudeUsage, error) {
 	if s.rateLimitService != nil {
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
@@ -5625,6 +5684,13 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	if err != nil {
 		return nil, err
 	}
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "anthropic"), resp, body, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": model,
+		"upstream_model": model,
+		"stream":         false,
+	})
 
 	usage := parseClaudeUsageFromResponseBody(body)
 
@@ -6234,6 +6300,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 			}
 		}
 	}
+	applyAccountCredentialHeaders(req.Header, account)
 
 	req.Header.Del("authorization")
 	req.Header.Del("x-api-key")
@@ -7218,6 +7285,14 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "anthropic"), resp, traceBuf, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         true,
+	})
 
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
@@ -7506,6 +7581,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 			line := ev.line
+			traceBuf.WriteLine(line)
 			trimmed := strings.TrimSpace(line)
 
 			if trimmed == "" {
@@ -7824,6 +7900,13 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	if err != nil {
 		return nil, err
 	}
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "anthropic"), resp, body, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         false,
+	})
 
 	// 解析usage
 	var response struct {
@@ -8887,6 +8970,8 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 
 	// Bedrock 不支持 count_tokens 端点
 	if account != nil && account.IsBedrock() {
+		// This branch exits before any upstream request is constructed, so there
+		// is intentionally no upstream_request capture to persist.
 		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for Bedrock")
 		return nil
 	}
@@ -8916,6 +9001,8 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	// Antigravity 账户不支持 count_tokens，返回 404 让客户端 fallback 到本地估算。
 	// 返回 nil 避免 handler 层记录为错误，也不设置 ops 上游错误上下文。
 	if account.Platform == PlatformAntigravity {
+		// This response is synthesized locally before any upstream request exists,
+		// so we intentionally do not emit an upstream_request capture here.
 		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for this platform")
 		return nil
 	}
@@ -8959,6 +9046,14 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		s.countTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
 		return err
 	}
+	captureGatewayUpstreamRequest(c, "anthropic.count_tokens", upstreamReq, body, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": parsed.Model,
+		"upstream_model": reqModel,
+		"stream":         false,
+		"count_tokens":   true,
+	})
 
 	// 获取代理URL（自定义 base URL 模式下，proxy 通过 buildCustomRelayURL 作为查询参数传递）
 	proxyURL := ""
@@ -9076,6 +9171,13 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		s.countTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
 		return err
 	}
+	captureGatewayUpstreamRequest(c, "anthropic.count_tokens", upstreamReq, body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"stream":       false,
+		"count_tokens": true,
+		"passthrough":  true,
+	})
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -9406,11 +9508,17 @@ func (s *GatewayService) buildCustomRelayURL(baseURL, path string, account *Acco
 }
 
 func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
-	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
+	if s.cfg == nil || !s.cfg.Security.URLAllowlist.Enabled {
+		allowInsecureHTTP := false
+		allowPrivateHosts := false
+		if s.cfg != nil {
+			allowInsecureHTTP = s.cfg.Security.URLAllowlist.AllowInsecureHTTP
+			allowPrivateHosts = s.cfg.Security.URLAllowlist.AllowPrivateHosts
+		}
 		normalized, err := urlvalidator.ValidateURLFormatWithOptions(
 			raw,
-			s.cfg.Security.URLAllowlist.AllowInsecureHTTP,
-			s.cfg.Security.URLAllowlist.AllowPrivateHosts,
+			allowInsecureHTTP,
+			allowPrivateHosts,
 		)
 		if err != nil {
 			return "", fmt.Errorf("invalid base_url: %w", err)

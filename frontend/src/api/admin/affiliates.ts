@@ -65,6 +65,12 @@ export interface AffiliateDistributionTreeNode {
   direct_user_count?: number | null
   direct_agent_count?: number | null
   direct_count?: number | null
+  direct_total_usage_usd?: number | null
+  direct_total_usage_rmb?: number | null
+  direct_user_usage_usd?: number | null
+  direct_user_usage_rmb?: number | null
+  direct_agent_usage_usd?: number | null
+  direct_agent_usage_rmb?: number | null
   invite_group_rates?: AffiliateGroupRate[]
   current_group_rates?: AffiliateGroupRate[]
 }
@@ -102,7 +108,17 @@ export interface AffiliateChildAgent {
   inviter_id?: number | null
   role?: 'agent' | 'user' | string
   today_revenue_usd?: number
+  today_business_usd?: number
+  today_business_rmb?: number
+  today_rebate_rmb?: number
+  direct_total_usage_usd?: number
+  direct_total_usage_rmb?: number
+  direct_user_usage_usd?: number
+  direct_user_usage_rmb?: number
+  direct_agent_usage_usd?: number
+  direct_agent_usage_rmb?: number
   current_rebate_balance?: number
+  current_rebate_balance_rmb?: number
   group_rates?: AffiliateGroupRate[]
   created_at?: string | null
   updated_at?: string | null
@@ -110,21 +126,50 @@ export interface AffiliateChildAgent {
 
 export interface AffiliateRevenueRecord {
   stat_date: string
+  user_id?: number
+  email?: string
+  username?: string
   agent_id: number
   agent_email: string
   agent_username: string
+  business_usd?: number
+  business_rmb?: number
   direct_user_count?: number
   direct_agent_count?: number
+  direct_users?: number
+  direct_agents?: number
+  direct_total_usage_usd?: number
+  direct_total_usage_rmb?: number
+  direct_user_usage_usd?: number
+  direct_user_usage_rmb?: number
+  direct_agent_usage_usd?: number
+  direct_agent_usage_rmb?: number
   revenue_usd: number
   rank?: number
 }
 
 export interface AffiliateRebateRecord {
+  user_id?: number
+  email?: string
+  username?: string
   agent_id: number
   agent_email: string
   agent_username: string
+  current_rebate_balance_rmb?: number
   current_rebate_balance: number
+  today_rebate_rmb?: number
+  monthly_rebate_rmb?: number
   monthly_rebate_amount?: number
+  direct_user_count?: number
+  direct_agent_count?: number
+  direct_users?: number
+  direct_agents?: number
+  direct_total_usage_usd?: number
+  direct_total_usage_rmb?: number
+  direct_user_usage_usd?: number
+  direct_user_usage_rmb?: number
+  direct_agent_usage_usd?: number
+  direct_agent_usage_rmb?: number
   rank?: number
   updated_at?: string | null
 }
@@ -163,7 +208,11 @@ export interface AffiliateUserOverview {
   direct_children?: AffiliateChildAgent[]
   invited_count: number
   today_revenue_usd?: number
+  today_business_usd?: number
+  today_business_rmb?: number
+  today_rebate_rmb?: number
   current_rebate_balance?: number
+  current_rebate_balance_rmb?: number
   monthly_rebate_amount?: number
 }
 

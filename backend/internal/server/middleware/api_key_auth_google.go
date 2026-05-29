@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -24,17 +25,21 @@ func APIKeyAuthGoogle(apiKeyService *service.APIKeyService, cfg *config.Config) 
 // It is intended for Gemini native endpoints (/v1beta) to match Gemini SDK expectations.
 func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if v := strings.TrimSpace(c.Query("api_key")); v != "" {
+		queryAPIKey, queryKey := stripGoogleAPIKeyQuery(c.Request)
+		if queryAPIKey != "" {
 			abortWithGoogleError(c, 400, "Query parameter api_key is deprecated. Use Authorization header or key instead.")
 			return
 		}
-		apiKeyString, source := extractAPIKeyForGoogle(c)
+		apiKeyString, source := extractAPIKeyForGoogle(c, cfg, queryKey)
+		if c.IsAborted() {
+			return
+		}
 		if apiKeyString == "" {
 			abortWithGoogleError(c, 401, "API key is required")
 			return
 		}
 		if source == googleAPIKeySourceQueryKey {
-			c.Header("Warning", `299 - "Query parameter key is deprecated for API keys; use x-goog-api-key, Authorization, or x-api-key header"`)
+			c.Header("Warning", `299 - "Query parameter key is compatibility-only and disabled by default; use x-goog-api-key, Authorization, or x-api-key header"`)
 		}
 
 		apiKey, err := apiKeyService.GetByKey(c.Request.Context(), apiKeyString)
@@ -163,7 +168,7 @@ const (
 // extractAPIKeyForGoogle extracts API key for Google/Gemini endpoints.
 // Priority: x-goog-api-key > Authorization: Bearer > x-api-key > query key
 // This allows OpenClaw and other clients using Bearer auth to work with Gemini endpoints.
-func extractAPIKeyForGoogle(c *gin.Context) (string, googleAPIKeySource) {
+func extractAPIKeyForGoogle(c *gin.Context, cfg *config.Config, queryKey string) (string, googleAPIKeySource) {
 	// 1) preferred: Gemini native header
 	if k := strings.TrimSpace(c.GetHeader("x-goog-api-key")); k != "" {
 		return k, googleAPIKeySourceXGoogAPIKey
@@ -186,17 +191,48 @@ func extractAPIKeyForGoogle(c *gin.Context) (string, googleAPIKeySource) {
 	}
 
 	// 4) query parameter key (for specific paths)
-	if allowGoogleQueryKey(c.Request.URL.Path) {
-		if v := strings.TrimSpace(c.Query("key")); v != "" {
+	if allowGoogleQueryKey(c.Request.URL.Path, cfg) {
+		if v := strings.TrimSpace(queryKey); v != "" {
 			return v, googleAPIKeySourceQueryKey
 		}
+	} else if strings.TrimSpace(queryKey) != "" {
+		abortWithGoogleError(c, http.StatusBadRequest, "Query parameter key is not allowed on Gemini native endpoints unless explicit compatibility mode is enabled.")
+		return "", googleAPIKeySourceNone
 	}
 
 	return "", googleAPIKeySourceNone
 }
 
-func allowGoogleQueryKey(path string) bool {
+func allowGoogleQueryKey(path string, cfg *config.Config) bool {
+	if cfg == nil || !cfg.Gemini.AllowNativeQueryAPIKey {
+		return false
+	}
 	return strings.HasPrefix(path, "/v1beta") || strings.HasPrefix(path, "/antigravity/v1beta")
+}
+
+func stripGoogleAPIKeyQuery(req *http.Request) (string, string) {
+	if req == nil || req.URL == nil {
+		return "", ""
+	}
+
+	queryValues, err := url.ParseQuery(req.URL.RawQuery)
+	if err != nil {
+		return "", ""
+	}
+
+	apiKey := strings.TrimSpace(queryValues.Get("api_key"))
+	queryKey := strings.TrimSpace(queryValues.Get("key"))
+	if apiKey == "" && queryKey == "" {
+		return "", ""
+	}
+
+	queryValues.Del("api_key")
+	queryValues.Del("key")
+	req.URL.RawQuery = queryValues.Encode()
+	if req.RequestURI != "" {
+		req.RequestURI = req.URL.RequestURI()
+	}
+	return apiKey, queryKey
 }
 
 func abortWithGoogleError(c *gin.Context, status int, message string) {

@@ -65,7 +65,7 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		logger.LegacyPrintf("service.openai_probe", "probe_load_account_failed: account_id=%d err=%v", accountID, err)
 		return
 	}
-	if account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+	if account == nil || !account.IsOpenAI() || !account.IsStaticKeyAccount() {
 		// 仅 OpenAI APIKey 账号需要探测；其他账号类型无能力差异。
 		return
 	}
@@ -96,8 +96,9 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
+	applyAccountCredentialHeaders(req.Header, account)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

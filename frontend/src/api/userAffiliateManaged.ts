@@ -47,17 +47,24 @@ export interface ManagedDailyRevenueRankingItem {
   email?: string
   agent_username?: string
   username?: string
+  stat_date?: string
   revenue_date?: string
   date?: string
+  business_usd?: number
   total_revenue_rmb?: number
   revenue_rmb?: number
   daily_revenue_rmb?: number
   business_rmb?: number
   direct_downline_count?: number
+  direct_users?: number
+  direct_agents?: number
   direct_user_count?: number
   direct_agent_count?: number
+  direct_total_usage_usd?: number
   direct_total_usage_rmb?: number
+  direct_user_usage_usd?: number
   direct_user_usage_rmb?: number
+  direct_agent_usage_usd?: number
   direct_agent_usage_rmb?: number
   updated_at?: string
 }
@@ -82,6 +89,12 @@ export interface ManagedRebateBalanceRankingItem {
   direct_user_count?: number
   direct_agent_count?: number
   direct_downline_count?: number
+  direct_total_usage_usd?: number
+  direct_total_usage_rmb?: number
+  direct_user_usage_usd?: number
+  direct_user_usage_rmb?: number
+  direct_agent_usage_usd?: number
+  direct_agent_usage_rmb?: number
   updated_at?: string
 }
 

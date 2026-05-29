@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -20,8 +21,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"log/slog"
 	"net/http"
-	"sync"
-	"time"
+	"sort"
+	"strings"
 )
 
 import (
@@ -71,10 +72,6 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	subscriptionService := service.NewSubscriptionService(groupRepository, userSubscriptionRepository, billingCacheService, client, configConfig)
 	affiliateRepository := repository.NewAffiliateRepository(client, db)
 	affiliateService := service.NewAffiliateService(affiliateRepository, settingService, apiKeyAuthCacheInvalidator, billingCacheService)
-	affiliateDistributionSettlementStore := affiliateRepository.(service.AffiliateDistributionUsageSettlementStore)
-	affiliateDistributionSettlementProcessor := affiliateRepository.(service.AffiliateDistributionUsageSettlementProcessor)
-	affiliateDistributionSettlementService := service.NewAffiliateDistributionSettlementService(affiliateDistributionSettlementStore, affiliateDistributionSettlementProcessor)
-	affiliateDistributionMonthlyResetService := service.NewAffiliateDistributionMonthlyResetService(affiliateService)
 	authService := service.NewAuthService(client, userRepository, redeemCodeRepository, refreshTokenCache, configConfig, settingService, emailService, turnstileService, emailQueueService, promoService, subscriptionService, affiliateService)
 	userService := service.NewUserService(userRepository, settingRepository, apiKeyAuthCacheInvalidator, billingCache)
 	redeemCache := repository.NewRedeemCache(redisClient)
@@ -88,6 +85,16 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	authHandler := handler.NewAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService)
 	userHandler := handler.NewUserHandler(userService, authService, emailService, emailCache, affiliateService)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
+	modelCatalogRepository := repository.NewModelCatalogRepository(db)
+	channelRepository := repository.NewChannelRepository(db)
+	pricingRemoteClient := repository.ProvidePricingRemoteClient(configConfig)
+	pricingService, err := service.ProvidePricingService(configConfig, pricingRemoteClient)
+	if err != nil {
+		return nil, err
+	}
+	channelService := service.NewChannelService(channelRepository, groupRepository, apiKeyAuthCacheInvalidator, pricingService)
+	modelMarketService := service.NewModelMarketService(modelCatalogRepository, channelService, apiKeyService)
+	modelMarketHandler := handler.NewModelMarketHandler(modelMarketService)
 	usageLogRepository := repository.NewUsageLogRepository(client, db)
 	usageService := service.NewUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator)
 	usageHandler := handler.NewUsageHandler(usageService, apiKeyService)
@@ -114,7 +121,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	proxyExitInfoProber := repository.NewProxyExitInfoProber(configConfig)
 	proxyLatencyCache := repository.NewProxyLatencyCache(redisClient)
 	privacyClientFactory := providePrivacyClientFactory()
-	adminService := service.NewAdminService(userRepository, groupRepository, accountRepository, proxyRepository, apiKeyRepository, redeemCodeRepository, userGroupRateRepository, userRPMCache, billingCacheService, proxyExitInfoProber, proxyLatencyCache, apiKeyAuthCacheInvalidator, client, settingService, subscriptionService, userSubscriptionRepository, privacyClientFactory, usageLogRepository)
+	modelInteractionTraceRepository := repository.NewModelInteractionTraceRepository(db)
+	adminService := service.NewAdminService(userRepository, groupRepository, accountRepository, proxyRepository, apiKeyRepository, redeemCodeRepository, userGroupRateRepository, userRPMCache, billingCacheService, proxyExitInfoProber, proxyLatencyCache, apiKeyAuthCacheInvalidator, client, settingService, subscriptionService, userSubscriptionRepository, privacyClientFactory, usageLogRepository, modelInteractionTraceRepository)
 	concurrencyCache := repository.ProvideConcurrencyCache(redisClient, configConfig)
 	concurrencyService := service.ProvideConcurrencyService(concurrencyCache, accountRepository, configConfig)
 	adminUserHandler := admin.NewUserHandler(adminService, concurrencyService)
@@ -166,6 +174,17 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	dbDumper := repository.NewPgDumper(configConfig)
 	backupService := service.ProvideBackupService(settingRepository, configConfig, secretEncryptor, backupObjectStoreFactory, dbDumper)
 	backupHandler := admin.NewBackupHandler(backupService, userService)
+	modelTraceCaptureRepository := repository.NewModelTraceCaptureRepository(db)
+	modelTraceCaptureService := service.NewModelTraceCaptureService(modelTraceCaptureRepository)
+	modelTraceCaptureRuleRepository := repository.NewModelTraceCaptureRuleRepository(db)
+	modelTraceCaptureRuleService := service.NewModelTraceCaptureRuleService(modelTraceCaptureRuleRepository)
+	traceExportTaskRepository := repository.NewTraceExportTaskRepository(db)
+	traceExportTaskService := service.NewTraceExportTaskService(traceExportTaskRepository)
+	traceExportTaskExecutor := service.ProvideTraceExportTaskExecutor(traceExportTaskRepository, modelTraceCaptureService, configConfig)
+	_ = traceExportTaskExecutor
+	traceHandler := admin.NewTraceHandler(modelTraceCaptureService, modelTraceCaptureRuleService, traceExportTaskService, userService)
+	modelInteractionTraceService := service.NewModelInteractionTraceService(modelInteractionTraceRepository, modelTraceCaptureRepository, modelTraceCaptureRuleRepository)
+	traceExportHandler := admin.NewTraceExportHandler(modelInteractionTraceService, userService)
 	oAuthHandler := admin.NewOAuthHandler(oAuthService)
 	openAIOAuthHandler := admin.NewOpenAIOAuthHandler(openAIOAuthService, adminService)
 	geminiOAuthHandler := admin.NewGeminiOAuthHandler(geminiOAuthService)
@@ -175,24 +194,27 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	promoHandler := admin.NewPromoHandler(promoService)
 	opsRepository := repository.NewOpsRepository(db)
 	usageBillingRepository := repository.NewUsageBillingRepository(client, db)
-	pricingRemoteClient := repository.ProvidePricingRemoteClient(configConfig)
-	pricingService, err := service.ProvidePricingService(configConfig, pricingRemoteClient)
-	if err != nil {
-		return nil, err
-	}
 	billingService := service.NewBillingService(configConfig, pricingService)
 	identityService := service.NewIdentityService(identityCache)
 	deferredService := service.ProvideDeferredService(accountRepository, timingWheelService)
 	digestSessionStore := service.NewDigestSessionStore()
-	channelRepository := repository.NewChannelRepository(db)
-	channelService := service.NewChannelService(channelRepository, groupRepository, apiKeyAuthCacheInvalidator, pricingService)
 	modelPricingResolver := service.NewModelPricingResolver(channelService, billingService)
 	balanceNotifyService := service.ProvideBalanceNotifyService(emailService, settingRepository, accountRepository)
-	gatewayService := service.NewGatewayService(accountRepository, groupRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, identityService, httpUpstream, deferredService, claudeTokenProvider, sessionLimitCache, rpmCache, digestSessionStore, settingService, tlsFingerprintProfileService, channelService, modelPricingResolver, balanceNotifyService)
-	gatewayService.SetAffiliateDistributionUsageSettlementService(affiliateDistributionSettlementService)
+	affiliateDistributionUsageSettlementStore, err := service.ProvideAffiliateDistributionUsageSettlementStore(affiliateRepository)
+	if err != nil {
+		return nil, err
+	}
+	affiliateDistributionUsageSettlementProcessor, err := service.ProvideAffiliateDistributionUsageSettlementProcessor(affiliateRepository)
+	if err != nil {
+		return nil, err
+	}
+	affiliateDistributionUsageSettlementService, err := service.ProvideAffiliateDistributionSettlementService(affiliateDistributionUsageSettlementStore, affiliateDistributionUsageSettlementProcessor)
+	if err != nil {
+		return nil, err
+	}
+	gatewayService := service.ProvideGatewayService(accountRepository, groupRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, identityService, httpUpstream, deferredService, claudeTokenProvider, sessionLimitCache, rpmCache, digestSessionStore, settingService, tlsFingerprintProfileService, channelService, modelPricingResolver, balanceNotifyService, affiliateDistributionUsageSettlementService)
 	openAITokenProvider := service.ProvideOpenAITokenProvider(accountRepository, geminiTokenCache, openAIOAuthService, oAuthRefreshAPI)
-	openAIGatewayService := service.NewOpenAIGatewayService(accountRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, modelPricingResolver, channelService, balanceNotifyService, settingService)
-	openAIGatewayService.SetAffiliateDistributionUsageSettlementService(affiliateDistributionSettlementService)
+	openAIGatewayService := service.ProvideOpenAIGatewayService(accountRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, modelPricingResolver, channelService, balanceNotifyService, settingService, affiliateDistributionUsageSettlementService)
 	geminiMessagesCompatService := service.NewGeminiMessagesCompatService(accountRepository, groupRepository, gatewayCache, schedulerSnapshotService, geminiTokenProvider, rateLimitService, httpUpstream, antigravityGatewayService, configConfig)
 	opsSystemLogSink := service.ProvideOpsSystemLogSink(opsRepository)
 	opsService := service.NewOpsService(opsRepository, settingRepository, configConfig, accountRepository, userRepository, concurrencyService, gatewayService, openAIGatewayService, geminiMessagesCompatService, antigravityGatewayService, opsSystemLogSink)
@@ -204,7 +226,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	registry := payment.ProvideRegistry()
 	defaultLoadBalancer := payment.ProvideDefaultLoadBalancer(client, encryptionKey)
 	paymentService := service.NewPaymentService(client, registry, defaultLoadBalancer, redeemService, subscriptionService, paymentConfigService, userRepository, groupRepository, affiliateService)
-	settingHandler := admin.NewSettingHandler(settingService, emailService, turnstileService, opsService, paymentConfigService, paymentService)
+	settingFirstAdminLookups := admin.ProvideSettingFirstAdminLookups(userService)
+	settingHandler := admin.NewSettingHandler(settingService, emailService, turnstileService, opsService, paymentConfigService, paymentService, settingFirstAdminLookups...)
 	opsHandler := admin.NewOpsHandler(opsService)
 	updateCache := repository.NewUpdateCache(redisClient)
 	gitHubReleaseClient := repository.ProvideGitHubReleaseClient(configConfig)
@@ -232,6 +255,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	scheduledTestService := service.ProvideScheduledTestService(scheduledTestPlanRepository, scheduledTestResultRepository)
 	scheduledTestHandler := admin.NewScheduledTestHandler(scheduledTestService)
 	channelHandler := admin.NewChannelHandler(channelService, billingService)
+	adminModelMarketHandler := admin.NewModelMarketHandler(modelMarketService)
 	channelMonitorHandler := admin.NewChannelMonitorHandler(channelMonitorService)
 	channelMonitorRequestTemplateRepository := repository.NewChannelMonitorRequestTemplateRepository(client, db)
 	channelMonitorRequestTemplateService := service.NewChannelMonitorRequestTemplateService(channelMonitorRequestTemplateRepository)
@@ -241,8 +265,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	contentModerationService := service.NewContentModerationService(settingRepository, contentModerationRepository, contentModerationHashCache, groupRepository, userRepository, apiKeyAuthCacheInvalidator, emailService)
 	contentModerationHandler := admin.NewContentModerationHandler(contentModerationService)
 	paymentHandler := admin.NewPaymentHandler(paymentService, paymentConfigService)
-	affiliateHandler := admin.NewAffiliateHandler(affiliateService, adminService, userService)
-	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, contentModerationHandler, paymentHandler, affiliateHandler)
+	v := admin.ProvideAffiliateFirstAdminLookups(userService)
+	affiliateHandler := admin.NewAffiliateHandler(affiliateService, adminService, v...)
+	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, traceHandler, traceExportHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, scheduledTestHandler, channelHandler, adminModelMarketHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, contentModerationHandler, paymentHandler, affiliateHandler)
 	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)
 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
 	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
@@ -255,12 +280,16 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	availableChannelHandler := handler.NewAvailableChannelHandler(channelService, apiKeyService, settingService)
 	idempotencyCoordinator := service.ProvideIdempotencyCoordinator(idempotencyRepository, configConfig)
 	idempotencyCleanupService := service.ProvideIdempotencyCleanupService(idempotencyRepository, configConfig)
-	handlers := handler.ProvideHandlers(authHandler, userHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, adminHandlers, gatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, idempotencyCoordinator, idempotencyCleanupService)
+	handlers := handler.ProvideHandlers(authHandler, userHandler, apiKeyHandler, modelMarketHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, adminHandlers, gatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, idempotencyCoordinator, idempotencyCleanupService)
 	jwtAuthMiddleware := middleware.NewJWTAuthMiddleware(authService, userService)
 	adminAuthMiddleware := middleware.NewAdminAuthMiddleware(authService, userService, settingService)
 	apiKeyAuthMiddleware := middleware.NewAPIKeyAuthMiddleware(apiKeyService, subscriptionService, configConfig)
-	engine := server.ProvideRouter(configConfig, handlers, jwtAuthMiddleware, adminAuthMiddleware, apiKeyAuthMiddleware, apiKeyService, subscriptionService, opsService, settingService, redisClient)
+	engine := server.ProvideRouter(configConfig, handlers, jwtAuthMiddleware, adminAuthMiddleware, apiKeyAuthMiddleware, apiKeyService, subscriptionService, opsService, settingService, modelInteractionTraceService, redisClient)
 	httpServer := server.ProvideHTTPServer(configConfig, engine)
+	mainCleanupInfrastructure := cleanupInfrastructure{
+		EntClient: client,
+		Redis:     redisClient,
+	}
 	opsMetricsCollector := service.ProvideOpsMetricsCollector(opsRepository, settingRepository, accountRepository, concurrencyService, db, redisClient, configConfig)
 	opsAggregationService := service.ProvideOpsAggregationService(opsRepository, settingRepository, db, redisClient, configConfig)
 	opsAlertEvaluatorService := service.ProvideOpsAlertEvaluatorService(opsService, opsRepository, emailService, redisClient, configConfig)
@@ -272,11 +301,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	scheduledTestRunnerService := service.ProvideScheduledTestRunnerService(scheduledTestPlanRepository, scheduledTestService, accountTestService, rateLimitService, configConfig)
 	paymentOrderExpiryService := service.ProvidePaymentOrderExpiryService(paymentService)
 	channelMonitorRunner := service.ProvideChannelMonitorRunner(channelMonitorService, settingService)
-	cleanupInfra := cleanupInfrastructure{
-		EntClient: client,
-		Redis:     redisClient,
-	}
-	cleanupSvcSet := cleanupServices{
+	affiliateDistributionMonthlyResetService := service.ProvideAffiliateDistributionMonthlyResetService(affiliateService)
+	mainCleanupServices := cleanupServices{
 		OpsMetricsCollector:               opsMetricsCollector,
 		OpsAggregationService:             opsAggregationService,
 		OpsAlertEvaluatorService:          opsAlertEvaluatorService,
@@ -305,10 +331,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		ChannelMonitorRunner:              channelMonitorRunner,
 		AffiliateDistributionMonthlyReset: affiliateDistributionMonthlyResetService,
 	}
-	v := provideCleanup(cleanupInfra, cleanupSvcSet)
+	v2 := provideCleanup(mainCleanupInfrastructure, mainCleanupServices)
 	application := &Application{
 		Server:  httpServer,
-		Cleanup: v,
+		Cleanup: v2,
 	}
 	return application, nil
 }
@@ -317,7 +343,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 
 type Application struct {
 	Server  *http.Server
-	Cleanup func()
+	Cleanup func(context.Context)
 }
 
 type cleanupStep struct {
@@ -345,43 +371,110 @@ func (r *CleanupRegistry) AddSequential(name string, fn func() error) {
 }
 
 func (r *CleanupRegistry) Run(ctx context.Context) {
-	runParallel := func(steps []cleanupStep) {
-		var wg sync.WaitGroup
-		for i := range steps {
-			step := steps[i]
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := step.fn(); err != nil {
-					slog.Warn("cleanup step failed", "step", step.name, "error", err)
-					return
-				}
-				slog.Info("cleanup step succeeded", "step", step.name)
-			}()
+	if !runCleanupParallel(ctx, r.parallel) {
+		return
+	}
+	if !runCleanupSequential(ctx, r.sequential) {
+		return
+	}
+	slog.Info("cleanup steps completed")
+}
+
+type cleanupResult struct {
+	name string
+	err  error
+}
+
+func runCleanupParallel(ctx context.Context, steps []cleanupStep) bool {
+	if len(steps) == 0 {
+		return true
+	}
+	if err := ctx.Err(); err != nil {
+		slog.Warn("cleanup skipped before parallel steps", "error", err)
+		return false
+	}
+
+	results := make(chan cleanupResult, len(steps))
+	pending := make(map[string]struct{}, len(steps))
+
+	for i := range steps {
+		step := steps[i]
+		pending[step.name] = struct{}{}
+		go func(step cleanupStep) {
+			results <- cleanupResult{name: step.name, err: step.fn()}
+		}(step)
+	}
+
+	for completed := 0; completed < len(steps); completed++ {
+		select {
+		case result := <-results:
+			delete(pending, result.name)
+			logCleanupStepResult(result)
+		case <-ctx.Done():
+			slog.Warn(
+				"cleanup timed out while waiting for parallel steps",
+				"remaining_steps", joinCleanupStepNames(pending),
+				"error", ctx.Err(),
+			)
+			return false
 		}
-		wg.Wait()
 	}
 
-	runSequential := func(steps []cleanupStep) {
-		for i := range steps {
-			step := steps[i]
-			if err := step.fn(); err != nil {
-				slog.Warn("cleanup step failed", "step", step.name, "error", err)
-				continue
-			}
-			slog.Info("cleanup step succeeded", "step", step.name)
+	return true
+}
+
+func runCleanupSequential(ctx context.Context, steps []cleanupStep) bool {
+	for i := range steps {
+		step := steps[i]
+		if err := ctx.Err(); err != nil {
+			slog.Warn(
+				"cleanup timed out before sequential step",
+				"step", step.name,
+				"error", err,
+			)
+			return false
+		}
+
+		resultCh := make(chan cleanupResult, 1)
+		go func(step cleanupStep) {
+			resultCh <- cleanupResult{name: step.name, err: step.fn()}
+		}(step)
+
+		select {
+		case result := <-resultCh:
+			logCleanupStepResult(result)
+		case <-ctx.Done():
+			slog.Warn(
+				"cleanup timed out during sequential step",
+				"step", step.name,
+				"error", ctx.Err(),
+			)
+			return false
 		}
 	}
 
-	runParallel(r.parallel)
-	runSequential(r.sequential)
+	return true
+}
 
-	select {
-	case <-ctx.Done():
-		slog.Warn("cleanup timed out", "error", ctx.Err())
-	default:
-		slog.Info("cleanup steps completed")
+func logCleanupStepResult(result cleanupResult) {
+	if result.err != nil {
+		slog.Warn("cleanup step failed", "step", result.name, "error", result.err)
+		return
 	}
+	slog.Info("cleanup step succeeded", "step", result.name)
+}
+
+func joinCleanupStepNames(steps map[string]struct{}) string {
+	if len(steps) == 0 {
+		return ""
+	}
+
+	names := make([]string, 0, len(steps))
+	for name := range steps {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 type cleanupInfrastructure struct {
@@ -390,6 +483,14 @@ type cleanupInfrastructure struct {
 }
 
 func (c cleanupInfrastructure) Register(registry *CleanupRegistry) {
+	registry.AddSequential("SharedReqClients", func() error {
+		repository.CloseSharedReqClients()
+		return nil
+	})
+	registry.AddSequential("SharedHTTPClients", func() error {
+		httpclient.CloseSharedClients()
+		return nil
+	})
 	registry.AddSequential("Redis", func() error {
 		if c.Redis == nil {
 			return nil
@@ -434,7 +535,7 @@ type cleanupServices struct {
 	AffiliateDistributionMonthlyReset *service.AffiliateDistributionMonthlyResetService
 }
 
-func (s cleanupServices) Register(registry *CleanupRegistry) {
+func (s cleanupServices) Register(registry *CleanupRegistry, ctx context.Context) {
 	registry.AddParallel("AffiliateDistributionMonthlyResetService", func() error {
 		if s.AffiliateDistributionMonthlyReset != nil {
 			s.AffiliateDistributionMonthlyReset.Stop()
@@ -581,7 +682,7 @@ func (s cleanupServices) Register(registry *CleanupRegistry) {
 	})
 	registry.AddParallel("BackupService", func() error {
 		if s.BackupService != nil {
-			s.BackupService.Stop()
+			return s.BackupService.StopWithContext(ctx)
 		}
 		return nil
 	})
@@ -610,13 +711,13 @@ func provideServiceBuildInfo(buildInfo handler.BuildInfo) service.BuildInfo {
 	}
 }
 
-func provideCleanup(infra cleanupInfrastructure, services cleanupServices) func() {
-	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
+func provideCleanup(infra cleanupInfrastructure, services cleanupServices) func(context.Context) {
+	return func(ctx context.Context) {
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		registry := &CleanupRegistry{}
-		services.Register(registry)
+		services.Register(registry, ctx)
 		infra.Register(registry)
 		registry.Run(ctx)
 	}

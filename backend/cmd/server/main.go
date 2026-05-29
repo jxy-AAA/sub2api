@@ -100,6 +100,9 @@ func run() error {
 
 func runSetupServer() error {
 	r := gin.New()
+	if err := r.SetTrustedProxies(nil); err != nil {
+		return fmt.Errorf("disable setup trusted proxies: %w", err)
+	}
 	r.Use(middleware.Recovery())
 	r.Use(middleware.CORS(config.CORSConfig{}))
 	r.Use(middleware.SecurityHeaders(config.CSPConfig{Enabled: true, Policy: config.DefaultCSPPolicy}, nil))
@@ -156,19 +159,29 @@ func runApplication(app *Application, shutdownTimeout time.Duration, signals <-c
 	if app == nil || app.Server == nil {
 		return errors.New("application server not initialized")
 	}
-	if app.Cleanup != nil {
-		defer app.Cleanup()
-	}
-	return serveApplication(app.Server, shutdownTimeout, signals)
+	return serveApplication(app, shutdownTimeout, signals)
 }
 
-func serveApplication(server *http.Server, shutdownTimeout time.Duration, signals <-chan os.Signal) error {
-	if server == nil {
+func serveApplication(app *Application, shutdownTimeout time.Duration, signals <-chan os.Signal) (retErr error) {
+	if app == nil || app.Server == nil {
 		return errors.New("server is nil")
 	}
+	server := app.Server
 	if shutdownTimeout <= 0 {
 		shutdownTimeout = 30 * time.Second
 	}
+	defer func() {
+		if app.Cleanup == nil {
+			return
+		}
+		cleanupCtx := context.Background()
+		if shutdownTimeout > 0 {
+			var cancel context.CancelFunc
+			cleanupCtx, cancel = context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+		}
+		app.Cleanup(cleanupCtx)
+	}()
 
 	serverErrCh := make(chan error, 1)
 	go func() {

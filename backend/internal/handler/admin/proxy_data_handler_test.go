@@ -69,8 +69,8 @@ func TestProxyExportDataRespectsFilters(t *testing.T) {
 	var resp proxyDataResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, 0, resp.Code)
-	require.Empty(t, resp.Data.Type)
-	require.Equal(t, 0, resp.Data.Version)
+	require.Equal(t, dataType, resp.Data.Type)
+	require.Equal(t, dataVersion, resp.Data.Version)
 	require.Len(t, resp.Data.Proxies, 1)
 	require.Len(t, resp.Data.Accounts, 0)
 	require.Equal(t, "https", resp.Data.Proxies[0].Protocol)
@@ -231,7 +231,7 @@ func TestProxyImportDataReusesAndTriggersLatencyProbe(t *testing.T) {
 			"version": dataVersion,
 			"proxies": []map[string]any{
 				{
-					"proxy_key": "http|127.0.0.1|8080|user|pass",
+					"proxy_key": "http://user:pass@127.0.0.1:8080",
 					"name":      "proxy-a",
 					"protocol":  "http",
 					"host":      "127.0.0.1",
@@ -241,7 +241,7 @@ func TestProxyImportDataReusesAndTriggersLatencyProbe(t *testing.T) {
 					"status":    "inactive",
 				},
 				{
-					"proxy_key": "https|10.0.0.2|443|u|p",
+					"proxy_key": "https://u:p@10.0.0.2:443",
 					"name":      "proxy-b",
 					"protocol":  "https",
 					"host":      "10.0.0.2",
@@ -279,4 +279,31 @@ func TestProxyImportDataReusesAndTriggersLatencyProbe(t *testing.T) {
 		defer adminSvc.mu.Unlock()
 		return len(adminSvc.testedProxyIDs) == 1
 	}, time.Second, 10*time.Millisecond)
+}
+
+func TestProxyExportDataUsesRoundTripProxyURI(t *testing.T) {
+	router, adminSvc := setupProxyDataRouter()
+
+	adminSvc.proxies = []service.Proxy{
+		{
+			ID:       7,
+			Name:     "proxy-ipv6",
+			Protocol: "http",
+			Host:     "2001:db8::10",
+			Port:     8080,
+			Username: "first last@corp",
+			Password: "p@ ss:#word",
+			Status:   service.StatusActive,
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/proxies/data", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp proxyDataResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Data.Proxies, 1)
+	require.Equal(t, "http://first%20last%40corp:p%40%20ss%3A%23word@[2001:db8::10]:8080", resp.Data.Proxies[0].ProxyKey)
 }

@@ -12,6 +12,26 @@
         </div>
         <h1 class="text-3xl font-bold text-gray-900 dark:text-white">{{ t('setup.title') }}</h1>
         <p class="mt-2 text-gray-500 dark:text-dark-400">{{ t('setup.description') }}</p>
+        <div
+          v-if="setupTokenRequired"
+          class="mx-auto mt-4 max-w-xl rounded-xl border border-amber-200 bg-amber-50 p-4 text-left dark:border-amber-900/50 dark:bg-amber-900/20"
+        >
+          <p class="text-sm font-medium text-amber-800 dark:text-amber-300">
+            {{ t('setup.remoteTokenTitle') }}
+          </p>
+          <p class="mt-1 text-sm text-amber-700 dark:text-amber-400">
+            {{ t('setup.remoteTokenHint') }}
+          </p>
+          <input
+            v-model="setupToken"
+            type="password"
+            class="input mt-3"
+            :placeholder="t('setup.remoteTokenPlaceholder')"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+        </div>
       </div>
 
       <!-- Progress Steps -->
@@ -490,9 +510,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { testDatabase, testRedis, install, type InstallRequest } from '@/api/setup'
+import {
+  testDatabase,
+  testRedis,
+  install,
+  getSetupStatus,
+  getSetupToken,
+  setSetupToken,
+  type InstallRequest
+} from '@/api/setup'
 import Select from '@/components/common/Select.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -509,6 +537,8 @@ const steps = computed(() => [
 const currentStep = ref(0)
 const errorMessage = ref('')
 const installSuccess = ref(false)
+const setupToken = ref('')
+const setupTokenRequired = ref(false)
 
 // Connection test states
 const testingDb = ref(false)
@@ -557,6 +587,9 @@ const formData = reactive<InstallRequest>({
 })
 
 const canProceed = computed(() => {
+  if (setupTokenRequired.value && !setupToken.value.trim()) {
+    return false
+  }
   switch (currentStep.value) {
     case 0:
       return dbConnected.value
@@ -574,6 +607,10 @@ const canProceed = computed(() => {
 })
 
 async function testDatabaseConnection() {
+  if (setupTokenRequired.value && !setupToken.value.trim()) {
+    errorMessage.value = t('setup.remoteTokenHint')
+    return
+  }
   testingDb.value = true
   errorMessage.value = ''
   dbConnected.value = false
@@ -591,6 +628,10 @@ async function testDatabaseConnection() {
 }
 
 async function testRedisConnection() {
+  if (setupTokenRequired.value && !setupToken.value.trim()) {
+    errorMessage.value = t('setup.remoteTokenHint')
+    return
+  }
   testingRedis.value = true
   errorMessage.value = ''
   redisConnected.value = false
@@ -615,6 +656,10 @@ function nextStep() {
 }
 
 async function performInstall() {
+  if (setupTokenRequired.value && !setupToken.value.trim()) {
+    errorMessage.value = t('setup.remoteTokenHint')
+    return
+  }
   installing.value = true
   errorMessage.value = ''
 
@@ -631,6 +676,20 @@ async function performInstall() {
     installing.value = false
   }
 }
+
+watch(setupToken, (value) => {
+  setSetupToken(value)
+})
+
+onMounted(async () => {
+  setupToken.value = getSetupToken()
+  try {
+    const status = await getSetupStatus()
+    setupTokenRequired.value = status.setup_token_required === true
+  } catch {
+    setupTokenRequired.value = false
+  }
+})
 
 // Wait for service to restart and become available
 async function waitForServiceRestart() {

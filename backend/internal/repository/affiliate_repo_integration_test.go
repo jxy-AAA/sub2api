@@ -618,8 +618,34 @@ func TestAffiliateDistributionRepository_ScopedRankingsAndTree(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, directSubordinates, 1)
 	require.Equal(t, child.ID, directSubordinates[0].UserID)
-	require.InDelta(t, 150.0, directSubordinates[0].TodayBusinessUSD, 1e-9)
-	require.InDelta(t, 3.0, directSubordinates[0].TodayRebateRMB, 1e-9)
+	require.InDelta(t, rootBusinessUSD, directSubordinates[0].TodayBusinessUSD, 1e-9)
+	require.InDelta(t, rootRebateRMB, directSubordinates[0].TodayRebateRMB, 1e-9)
+	require.InDelta(t, rootBusinessUSD, directSubordinates[0].DirectTotalUsageUSD, 1e-9)
+	require.InDelta(t, 0.0, directSubordinates[0].DirectUserUsageUSD, 1e-9)
+	require.InDelta(t, rootBusinessUSD, directSubordinates[0].DirectAgentUsageUSD, 1e-9)
+
+	zeroAgent := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-zero-agent-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+	zeroLeaf := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-zero-leaf-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+	for _, user := range []*service.User{zeroAgent, zeroLeaf} {
+		_, err := affiliateRepo.EnsureUserAffiliate(txCtx, user.ID)
+		require.NoError(t, err)
+	}
+	bound, err = affiliateRepo.BindInviter(txCtx, zeroAgent.ID, root.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+	bound, err = affiliateRepo.BindInviter(txCtx, zeroLeaf.ID, zeroAgent.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
 
 	rootScope := root.ID
 	statDate := truncateToUTCDate(now)
@@ -631,12 +657,20 @@ func TestAffiliateDistributionRepository_ScopedRankingsAndTree(t *testing.T) {
 		OnlyDescendants: true,
 	})
 	require.NoError(t, err)
-	require.Equal(t, int64(1), total)
-	require.Len(t, dailyItems, 1)
+	require.Equal(t, int64(2), total)
+	require.Len(t, dailyItems, 2)
 	require.Equal(t, child.ID, dailyItems[0].UserID)
 	require.InDelta(t, 150.0, dailyItems[0].BusinessUSD, 1e-9)
 	require.Equal(t, 1, dailyItems[0].DirectUsers)
 	require.Equal(t, 0, dailyItems[0].DirectAgents)
+	require.InDelta(t, dailyItems[0].BusinessUSD, dailyItems[0].DirectTotalUsageUSD, 1e-9)
+	require.InDelta(t, dailyItems[0].BusinessRMB, dailyItems[0].DirectTotalUsageRMB, 1e-9)
+	require.InDelta(t, dailyItems[0].BusinessUSD, dailyItems[0].DirectUserUsageUSD, 1e-9)
+	require.InDelta(t, 0.0, dailyItems[0].DirectAgentUsageUSD, 1e-9)
+	require.Equal(t, zeroAgent.ID, dailyItems[1].UserID)
+	require.InDelta(t, 0.0, dailyItems[1].BusinessUSD, 1e-9)
+	require.Equal(t, 1, dailyItems[1].DirectUsers)
+	require.Equal(t, 0, dailyItems[1].DirectAgents)
 
 	rebateItems, total, err := distributionRepo.ListRebateBalanceRanking(txCtx, service.AgentRankingFilter{
 		Page:            1,
@@ -645,14 +679,21 @@ func TestAffiliateDistributionRepository_ScopedRankingsAndTree(t *testing.T) {
 		OnlyDescendants: true,
 	})
 	require.NoError(t, err)
-	require.Equal(t, int64(1), total)
-	require.Len(t, rebateItems, 1)
+	require.Equal(t, int64(2), total)
+	require.Len(t, rebateItems, 2)
 	require.Equal(t, child.ID, rebateItems[0].UserID)
 	require.InDelta(t, 3.0, rebateItems[0].CurrentRebateBalanceRMB, 1e-9)
 	require.InDelta(t, 3.0, rebateItems[0].TodayRebateRMB, 1e-9)
 	require.InDelta(t, 3.0, rebateItems[0].MonthlyRebateRMB, 1e-9)
 	require.Equal(t, 1, rebateItems[0].DirectUsers)
 	require.Equal(t, 0, rebateItems[0].DirectAgents)
+	require.InDelta(t, childBusinessUSD, rebateItems[0].DirectTotalUsageUSD, 1e-9)
+	require.InDelta(t, childBusinessUSD, rebateItems[0].DirectUserUsageUSD, 1e-9)
+	require.InDelta(t, 0.0, rebateItems[0].DirectAgentUsageUSD, 1e-9)
+	require.Equal(t, zeroAgent.ID, rebateItems[1].UserID)
+	require.InDelta(t, 0.0, rebateItems[1].CurrentRebateBalanceRMB, 1e-9)
+	require.Equal(t, 1, rebateItems[1].DirectUsers)
+	require.Equal(t, 0, rebateItems[1].DirectAgents)
 
 	tree, err := distributionRepo.GetDistributionTree(txCtx, service.AgentTreeFilter{
 		RootUserID:      &rootScope,
@@ -671,6 +712,19 @@ func TestAffiliateDistributionRepository_ScopedRankingsAndTree(t *testing.T) {
 	require.True(t, hasChild)
 	require.True(t, hasLeaf)
 	require.False(t, hasOtherRoot)
+	var childNode service.AgentTreeNode
+	for _, node := range tree {
+		if node.UserID == child.ID {
+			childNode = node
+			break
+		}
+	}
+	require.Equal(t, 1, childNode.DirectChildrenCount)
+	require.Equal(t, 1, childNode.DirectUserCount)
+	require.Equal(t, 0, childNode.DirectAgentCount)
+	require.InDelta(t, childBusinessUSD, childNode.DirectTotalUsageUSD, 1e-9)
+	require.InDelta(t, childBusinessUSD, childNode.DirectUserUsageUSD, 1e-9)
+	require.InDelta(t, 0.0, childNode.DirectAgentUsageUSD, 1e-9)
 }
 
 func TestAffiliateDistributionRepository_SettleUsageDistribution_UsesOnlyPostLaunchPaidCredit(t *testing.T) {
@@ -761,6 +815,265 @@ func TestAffiliateDistributionRepository_SettleUsageDistribution_UsesOnlyPostLau
 	require.NoError(t, err)
 	require.InDelta(t, 5.0, businessUSD, 1e-9)
 	require.InDelta(t, 0.25, rebateRMB, 1e-9)
+}
+
+func TestAffiliateDistributionRepository_SettleUsageDistribution_UsesConfiguredDirectChildRateForConsumerMargin(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	affiliateRepo := NewAffiliateRepository(client, integrationDB)
+	distributionRepo := NewAffiliateDistributionRepository(client)
+	group := mustCreateGroup(t, client, &service.Group{
+		Name:           fmt.Sprintf("aff-dist-charged-rate-%d", time.Now().UnixNano()),
+		Platform:       service.PlatformOpenAI,
+		RateMultiplier: 0.3,
+		Status:         service.StatusActive,
+	})
+	inviter := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-charged-rate-inviter-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+	invitee := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-charged-rate-invitee-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+	for _, user := range []*service.User{inviter, invitee} {
+		_, err := affiliateRepo.EnsureUserAffiliate(txCtx, user.ID)
+		require.NoError(t, err)
+	}
+	bound, err := affiliateRepo.BindInviter(txCtx, invitee.ID, inviter.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+	_, err = distributionRepo.saveUserDistributionGroupRates(txCtx, inviter.ID, []service.AgentGroupRateInput{{GroupID: group.ID, RateMultiplier: 0.3}}, affiliateDistributionSourceAdminOverride)
+	require.NoError(t, err)
+	_, err = distributionRepo.saveUserDistributionGroupRates(txCtx, invitee.ID, []service.AgentGroupRateInput{{GroupID: group.ID, RateMultiplier: 2.5}}, affiliateDistributionSourceAdminOverride)
+	require.NoError(t, err)
+	require.InDelta(t, 2.5, querySingleFloat(t, txCtx, client, `
+SELECT rate_multiplier::double precision
+FROM affiliate_distribution_user_group_rates
+WHERE user_id = $1
+  AND group_id = $2
+  AND source_type = $3`, invitee.ID, group.ID, affiliateDistributionSourceAdminOverride), 1e-9)
+	rateRepo := &userGroupRateRepository{sql: client}
+	effectiveRate, err := rateRepo.GetByUserAndGroup(txCtx, invitee.ID, group.ID)
+	require.NoError(t, err)
+	require.NotNil(t, effectiveRate)
+	require.InDelta(t, 2.5, *effectiveRate, 1e-9)
+
+	now := truncateToUTCDate(time.Now()).Add(6 * time.Hour)
+	applied, err := distributionRepo.RecordPaidCredit(txCtx, invitee.ID, time.Now().UnixNano(), 25, now.Add(-time.Minute))
+	require.NoError(t, err)
+	require.True(t, applied)
+	createAffiliateDistributionUsageLogWithBilling(t, txCtx, client, invitee, now, "gpt-5.5", 10, 25, 2.5)
+	usageLogID := queryLatestUsageLogIDForUser(t, txCtx, client, invitee.ID)
+
+	require.NoError(t, distributionRepo.SettleUsageDistribution(txCtx, service.AffiliateDistributionUsageSettlementCommand{
+		UsageLogID:        usageLogID,
+		UserID:            invitee.ID,
+		GroupID:           group.ID,
+		Model:             "gpt-5.5",
+		RequestedModel:    "gpt-5.5",
+		TotalCost:         10,
+		ActualCost:        25,
+		RateMultiplier:    2.5,
+		HasRateMultiplier: true,
+		UsageCreatedAt:    now,
+	}))
+
+	require.InDelta(t, 25.0, querySingleFloat(t, txCtx, client, `
+SELECT usage_amount_usd::double precision
+FROM affiliate_distribution_paid_usage_settlements
+WHERE usage_log_id = $1`, usageLogID), 1e-9)
+	require.InDelta(t, 10.0, querySingleFloat(t, txCtx, client, `
+SELECT usage_amount_usd::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, inviter.ID), 1e-9)
+	require.InDelta(t, 2.5, querySingleFloat(t, txCtx, client, `
+SELECT child_rate_multiplier::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, inviter.ID), 1e-9)
+	require.InDelta(t, 2.2, querySingleFloat(t, txCtx, client, `
+SELECT rebate_amount::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, inviter.ID), 1e-9)
+	require.InDelta(t, 1.0, querySingleFloat(t, txCtx, client, `
+SELECT COALESCE(SUM(usage_amount_usd / 10), 0)::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, inviter.ID), 1e-9)
+
+	_, rebateRMB, err := distributionRepo.getDailyTotals(txCtx, inviter.ID, truncateToUTCDate(now))
+	require.NoError(t, err)
+	require.InDelta(t, 2.2, rebateRMB, 1e-9)
+
+	_, err = client.ExecContext(txCtx, `
+INSERT INTO user_group_rate_multipliers (user_id, group_id, rate_multiplier, created_at, updated_at)
+VALUES ($1, $2, $3, NOW(), NOW())`, invitee.ID, group.ID, 1.7)
+	require.NoError(t, err)
+	effectiveRate, err = rateRepo.GetByUserAndGroup(txCtx, invitee.ID, group.ID)
+	require.NoError(t, err)
+	require.NotNil(t, effectiveRate)
+	require.InDelta(t, 1.7, *effectiveRate, 1e-9)
+}
+
+func TestAffiliateDistributionRepository_SettleUsageDistribution_UsesInviteRateForDirectConsumerMargin(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	affiliateRepo := NewAffiliateRepository(client, integrationDB)
+	distributionRepo := NewAffiliateDistributionRepository(client)
+	group := mustCreateGroup(t, client, &service.Group{
+		Name:           fmt.Sprintf("aff-dist-invite-rate-%d", time.Now().UnixNano()),
+		Platform:       service.PlatformOpenAI,
+		RateMultiplier: 0.3,
+		Status:         service.StatusActive,
+	})
+	inviter := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-invite-rate-inviter-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+	invitee := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-invite-rate-invitee-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+	for _, user := range []*service.User{inviter, invitee} {
+		_, err := affiliateRepo.EnsureUserAffiliate(txCtx, user.ID)
+		require.NoError(t, err)
+	}
+	bound, err := affiliateRepo.BindInviter(txCtx, invitee.ID, inviter.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+	_, err = distributionRepo.saveUserDistributionGroupRates(txCtx, inviter.ID, []service.AgentGroupRateInput{{GroupID: group.ID, RateMultiplier: 0.3}}, affiliateDistributionSourceAdminOverride)
+	require.NoError(t, err)
+	_, err = distributionRepo.SaveInviteGroupRates(txCtx, inviter.ID, []service.AgentGroupRateInput{{GroupID: group.ID, RateMultiplier: 2.5}})
+	require.NoError(t, err)
+	rateRepo := &userGroupRateRepository{sql: client}
+	effectiveRate, err := rateRepo.GetByUserAndGroup(txCtx, invitee.ID, group.ID)
+	require.NoError(t, err)
+	require.NotNil(t, effectiveRate)
+	require.InDelta(t, 2.5, *effectiveRate, 1e-9)
+
+	now := truncateToUTCDate(time.Now()).Add(6 * time.Hour)
+	applied, err := distributionRepo.RecordPaidCredit(txCtx, invitee.ID, time.Now().UnixNano(), 25, now.Add(-time.Minute))
+	require.NoError(t, err)
+	require.True(t, applied)
+	createAffiliateDistributionUsageLogWithBilling(t, txCtx, client, invitee, now, "gpt-5.5", 10, 25, 2.5)
+	usageLogID := queryLatestUsageLogIDForUser(t, txCtx, client, invitee.ID)
+
+	require.NoError(t, distributionRepo.SettleUsageDistribution(txCtx, service.AffiliateDistributionUsageSettlementCommand{
+		UsageLogID:        usageLogID,
+		UserID:            invitee.ID,
+		GroupID:           group.ID,
+		Model:             "gpt-5.5",
+		RequestedModel:    "gpt-5.5",
+		TotalCost:         10,
+		ActualCost:        25,
+		RateMultiplier:    2.5,
+		HasRateMultiplier: true,
+		UsageCreatedAt:    now,
+	}))
+
+	require.InDelta(t, 2.5, querySingleFloat(t, txCtx, client, `
+SELECT child_rate_multiplier::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, inviter.ID), 1e-9)
+	require.InDelta(t, 2.2, querySingleFloat(t, txCtx, client, `
+SELECT rebate_amount::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, inviter.ID), 1e-9)
+
+	_, rebateRMB, err := distributionRepo.getDailyTotals(txCtx, inviter.ID, truncateToUTCDate(now))
+	require.NoError(t, err)
+	require.InDelta(t, 2.2, rebateRMB, 1e-9)
+}
+
+func TestAffiliateDistributionRepository_SettleUsageDistribution_ProratesRawUsageFromActualCost(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	affiliateRepo := NewAffiliateRepository(client, integrationDB)
+	distributionRepo := NewAffiliateDistributionRepository(client)
+	group := mustCreateGroup(t, client, &service.Group{
+		Name:           fmt.Sprintf("aff-dist-prorated-actual-%d", time.Now().UnixNano()),
+		Platform:       service.PlatformOpenAI,
+		RateMultiplier: 0.1,
+		Status:         service.StatusActive,
+	})
+	inviter := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-prorated-actual-inviter-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+	invitee := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-prorated-actual-invitee-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+	for _, user := range []*service.User{inviter, invitee} {
+		_, err := affiliateRepo.EnsureUserAffiliate(txCtx, user.ID)
+		require.NoError(t, err)
+	}
+	bound, err := affiliateRepo.BindInviter(txCtx, invitee.ID, inviter.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+	_, err = distributionRepo.saveUserDistributionGroupRates(txCtx, inviter.ID, []service.AgentGroupRateInput{{
+		GroupID:        group.ID,
+		RateMultiplier: 0.1,
+	}}, affiliateDistributionSourceAdminOverride)
+	require.NoError(t, err)
+
+	now := truncateToUTCDate(time.Now()).Add(7 * time.Hour)
+	applied, err := distributionRepo.RecordPaidCredit(txCtx, invitee.ID, time.Now().UnixNano(), 1.5, now.Add(-time.Minute))
+	require.NoError(t, err)
+	require.True(t, applied)
+	createAffiliateDistributionUsageLogWithBilling(t, txCtx, client, invitee, now, "gpt-5.5", 10, 3, 0.3)
+	usageLogID := queryLatestUsageLogIDForUser(t, txCtx, client, invitee.ID)
+
+	require.NoError(t, distributionRepo.SettleUsageDistribution(txCtx, service.AffiliateDistributionUsageSettlementCommand{
+		UsageLogID:        usageLogID,
+		UserID:            invitee.ID,
+		GroupID:           group.ID,
+		Model:             "gpt-5.5",
+		RequestedModel:    "gpt-5.5",
+		TotalCost:         10,
+		ActualCost:        3,
+		RateMultiplier:    0.3,
+		HasRateMultiplier: true,
+		UsageCreatedAt:    now,
+	}))
+
+	require.InDelta(t, 1.5, querySingleFloat(t, txCtx, client, `
+SELECT usage_amount_usd::double precision
+FROM affiliate_distribution_paid_usage_settlements
+WHERE usage_log_id = $1`, usageLogID), 1e-9)
+	require.InDelta(t, 5.0, querySingleFloat(t, txCtx, client, `
+SELECT usage_amount_usd::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, inviter.ID), 1e-9)
+	require.InDelta(t, 0.3, querySingleFloat(t, txCtx, client, `
+SELECT child_rate_multiplier::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, inviter.ID), 1e-9)
+
+	businessUSD, rebateRMB, err := distributionRepo.getDailyTotals(txCtx, inviter.ID, truncateToUTCDate(now))
+	require.NoError(t, err)
+	require.InDelta(t, 5.0, businessUSD, 1e-9)
+	require.InDelta(t, 0.1, rebateRMB, 1e-9)
 }
 
 func TestAffiliateDistributionRepository_SettleUsageDistribution_DoesNotBackfillPreCreditUsage(t *testing.T) {
@@ -1107,6 +1420,142 @@ func TestAffiliateDistributionRepository_ListDefaultUserGroupRates_FallsBackToGr
 	require.False(t, hasInactive)
 }
 
+func TestAffiliateDistributionRepository_SettleUsageDistribution_RootFallbackPricingUsesConfiguredDefaults(t *testing.T) {
+	testCases := []struct {
+		name               string
+		groupRate          float64
+		defaultRate        float64
+		saveDefault        bool
+		expectedParentRate float64
+		expectedSource     string
+	}{
+		{
+			name:               "default user-group rate",
+			groupRate:          2.2,
+			defaultRate:        1.4,
+			saveDefault:        true,
+			expectedParentRate: 1.4,
+			expectedSource:     affiliateDistributionSourceDefaultExplicit,
+		},
+		{
+			name:               "group multiplier fallback",
+			groupRate:          2.2,
+			saveDefault:        false,
+			expectedParentRate: 2.2,
+			expectedSource:     affiliateDistributionSourceGroupDefault,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			tx := testEntTx(t)
+			txCtx := dbent.NewTxContext(ctx, tx)
+			client := tx.Client()
+
+			affiliateRepo := NewAffiliateRepository(client, integrationDB)
+			distributionRepo := NewAffiliateDistributionRepository(client)
+			group := mustCreateGroup(t, client, &service.Group{
+				Name:             fmt.Sprintf("aff-dist-root-fallback-%d", time.Now().UnixNano()),
+				Platform:         service.PlatformAnthropic,
+				Status:           service.StatusActive,
+				SubscriptionType: service.SubscriptionTypeStandard,
+				RateMultiplier:   tc.groupRate,
+			})
+			root := mustCreateUser(t, client, &service.User{
+				Email:        fmt.Sprintf("aff-dist-root-fallback-root-%d@example.com", time.Now().UnixNano()),
+				PasswordHash: "hash",
+				Role:         service.RoleAdmin,
+				Status:       service.StatusActive,
+			})
+			agent := mustCreateUser(t, client, &service.User{
+				Email:        fmt.Sprintf("aff-dist-root-fallback-agent-%d@example.com", time.Now().UnixNano()),
+				PasswordHash: "hash",
+				Role:         service.RoleUser,
+				Status:       service.StatusActive,
+			})
+			consumer := mustCreateUser(t, client, &service.User{
+				Email:        fmt.Sprintf("aff-dist-root-fallback-consumer-%d@example.com", time.Now().UnixNano()),
+				PasswordHash: "hash",
+				Role:         service.RoleUser,
+				Status:       service.StatusActive,
+			})
+
+			rootSummary, err := affiliateRepo.EnsureUserAffiliate(txCtx, root.ID)
+			require.NoError(t, err)
+			require.Nil(t, rootSummary.InviterID)
+			for _, user := range []*service.User{agent, consumer} {
+				_, err := affiliateRepo.EnsureUserAffiliate(txCtx, user.ID)
+				require.NoError(t, err)
+			}
+			bound, err := affiliateRepo.BindInviter(txCtx, agent.ID, root.ID)
+			require.NoError(t, err)
+			require.True(t, bound)
+			bound, err = affiliateRepo.BindInviter(txCtx, consumer.ID, agent.ID)
+			require.NoError(t, err)
+			require.True(t, bound)
+
+			if tc.saveDefault {
+				_, err = distributionRepo.SaveDefaultUserGroupRates(txCtx, []service.AgentGroupRateInput{{
+					GroupID:        group.ID,
+					RateMultiplier: tc.defaultRate,
+				}})
+				require.NoError(t, err)
+			}
+			_, err = distributionRepo.saveUserDistributionGroupRates(txCtx, agent.ID, []service.AgentGroupRateInput{{
+				GroupID:        group.ID,
+				RateMultiplier: 2.8,
+			}}, affiliateDistributionSourceAdminOverride)
+			require.NoError(t, err)
+
+			rootRates, err := distributionRepo.GetUserDistributionGroupRates(txCtx, root.ID)
+			require.NoError(t, err)
+			rootRatesByGroup := make(map[int64]service.AgentGroupRate, len(rootRates))
+			for _, rate := range rootRates {
+				rootRatesByGroup[rate.GroupID] = rate
+			}
+			require.Contains(t, rootRatesByGroup, group.ID)
+			require.InDelta(t, tc.expectedParentRate, rootRatesByGroup[group.ID].RateMultiplier, 1e-9)
+			require.Equal(t, tc.expectedSource, rootRatesByGroup[group.ID].SourceType)
+			require.Zero(t, querySingleInt(t, txCtx, client, `
+SELECT COUNT(*)
+FROM affiliate_distribution_user_group_rates
+WHERE user_id = $1 AND group_id = $2`, root.ID, group.ID))
+
+			now := truncateToUTCDate(time.Now()).Add(8 * time.Hour)
+			applied, err := distributionRepo.RecordPaidCredit(txCtx, consumer.ID, time.Now().UnixNano(), 4, now.Add(-time.Minute))
+			require.NoError(t, err)
+			require.True(t, applied)
+			createAffiliateDistributionUsageLog(t, txCtx, client, consumer, now, "claude-3-5-sonnet", 4)
+			usageLogID := queryLatestUsageLogIDForUser(t, txCtx, client, consumer.ID)
+
+			require.NoError(t, distributionRepo.SettleUsageDistribution(txCtx, service.AffiliateDistributionUsageSettlementCommand{
+				UsageLogID:     usageLogID,
+				UserID:         consumer.ID,
+				GroupID:        group.ID,
+				Model:          "claude-3-5-sonnet",
+				RequestedModel: "claude-3-5-sonnet",
+				TotalCost:      4,
+				ActualCost:     4,
+				UsageCreatedAt: now,
+			}))
+
+			require.InDelta(t, tc.expectedParentRate, querySingleFloat(t, txCtx, client, `
+SELECT parent_rate_multiplier::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, root.ID), 1e-9)
+			require.InDelta(t, 2.8, querySingleFloat(t, txCtx, client, `
+SELECT child_rate_multiplier::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, root.ID), 1e-9)
+			require.InDelta(t, 4*(2.8-tc.expectedParentRate)/10, querySingleFloat(t, txCtx, client, `
+SELECT rebate_amount::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, root.ID), 1e-9)
+		})
+	}
+}
+
 func TestAffiliateDistributionRepository_AdminUpdateUserDistributionGroupRates_AllowsRecursiveDescendants(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -1188,7 +1637,102 @@ func TestAffiliateDistributionRepository_AdminUpdateUserDistributionGroupRates_A
 	require.Error(t, err)
 }
 
+func TestAffiliateDistributionRepository_SettleUsageDistribution_UsesShanghaiSettlementDay(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+
+	affiliateRepo := NewAffiliateRepository(client, integrationDB)
+	distributionRepo := NewAffiliateDistributionRepository(client)
+	group := mustCreateGroup(t, client, &service.Group{
+		Name:           fmt.Sprintf("aff-dist-shanghai-day-%d", time.Now().UnixNano()),
+		Platform:       service.PlatformOpenAI,
+		RateMultiplier: 1.0,
+		Status:         service.StatusActive,
+	})
+	root := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-shanghai-root-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleAdmin,
+		Status:       service.StatusActive,
+	})
+	consumer := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("aff-dist-shanghai-consumer-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	})
+
+	rootSummary, err := affiliateRepo.EnsureUserAffiliate(txCtx, root.ID)
+	require.NoError(t, err)
+	require.Nil(t, rootSummary.InviterID)
+	_, err = affiliateRepo.EnsureUserAffiliate(txCtx, consumer.ID)
+	require.NoError(t, err)
+	bound, err := affiliateRepo.BindInviter(txCtx, consumer.ID, root.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+	_, err = distributionRepo.saveUserDistributionGroupRates(txCtx, root.ID, []service.AgentGroupRateInput{{
+		GroupID:        group.ID,
+		RateMultiplier: 0.5,
+	}}, affiliateDistributionSourceAdminOverride)
+	require.NoError(t, err)
+	_, err = distributionRepo.saveUserDistributionGroupRates(txCtx, consumer.ID, []service.AgentGroupRateInput{{
+		GroupID:        group.ID,
+		RateMultiplier: 1.5,
+	}}, affiliateDistributionSourceAdminOverride)
+	require.NoError(t, err)
+
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	require.NoError(t, err)
+	usageAtUTC := time.Date(2026, time.January, 15, 16, 30, 0, 0, time.UTC)
+	expectedLocalDay := usageAtUTC.In(shanghai)
+	expectedSettlementDayText := expectedLocalDay.Format("2006-01-02")
+	expectedSettlementDay := time.Date(expectedLocalDay.Year(), expectedLocalDay.Month(), expectedLocalDay.Day(), 0, 0, 0, 0, time.UTC)
+	utcSettlementDay := truncateToUTCDate(usageAtUTC)
+
+	applied, err := distributionRepo.RecordPaidCredit(txCtx, consumer.ID, time.Now().UnixNano(), 4, usageAtUTC.Add(-time.Minute))
+	require.NoError(t, err)
+	require.True(t, applied)
+	createAffiliateDistributionUsageLog(t, txCtx, client, consumer, usageAtUTC, "gpt-4o", 4)
+	usageLogID := queryLatestUsageLogIDForUser(t, txCtx, client, consumer.ID)
+
+	require.NoError(t, distributionRepo.SettleUsageDistribution(txCtx, service.AffiliateDistributionUsageSettlementCommand{
+		UsageLogID:     usageLogID,
+		UserID:         consumer.ID,
+		GroupID:        group.ID,
+		Model:          "gpt-4o",
+		RequestedModel: "gpt-4o",
+		TotalCost:      4,
+		ActualCost:     4,
+		UsageCreatedAt: usageAtUTC,
+	}))
+
+	require.Equal(t, expectedSettlementDayText, querySingleString(t, txCtx, client, `
+SELECT settlement_day::text
+FROM affiliate_distribution_paid_usage_settlements
+WHERE usage_log_id = $1`, usageLogID))
+	require.Equal(t, expectedSettlementDayText, querySingleString(t, txCtx, client, `
+SELECT settlement_day::text
+FROM affiliate_distribution_usage_settlements
+WHERE usage_log_id = $1 AND beneficiary_user_id = $2`, usageLogID, root.ID))
+
+	businessUSD, rebateRMB, err := distributionRepo.getDailyTotals(txCtx, root.ID, expectedSettlementDay)
+	require.NoError(t, err)
+	require.InDelta(t, 4.0, businessUSD, 1e-9)
+	require.InDelta(t, 0.4, rebateRMB, 1e-9)
+
+	businessUSD, rebateRMB, err = distributionRepo.getDailyTotals(txCtx, root.ID, utcSettlementDay)
+	require.NoError(t, err)
+	require.Zero(t, businessUSD)
+	require.Zero(t, rebateRMB)
+}
+
 func createAffiliateDistributionUsageLog(t *testing.T, ctx context.Context, client *dbent.Client, user *service.User, createdAt time.Time, model string, totalCost float64) {
+	createAffiliateDistributionUsageLogWithBilling(t, ctx, client, user, createdAt, model, totalCost, totalCost, 0)
+}
+
+func createAffiliateDistributionUsageLogWithBilling(t *testing.T, ctx context.Context, client *dbent.Client, user *service.User, createdAt time.Time, model string, totalCost, actualCost, rateMultiplier float64) {
 	t.Helper()
 	apiKey := mustCreateApiKey(t, client, &service.APIKey{
 		UserID: user.ID,
@@ -1209,7 +1753,8 @@ func createAffiliateDistributionUsageLog(t *testing.T, ctx context.Context, clie
 		InputTokens:    10,
 		OutputTokens:   20,
 		TotalCost:      totalCost,
-		ActualCost:     totalCost,
+		ActualCost:     actualCost,
+		RateMultiplier: rateMultiplier,
 		CreatedAt:      createdAt,
 	})
 	require.NoError(t, err)

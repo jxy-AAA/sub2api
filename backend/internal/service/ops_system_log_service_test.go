@@ -132,8 +132,35 @@ func TestOpsServiceCleanupSystemLogs_RepoUnavailableAndInvalidOperator(t *testin
 	}
 
 	svc = NewOpsService(&opsRepoMock{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	if _, err := svc.CleanupSystemLogs(context.Background(), &OpsSystemLogCleanupFilter{RequestID: "r"}, 0); err == nil {
+	if _, err := svc.CleanupSystemLogs(context.Background(), &OpsSystemLogCleanupFilter{RequestID: "r"}, -1); err == nil {
 		t.Fatalf("expected invalid operator error")
+	}
+}
+
+func TestOpsServiceCleanupSystemLogs_AllowsSystemOperatorIDZero(t *testing.T) {
+	var audit *OpsSystemLogCleanupAudit
+	repo := &opsRepoMock{
+		DeleteSystemLogsFn: func(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error) {
+			return 2, nil
+		},
+		InsertSystemLogCleanupAuditFn: func(ctx context.Context, input *OpsSystemLogCleanupAudit) error {
+			audit = input
+			return nil
+		},
+	}
+	svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	deleted, err := svc.CleanupSystemLogs(context.Background(), &OpsSystemLogCleanupFilter{
+		RequestID: "sys-1",
+	}, 0)
+	if err != nil {
+		t.Fatalf("CleanupSystemLogs() error: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted=%d, want 2", deleted)
+	}
+	if audit == nil || audit.OperatorID != 0 {
+		t.Fatalf("expected system operator audit, got %+v", audit)
 	}
 }
 

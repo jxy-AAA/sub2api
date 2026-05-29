@@ -24,6 +24,9 @@ jobs:
       - name: Unit tests
         working-directory: backend
         run: make test-unit
+      - name: Race tests
+        working-directory: backend
+        run: make test-race
       - name: Contract tests
         working-directory: backend
         run: make test-contract

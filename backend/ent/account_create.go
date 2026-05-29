@@ -88,13 +88,13 @@ func (_c *AccountCreate) SetNillableNotes(v *string) *AccountCreate {
 }
 
 // SetPlatform sets the "platform" field.
-func (_c *AccountCreate) SetPlatform(v string) *AccountCreate {
+func (_c *AccountCreate) SetPlatform(v account.Platform) *AccountCreate {
 	_c.mutation.SetPlatform(v)
 	return _c
 }
 
 // SetType sets the "type" field.
-func (_c *AccountCreate) SetType(v string) *AccountCreate {
+func (_c *AccountCreate) SetType(v account.Type) *AccountCreate {
 	_c.mutation.SetType(v)
 	return _c
 }
@@ -182,13 +182,13 @@ func (_c *AccountCreate) SetNillableRateMultiplier(v *float64) *AccountCreate {
 }
 
 // SetStatus sets the "status" field.
-func (_c *AccountCreate) SetStatus(v string) *AccountCreate {
+func (_c *AccountCreate) SetStatus(v account.Status) *AccountCreate {
 	_c.mutation.SetStatus(v)
 	return _c
 }
 
 // SetNillableStatus sets the "status" field if the given value is not nil.
-func (_c *AccountCreate) SetNillableStatus(v *string) *AccountCreate {
+func (_c *AccountCreate) SetNillableStatus(v *account.Status) *AccountCreate {
 	if v != nil {
 		_c.SetStatus(*v)
 	}
@@ -618,11 +618,11 @@ func (_c *AccountCreate) createSpec() (*Account, *sqlgraph.CreateSpec) {
 		_node.Notes = &value
 	}
 	if value, ok := _c.mutation.Platform(); ok {
-		_spec.SetField(account.FieldPlatform, field.TypeString, value)
+		_spec.SetField(account.FieldPlatform, field.TypeEnum, value)
 		_node.Platform = value
 	}
 	if value, ok := _c.mutation.GetType(); ok {
-		_spec.SetField(account.FieldType, field.TypeString, value)
+		_spec.SetField(account.FieldType, field.TypeEnum, value)
 		_node.Type = value
 	}
 	if value, ok := _c.mutation.Credentials(); ok {
@@ -650,7 +650,7 @@ func (_c *AccountCreate) createSpec() (*Account, *sqlgraph.CreateSpec) {
 		_node.RateMultiplier = value
 	}
 	if value, ok := _c.mutation.Status(); ok {
-		_spec.SetField(account.FieldStatus, field.TypeString, value)
+		_spec.SetField(account.FieldStatus, field.TypeEnum, value)
 		_node.Status = value
 	}
 	if value, ok := _c.mutation.ErrorMessage(); ok {
@@ -871,7 +871,7 @@ func (u *AccountUpsert) ClearNotes() *AccountUpsert {
 }
 
 // SetPlatform sets the "platform" field.
-func (u *AccountUpsert) SetPlatform(v string) *AccountUpsert {
+func (u *AccountUpsert) SetPlatform(v account.Platform) *AccountUpsert {
 	u.Set(account.FieldPlatform, v)
 	return u
 }
@@ -883,7 +883,7 @@ func (u *AccountUpsert) UpdatePlatform() *AccountUpsert {
 }
 
 // SetType sets the "type" field.
-func (u *AccountUpsert) SetType(v string) *AccountUpsert {
+func (u *AccountUpsert) SetType(v account.Type) *AccountUpsert {
 	u.Set(account.FieldType, v)
 	return u
 }
@@ -1015,7 +1015,7 @@ func (u *AccountUpsert) AddRateMultiplier(v float64) *AccountUpsert {
 }
 
 // SetStatus sets the "status" field.
-func (u *AccountUpsert) SetStatus(v string) *AccountUpsert {
+func (u *AccountUpsert) SetStatus(v account.Status) *AccountUpsert {
 	u.Set(account.FieldStatus, v)
 	return u
 }
@@ -1364,7 +1364,7 @@ func (u *AccountUpsertOne) ClearNotes() *AccountUpsertOne {
 }
 
 // SetPlatform sets the "platform" field.
-func (u *AccountUpsertOne) SetPlatform(v string) *AccountUpsertOne {
+func (u *AccountUpsertOne) SetPlatform(v account.Platform) *AccountUpsertOne {
 	return u.Update(func(s *AccountUpsert) {
 		s.SetPlatform(v)
 	})
@@ -1378,7 +1378,7 @@ func (u *AccountUpsertOne) UpdatePlatform() *AccountUpsertOne {
 }
 
 // SetType sets the "type" field.
-func (u *AccountUpsertOne) SetType(v string) *AccountUpsertOne {
+func (u *AccountUpsertOne) SetType(v account.Type) *AccountUpsertOne {
 	return u.Update(func(s *AccountUpsert) {
 		s.SetType(v)
 	})
@@ -1532,7 +1532,7 @@ func (u *AccountUpsertOne) UpdateRateMultiplier() *AccountUpsertOne {
 }
 
 // SetStatus sets the "status" field.
-func (u *AccountUpsertOne) SetStatus(v string) *AccountUpsertOne {
+func (u *AccountUpsertOne) SetStatus(v account.Status) *AccountUpsertOne {
 	return u.Update(func(s *AccountUpsert) {
 		s.SetStatus(v)
 	})
@@ -2086,7 +2086,7 @@ func (u *AccountUpsertBulk) ClearNotes() *AccountUpsertBulk {
 }
 
 // SetPlatform sets the "platform" field.
-func (u *AccountUpsertBulk) SetPlatform(v string) *AccountUpsertBulk {
+func (u *AccountUpsertBulk) SetPlatform(v account.Platform) *AccountUpsertBulk {
 	return u.Update(func(s *AccountUpsert) {
 		s.SetPlatform(v)
 	})
@@ -2100,7 +2100,7 @@ func (u *AccountUpsertBulk) UpdatePlatform() *AccountUpsertBulk {
 }
 
 // SetType sets the "type" field.
-func (u *AccountUpsertBulk) SetType(v string) *AccountUpsertBulk {
+func (u *AccountUpsertBulk) SetType(v account.Type) *AccountUpsertBulk {
 	return u.Update(func(s *AccountUpsert) {
 		s.SetType(v)
 	})
@@ -2254,7 +2254,7 @@ func (u *AccountUpsertBulk) UpdateRateMultiplier() *AccountUpsertBulk {
 }
 
 // SetStatus sets the "status" field.
-func (u *AccountUpsertBulk) SetStatus(v string) *AccountUpsertBulk {
+func (u *AccountUpsertBulk) SetStatus(v account.Status) *AccountUpsertBulk {
 	return u.Update(func(s *AccountUpsert) {
 		s.SetStatus(v)
 	})

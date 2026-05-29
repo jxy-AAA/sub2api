@@ -16,18 +16,79 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'; import { useI18n } from 'vue-i18n'; import Select from '@/components/common/Select.vue'; import SearchInput from '@/components/common/SearchInput.vue'
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import Select from '@/components/common/Select.vue'
+import SearchInput from '@/components/common/SearchInput.vue'
 import type { AdminGroup } from '@/types'
+import { getPlatformDisplayName, getProtocolDisplayName, isCompatiblePlatform } from '@/utils/platforms'
+
+const PLATFORM_ORDER = [
+  'anthropic',
+  'anthropic_compatible',
+  'openai',
+  'openai_compatible',
+  'gemini',
+  'antigravity',
+] as const
+
 const props = defineProps<{ searchQuery: string; filters: Record<string, any>; groups?: AdminGroup[] }>()
-const emit = defineEmits(['update:searchQuery', 'update:filters', 'change']); const { t } = useI18n()
-const updatePlatform = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, platform: value }) }
-const updateType = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, type: value }) }
-const updateStatus = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, status: value }) }
-const updatePrivacyMode = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, privacy_mode: value }) }
-const updateGroup = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, group: value }) }
-const pOpts = computed(() => [{ value: '', label: t('admin.accounts.allPlatforms') }, { value: 'anthropic', label: 'Anthropic' }, { value: 'openai', label: 'OpenAI' }, { value: 'gemini', label: 'Gemini' }, { value: 'antigravity', label: 'Antigravity' }])
-const tOpts = computed(() => [{ value: '', label: t('admin.accounts.allTypes') }, { value: 'oauth', label: t('admin.accounts.oauthType') }, { value: 'setup-token', label: t('admin.accounts.setupToken') }, { value: 'apikey', label: t('admin.accounts.apiKey') }, { value: 'bedrock', label: 'AWS Bedrock' }])
-const sOpts = computed(() => [{ value: '', label: t('admin.accounts.allStatus') }, { value: 'active', label: t('admin.accounts.status.active') }, { value: 'inactive', label: t('admin.accounts.status.inactive') }, { value: 'error', label: t('admin.accounts.status.error') }, { value: 'rate_limited', label: t('admin.accounts.status.rateLimited') }, { value: 'temp_unschedulable', label: t('admin.accounts.status.tempUnschedulable') }, { value: 'unschedulable', label: t('admin.accounts.status.unschedulable') }])
+const emit = defineEmits(['update:searchQuery', 'update:filters', 'change'])
+const { t } = useI18n()
+
+const updatePlatform = (value: string | number | boolean | null) => {
+  emit('update:filters', { ...props.filters, platform: value })
+}
+const updateType = (value: string | number | boolean | null) => {
+  emit('update:filters', { ...props.filters, type: value })
+}
+const updateStatus = (value: string | number | boolean | null) => {
+  emit('update:filters', { ...props.filters, status: value })
+}
+const updatePrivacyMode = (value: string | number | boolean | null) => {
+  emit('update:filters', { ...props.filters, privacy_mode: value })
+}
+const updateGroup = (value: string | number | boolean | null) => {
+  emit('update:filters', { ...props.filters, group: value })
+}
+
+const platformRank = (platform: string) => {
+  const index = PLATFORM_ORDER.indexOf(platform as (typeof PLATFORM_ORDER)[number])
+  return index === -1 ? PLATFORM_ORDER.length : index
+}
+
+const formatPlatformLabel = (platform: string) =>
+  isCompatiblePlatform(platform) ? getProtocolDisplayName(platform) : getPlatformDisplayName(platform)
+
+const formatGroupLabel = (group: AdminGroup) => `${group.name} (${formatPlatformLabel(group.platform)})`
+
+const pOpts = computed(() => [
+  { value: '', label: t('admin.accounts.allPlatforms') },
+  ...PLATFORM_ORDER.map((platform) => ({
+    value: platform,
+    label: formatPlatformLabel(platform),
+  })),
+])
+
+const tOpts = computed(() => [
+  { value: '', label: t('admin.accounts.allTypes') },
+  { value: 'oauth', label: t('admin.accounts.oauthType') },
+  { value: 'setup-token', label: t('admin.accounts.setupToken') },
+  { value: 'apikey', label: t('admin.accounts.apiKey') },
+  { value: 'upstream', label: t('admin.accounts.types.upstream') },
+  { value: 'bedrock', label: 'AWS Bedrock' },
+])
+
+const sOpts = computed(() => [
+  { value: '', label: t('admin.accounts.allStatus') },
+  { value: 'active', label: t('admin.accounts.status.active') },
+  { value: 'inactive', label: t('admin.accounts.status.inactive') },
+  { value: 'error', label: t('admin.accounts.status.error') },
+  { value: 'rate_limited', label: t('admin.accounts.status.rateLimited') },
+  { value: 'temp_unschedulable', label: t('admin.accounts.status.tempUnschedulable') },
+  { value: 'unschedulable', label: t('admin.accounts.status.unschedulable') },
+])
+
 const privacyOpts = computed(() => [
   { value: '', label: t('admin.accounts.allPrivacyModes') },
   { value: '__unset__', label: t('admin.accounts.privacyUnset') },
@@ -38,6 +99,28 @@ const privacyOpts = computed(() => [
 const gOpts = computed(() => [
   { value: '', label: t('admin.accounts.allGroups') },
   { value: 'ungrouped', label: t('admin.accounts.ungroupedGroup') },
-  ...(props.groups || []).map(g => ({ value: String(g.id), label: g.name }))
+  ...(props.groups || [])
+    .slice()
+    .sort((left, right) => {
+      const platformDiff = platformRank(left.platform) - platformRank(right.platform)
+      if (platformDiff !== 0) {
+        return platformDiff
+      }
+      return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
+    })
+    .flatMap((group, index, allGroups) => {
+      const options: Array<Record<string, unknown>> = []
+      const previousPlatform = index > 0 ? allGroups[index - 1].platform : null
+      if (group.platform !== previousPlatform) {
+        options.push({
+          kind: 'group',
+          value: `__group__${group.platform}`,
+          label: formatPlatformLabel(group.platform),
+          disabled: true,
+        })
+      }
+      options.push({ value: String(group.id), label: formatGroupLabel(group) })
+      return options
+    })
 ])
 </script>

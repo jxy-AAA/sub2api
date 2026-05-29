@@ -19,6 +19,7 @@ const showInfo = vi.hoisted(() => vi.fn())
 const showWarning = vi.hoisted(() => vi.fn())
 const getCheckoutInfo = vi.hoisted(() => vi.fn())
 const bridgeInvoke = vi.hoisted(() => vi.fn())
+const isMobileDeviceMock = vi.hoisted(() => vi.fn(() => true))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -81,7 +82,7 @@ vi.mock('@/api/payment', () => ({
 }))
 
 vi.mock('@/utils/device', () => ({
-  isMobileDevice: () => true,
+  isMobileDevice: isMobileDeviceMock,
 }))
 
 function checkoutInfoFixture() {
@@ -198,6 +199,8 @@ describe('PaymentView WeChat JSAPI flow', () => {
     showWarning.mockReset()
     getCheckoutInfo.mockReset().mockResolvedValue(checkoutInfoFixture())
     bridgeInvoke.mockReset()
+    isMobileDeviceMock.mockReset()
+    isMobileDeviceMock.mockReturnValue(true)
     window.localStorage.clear()
     ;(window as Window & { WeixinJSBridge?: { invoke: typeof bridgeInvoke } }).WeixinJSBridge = {
       invoke: bridgeInvoke,
@@ -412,5 +415,165 @@ describe('PaymentView WeChat JSAPI flow', () => {
     expect(recoveryRaw).toContain('"payUrl":""')
     expect(recoveryRaw).toContain('"clientSecret":""')
     expect(recoveryRaw).not.toContain('resume-token-h5')
+  })
+
+  it('routes dedicated Stripe payments without leaking client_secret or resume_token into the URL', async () => {
+    routeState.query = {}
+    getCheckoutInfo.mockResolvedValue({
+      data: {
+        methods: {
+          stripe: {
+            daily_limit: 0,
+            daily_used: 0,
+            daily_remaining: 0,
+            single_min: 0,
+            single_max: 0,
+            fee_rate: 0,
+            available: true,
+          },
+        },
+        global_min: 0,
+        global_max: 0,
+        plans: [],
+        balance_disabled: false,
+        balance_recharge_multiplier: 1,
+        recharge_fee_rate: 0,
+        help_text: '',
+        help_image_url: '',
+        stripe_publishable_key: 'pk_test_123',
+      },
+    })
+    createOrder.mockResolvedValue({
+      order_id: 901,
+      amount: 25,
+      pay_amount: 25,
+      fee_rate: 0,
+      expires_at: '2099-01-01T00:10:00.000Z',
+      payment_type: 'stripe',
+      client_secret: 'cs_test_secret_901',
+      resume_token: 'resume-token-901',
+    })
+
+    const wrapper = shallowMount(PaymentView, {
+      global: {
+        stubs: {
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+
+    ;(wrapper.vm as unknown as { amount: number }).amount = 25
+    await flushPromises()
+    await (wrapper.vm as unknown as { handleSubmitRecharge: () => Promise<void> }).handleSubmitRecharge()
+    await flushPromises()
+
+    const stripeRouteLocation = routerResolve.mock.calls.find(([arg]) => arg?.path === '/payment/stripe')?.[0]
+    expect(stripeRouteLocation.path).toBe('/payment/stripe')
+    expect(stripeRouteLocation.query.order_id).toBe('901')
+    expect(stripeRouteLocation.query.session_id).toEqual(expect.any(String))
+    expect(stripeRouteLocation.query.client_secret).toBeUndefined()
+    expect(stripeRouteLocation.query.resume_token).toBeUndefined()
+    expect(routerPush).toHaveBeenCalledWith('/payment/stripe?mock=1')
+
+    const recoveryRaw = window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY) || ''
+    expect(recoveryRaw).not.toContain('cs_test_secret_901')
+    expect(recoveryRaw).not.toContain('resume-token-901')
+  })
+
+  it('opens the Stripe popup with postMessage init and keeps secrets out of popup URLs', async () => {
+    isMobileDeviceMock.mockReturnValue(false)
+    routeState.query = {}
+    getCheckoutInfo.mockResolvedValue({
+      data: {
+        methods: {
+          alipay: {
+            daily_limit: 0,
+            daily_used: 0,
+            daily_remaining: 0,
+            single_min: 0,
+            single_max: 0,
+            fee_rate: 0,
+            available: true,
+          },
+        },
+        global_min: 0,
+        global_max: 0,
+        plans: [],
+        balance_disabled: false,
+        balance_recharge_multiplier: 1,
+        recharge_fee_rate: 0,
+        help_text: '',
+        help_image_url: '',
+        stripe_publishable_key: 'pk_test_popup',
+      },
+    })
+    createOrder.mockResolvedValue({
+      order_id: 902,
+      amount: 30,
+      pay_amount: 30,
+      fee_rate: 0,
+      expires_at: '2099-01-01T00:10:00.000Z',
+      payment_type: 'alipay',
+      client_secret: 'cs_test_secret_902',
+      resume_token: 'resume-token-902',
+    })
+    routerResolve
+      .mockReset()
+      .mockReturnValueOnce({ href: '/payment/stripe-popup?opaque=1' })
+      .mockReturnValueOnce({ href: '/payment/stripe?opaque=2' })
+
+    const popupPostMessage = vi.fn()
+    const popupClose = vi.fn()
+    const fakePopup = {
+      closed: false,
+      postMessage: popupPostMessage,
+      close: popupClose,
+    }
+    const windowOpen = vi.spyOn(window, 'open').mockReturnValue(fakePopup as unknown as Window)
+
+    const wrapper = shallowMount(PaymentView, {
+      global: {
+        stubs: {
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+
+    ;(wrapper.vm as unknown as { amount: number }).amount = 30
+    await flushPromises()
+    await (wrapper.vm as unknown as { handleSubmitRecharge: () => Promise<void> }).handleSubmitRecharge()
+    await flushPromises()
+
+    const popupLocation = routerResolve.mock.calls[0]?.[0]
+    const fallbackLocation = routerResolve.mock.calls[1]?.[0]
+    expect(popupLocation.path).toBe('/payment/stripe-popup')
+    expect(popupLocation.query.client_secret).toBeUndefined()
+    expect(popupLocation.query.resume_token).toBeUndefined()
+    expect(fallbackLocation.path).toBe('/payment/stripe')
+    expect(fallbackLocation.query.client_secret).toBeUndefined()
+    expect(fallbackLocation.query.resume_token).toBeUndefined()
+
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: window.location.origin,
+      data: { type: 'STRIPE_POPUP_READY' },
+      source: fakePopup as unknown as MessageEventSource,
+    }))
+    await flushPromises()
+
+    expect(windowOpen).toHaveBeenCalledWith('/payment/stripe-popup?opaque=1', 'paymentPopup', expect.any(String))
+    expect(popupPostMessage).toHaveBeenCalledWith({
+      type: 'STRIPE_POPUP_INIT',
+      clientSecret: 'cs_test_secret_902',
+      publishableKey: 'pk_test_popup',
+      resumeToken: 'resume-token-902',
+    }, window.location.origin)
+    expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY) || '').not.toContain('cs_test_secret_902')
+    expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY) || '').not.toContain('resume-token-902')
+
+    windowOpen.mockRestore()
   })
 })

@@ -63,6 +63,8 @@ func (h *ProxyHandler) ExportData(c *gin.Context) {
 	}
 
 	payload := DataPayload{
+		Type:       dataType,
+		Version:    dataVersion,
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
 		Proxies:    dataProxies,
 		Accounts:   []DataAccount{},
@@ -106,11 +108,8 @@ func (h *ProxyHandler) ImportData(c *gin.Context) {
 
 	latencyProbeIDs := make([]int64, 0, len(req.Data.Proxies))
 	for i := range req.Data.Proxies {
-		item := req.Data.Proxies[i]
+		item := canonicalizeDataProxy(req.Data.Proxies[i])
 		key := item.ProxyKey
-		if key == "" {
-			key = buildProxyKey(item.Protocol, item.Host, item.Port, item.Username, item.Password)
-		}
 
 		if err := validateDataProxy(item); err != nil {
 			result.ProxyFailed++

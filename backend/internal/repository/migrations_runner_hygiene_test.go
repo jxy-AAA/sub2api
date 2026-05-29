@@ -46,6 +46,8 @@ func TestMigrationsHygiene_NoUnexpectedDuplicateNumericPrefixes(t *testing.T) {
 		"127": {"127_add_user_group_rpm_override.sql", "127_drop_channel_monitor_deleted_at.sql"},
 		"134": {"134_affiliate_ledger_audit_snapshots.sql", "134_image_generation_group_controls.sql"},
 		"135": {"135_allow_email_oauth_provider_types.sql", "135_content_moderation.sql"},
+		"147": {"147_add_model_interaction_traces.sql", "147_add_model_trace_captures.sql"},
+		"148": {"148_harden_model_interaction_traces.sql", "148_model_trace_captures_constraints.sql"},
 	}
 	require.Equal(t, expected, actual)
 }

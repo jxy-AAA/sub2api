@@ -69,6 +69,7 @@ type AdminService interface {
 
 	// Account management
 	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]Account, int64, error)
+	ListModelInteractionTraces(ctx context.Context, startTime, endTime *time.Time) ([]*ModelInteractionTrace, error)
 	GetAccount(ctx context.Context, id int64) (*Account, error)
 	GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
 	CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error)
@@ -532,6 +533,7 @@ type adminServiceImpl struct {
 	userSubRepo          UserSubscriptionRepository
 	privacyClientFactory PrivacyClientFactory
 	usageLogRepo         UsageLogRepository
+	traceRepo            ModelInteractionTraceRepository
 }
 
 type userGroupRateBatchReader interface {
@@ -558,6 +560,7 @@ func NewAdminService(
 	userSubRepo UserSubscriptionRepository,
 	privacyClientFactory PrivacyClientFactory,
 	usageLogRepo UsageLogRepository,
+	traceRepo ModelInteractionTraceRepository,
 ) AdminService {
 	return &adminServiceImpl{
 		userRepo:             userRepo,
@@ -578,6 +581,7 @@ func NewAdminService(
 		userSubRepo:          userSubRepo,
 		privacyClientFactory: privacyClientFactory,
 		usageLogRepo:         usageLogRepo,
+		traceRepo:            traceRepo,
 	}
 }
 
@@ -1729,14 +1733,14 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	}
 
 	// require_oauth_only: 过滤掉 apikey 类型账号
-	if group.RequireOAuthOnly && (group.Platform == PlatformOpenAI || group.Platform == PlatformAntigravity || group.Platform == PlatformAnthropic || group.Platform == PlatformGemini) && len(accountIDsToCopy) > 0 {
+	if group.RequireOAuthOnly && IsOAuthOnlyGroupPlatform(group.Platform) && len(accountIDsToCopy) > 0 {
 		accounts, err := s.accountRepo.GetByIDs(ctx, accountIDsToCopy)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch accounts for oauth filter: %w", err)
 		}
 		oauthIDs := make(map[int64]struct{}, len(accounts))
 		for _, acc := range accounts {
-			if acc.Type != AccountTypeAPIKey {
+			if !IsStaticKeyAccountType(acc.Type) {
 				oauthIDs[acc.ID] = struct{}{}
 			}
 		}
@@ -2021,14 +2025,14 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		}
 
 		// require_oauth_only: 过滤掉 apikey 类型账号
-		if group.RequireOAuthOnly && (group.Platform == PlatformOpenAI || group.Platform == PlatformAntigravity || group.Platform == PlatformAnthropic || group.Platform == PlatformGemini) && len(accountIDsToCopy) > 0 {
+		if group.RequireOAuthOnly && IsOAuthOnlyGroupPlatform(group.Platform) && len(accountIDsToCopy) > 0 {
 			accounts, err := s.accountRepo.GetByIDs(ctx, accountIDsToCopy)
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch accounts for oauth filter: %w", err)
 			}
 			oauthIDs := make(map[int64]struct{}, len(accounts))
 			for _, acc := range accounts {
-				if acc.Type != AccountTypeAPIKey {
+				if !IsStaticKeyAccountType(acc.Type) {
 					oauthIDs[acc.ID] = struct{}{}
 				}
 			}
@@ -2383,19 +2387,36 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if err := validateCompatibleProviderAccount(input.Platform, input.Type, input.Credentials); err != nil {
+		return nil, err
+	}
 	// 绑定分组
 	groupIDs := input.GroupIDs
 	// 如果没有指定分组,自动绑定对应平台的默认分组
 	if len(groupIDs) == 0 && !input.SkipDefaultGroupBind {
-		defaultGroupName := input.Platform + "-default"
+		defaultGroupNames := DefaultGroupNameCandidates(input.Platform)
 		groups, err := s.groupRepo.ListActiveByPlatform(ctx, input.Platform)
 		if err == nil {
-			for _, g := range groups {
-				if g.Name == defaultGroupName {
-					groupIDs = []int64{g.ID}
+			for _, defaultGroupName := range defaultGroupNames {
+				for _, g := range groups {
+					if g.Name == defaultGroupName {
+						groupIDs = []int64{g.ID}
+						break
+					}
+				}
+				if len(groupIDs) > 0 {
 					break
 				}
 			}
+		}
+	}
+
+	if len(groupIDs) > 0 {
+		if err := s.validateGroupIDsExist(ctx, groupIDs); err != nil {
+			return nil, err
+		}
+		if err := validateRequireOAuthOnlyGroupsForRepo(ctx, s.groupRepo, input.Type, groupIDs); err != nil {
+			return nil, err
 		}
 	}
 
@@ -2578,10 +2599,16 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.AutoPauseOnExpired != nil {
 		account.AutoPauseOnExpired = *input.AutoPauseOnExpired
 	}
+	if err := validateCompatibleProviderAccount(account.Platform, account.Type, account.Credentials); err != nil {
+		return nil, err
+	}
 
 	// 先验证分组是否存在（在任何写操作之前）
 	if input.GroupIDs != nil {
 		if err := s.validateGroupIDsExist(ctx, *input.GroupIDs); err != nil {
+			return nil, err
+		}
+		if err := validateRequireOAuthOnlyGroupsForRepo(ctx, s.groupRepo, account.Type, *input.GroupIDs); err != nil {
 			return nil, err
 		}
 
@@ -2639,10 +2666,12 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
+	needAccountPreload := input.GroupIDs != nil
 
 	// 预加载账号平台信息（混合渠道检查需要）。
 	platformByID := map[int64]string{}
-	if needMixedChannelCheck {
+	typeByID := map[int64]string{}
+	if needAccountPreload {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -2650,6 +2679,19 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		for _, account := range accounts {
 			if account != nil {
 				platformByID[account.ID] = account.Platform
+				typeByID[account.ID] = account.Type
+			}
+		}
+	}
+
+	if input.GroupIDs != nil {
+		for _, accountID := range input.AccountIDs {
+			accountType := typeByID[accountID]
+			if accountType == "" {
+				continue
+			}
+			if err := validateRequireOAuthOnlyGroupsForRepo(ctx, s.groupRepo, accountType, *input.GroupIDs); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -3562,7 +3604,7 @@ func getAccountPlatform(accountPlatform string) string {
 	switch strings.ToLower(strings.TrimSpace(accountPlatform)) {
 	case PlatformAntigravity:
 		return "Antigravity"
-	case PlatformAnthropic, "claude":
+	case PlatformAnthropic, PlatformAnthropicCompatible, "claude":
 		return "Anthropic"
 	default:
 		return ""

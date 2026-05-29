@@ -184,6 +184,9 @@ export default {
   setup: {
     title: 'Sub2API Setup',
     description: 'Configure your Sub2API instance',
+    remoteTokenTitle: 'Remote setup token required',
+    remoteTokenHint: 'This setup request is not local. Enter the setup token configured by the administrator to continue.',
+    remoteTokenPlaceholder: 'Paste setup token',
     database: {
       title: 'Database Configuration',
       description: 'Connect to your PostgreSQL database',
@@ -260,6 +263,7 @@ export default {
     search: 'Search',
     filter: 'Filter',
     export: 'Export',
+    download: 'Download',
     import: 'Import',
     actions: 'Actions',
     status: 'Status',
@@ -360,6 +364,8 @@ export default {
     groups: 'Groups',
     channels: 'Channels',
     availableChannels: 'Available Channels',
+    modelMarket: 'Model Market',
+    traces: 'Trace Management',
     subscriptions: 'Subscriptions',
     accounts: 'Accounts',
     proxies: 'Proxies',
@@ -664,6 +670,10 @@ export default {
     copyToClipboard: 'Copy to clipboard',
     copied: 'Copied!',
     importToCcSwitch: 'Import to CCS',
+    configureClaudeCode: 'Claude Code',
+    configureOpenClaw: 'OpenClaw',
+    configureClaudeCodeCopied: 'Claude Code configuration command copied. Run it in PowerShell to update the local key.',
+    configureOpenClawCopied: 'OpenClaw configuration command copied. Run it in PowerShell to update the local key.',
     enable: 'Enable',
     disable: 'Disable',
     nameLabel: 'Name',
@@ -998,14 +1008,66 @@ export default {
     }
   },
 
+  modelMarket: {
+    title: 'Model Market',
+    description: 'Browse the models, compatible protocols, accessible channels, and pricing available to your account',
+    searchPlaceholder: 'Search models, providers, or channels...',
+    count: 'Showing {filtered} of {total} models',
+    filters: {
+      protocol: 'Protocol',
+      provider: 'Provider',
+      capability: 'Capability / Tag',
+      allProtocols: 'All protocols',
+      allProviders: 'All providers',
+      allCapabilities: 'All capabilities'
+    },
+    fields: {
+      provider: 'Provider / Platform',
+      contextWindow: 'Context Window',
+      channels: 'Channels'
+    },
+    sections: {
+      pricing: 'Pricing',
+      capabilities: 'Capabilities',
+      tags: 'Tags',
+      channels: 'Available Channels'
+    },
+    badges: {
+      recommended: 'Recommended',
+      tieredPricing: 'Tiered pricing'
+    },
+    status: {
+      active: 'Active',
+      hidden: 'Hidden',
+      disabled: 'Disabled',
+      unavailable: 'Unavailable'
+    },
+    protocolLabels: {
+      openai: 'OpenAI API',
+      anthropic: 'Anthropic API'
+    },
+    emptyTitle: 'No models available yet',
+    emptyDescription: 'Published models you can access will appear here with compatibility and pricing details.',
+    emptyFilteredTitle: 'No matching models',
+    emptyFilteredDescription: 'Try adjusting your search terms or filters.',
+    errorTitle: 'Failed to load model market',
+    noPricing: 'Pricing unavailable',
+    noCapabilities: 'No capability tags',
+    noChannels: 'No accessible channel details',
+    unknownContext: 'Unknown',
+    unknownProtocol: 'Unknown protocol',
+    unknownProvider: 'Unknown provider'
+  },
+
   affiliate: {
     title: 'Agent Distribution',
     description: 'Manage your agent code, model pricing and downstream revenue',
     yourCode: 'My Agent Code',
-    inviteLink: 'Invite Link',
-    copyCode: 'Copy Code',
-    copyLink: 'Copy Link',
-    codeCopied: 'Agent code copied',
+      inviteLink: 'Invite Link',
+      copyCode: 'Copy Code',
+      copyLink: 'Copy Link',
+      generateInviteLink: 'Generate Invite Link',
+      codeCopied: 'Agent code copied',
     linkCopied: 'Invite link copied',
     loadFailed: 'Failed to load agent distribution data',
     transferFailed: 'Failed to transfer affiliate quota',
@@ -1430,6 +1492,299 @@ export default {
       requestsShort: 'Req',
       tokensShort: 'Tok',
       failedToLoad: 'Failed to load dashboard statistics'
+    },
+
+    modelMarket: {
+      title: 'Model Market',
+      description: 'Manage catalog metadata for user-facing model discovery and compatibility hints',
+      searchPlaceholder: 'Search models, providers, or capabilities...',
+      createModel: 'Create Model',
+      editModel: 'Edit Model',
+      deleteModel: 'Delete Model',
+      importFromChannels: 'Import from Channels',
+      importSuccess: 'Imported {imported} models, updated {updated} models',
+      importFailed: 'Failed to import models from channels',
+      modelCreated: 'Model created successfully',
+      modelUpdated: 'Model updated successfully',
+      modelDeleted: 'Model deleted successfully',
+      saveFailed: 'Failed to save model',
+      loadFailed: 'Failed to load model market data',
+      deleteFailed: 'Failed to delete model',
+      deleteConfirm: 'Are you sure you want to delete "{name}"?',
+      emptyTitle: 'No models in the catalog yet',
+      emptyDescription: 'Create a model or import models from channel pricing to populate the marketplace.',
+      availableChannelCount: '{count} available channels',
+      allProtocols: 'All protocols',
+      allStatuses: 'All statuses',
+      allProviders: 'All providers',
+      allCapabilities: 'All capabilities',
+      protocols: {
+        openai: 'OpenAI API',
+        anthropic: 'Anthropic API'
+      },
+      statuses: {
+        active: 'Active',
+        hidden: 'Hidden',
+        disabled: 'Disabled'
+      },
+      columns: {
+        model: 'Model',
+        provider: 'Provider',
+        capabilities: 'Capabilities',
+        contextWindow: 'Context Window',
+        status: 'Status',
+        sortOrder: 'Sort Order',
+        updatedAt: 'Updated At',
+        actions: 'Actions'
+      },
+      form: {
+        displayName: 'Display Name',
+        displayNamePlaceholder: 'e.g. Claude Sonnet 4',
+        modelId: 'Model ID',
+        modelIdPlaceholder: 'e.g. claude-sonnet-4',
+        providerKey: 'Provider Key',
+        providerKeyPlaceholder: 'e.g. anthropic_compatible',
+        protocol: 'Protocol',
+        capabilities: 'Capabilities',
+        capabilitiesPlaceholder: 'e.g. chat, tools, vision',
+        capabilitiesHint: 'Comma-separated capability labels shown to users.',
+        tags: 'Tags',
+        tagsPlaceholder: 'e.g. recommended, coding',
+        tagsHint: 'Comma-separated tags for highlighting or filtering.',
+        contextWindow: 'Context Window',
+        contextWindowPlaceholder: 'e.g. 200000',
+        contextWindowInvalid: 'Context window must be a positive integer',
+        status: 'Status',
+        sortOrder: 'Sort Order',
+        description: 'Description',
+        descriptionPlaceholder: 'Short user-facing summary',
+        metadata: 'Metadata',
+        metadataPlaceholder: '{"release_stage":"beta"}',
+        metadataHint: 'Optional JSON object for extra display metadata.',
+        metadataInvalid: 'Metadata must be valid JSON',
+        requiredFields: 'Model ID, display name, and provider key are required'
+      }
+    },
+
+    traces: {
+      title: 'Trace Management',
+      description: 'Review captured trace records, tune capture rules, and manage export jobs from one workspace.',
+      stats: {
+        records: 'Records',
+        rules: 'Rules',
+        exports: 'Export Tasks',
+        rootAdmin: 'Export Access'
+      },
+      badges: {
+        rootAdmin: 'Root Admin',
+        adminOnly: 'Needs Root Admin',
+        enabled: 'Enabled',
+        disabled: 'Disabled'
+      },
+      tabs: {
+        records: 'Records',
+        recordsDescription: 'Search, inspect, and delete captured trace data',
+        rules: 'Rules',
+        rulesDescription: 'Control which requests are persisted as trace captures',
+        exports: 'Exports',
+        exportsDescription: 'Create, monitor, cancel, and download export jobs',
+        rootOnly: 'Root Only'
+      },
+      access: {
+        rootOnlyTitle: 'Root admin access required',
+        rootOnlyDescription: 'Trace export jobs are restricted to root admins. Ask a root admin to create, cancel, or download exports.',
+        rootOnlyToast: 'Trace export tasks require root admin access'
+      },
+      filters: {
+        allRules: 'All rules',
+        model: 'Model',
+        modelPlaceholder: 'e.g. gpt-5.4, claude-sonnet-4',
+        keyword: 'Keyword',
+        keywordPlaceholder: 'Prompt text, tool names, response content...',
+        userId: 'User ID',
+        apiKeyId: 'API Key ID',
+        ruleId: 'Rule ID',
+        startDate: 'Start Date',
+        endDate: 'End Date',
+        timezone: 'Timezone',
+        minInputTokens: 'Min Input Tokens',
+        maxInputTokens: 'Max Input Tokens',
+        minOutputTokens: 'Min Output Tokens',
+        maxOutputTokens: 'Max Output Tokens',
+        minTotalTokens: 'Min Total Tokens',
+        maxTotalTokens: 'Max Total Tokens',
+        inputTokens: 'Input Tokens',
+        outputTokens: 'Output Tokens',
+        totalTokens: 'Total Tokens'
+      },
+      records: {
+        title: 'Trace Records',
+        description: 'Filter recent captures by model, actor, rule, date, and token volume before opening the raw payload.',
+        applyFilters: 'Apply Filters',
+        hideAdvanced: 'Hide Advanced Filters',
+        showAdvanced: 'Show Advanced Filters',
+        deleteSelected: 'Delete Selected ({count})',
+        selectedCount: '{count} selected across {total} records',
+        pageHint: 'Page {page} of {pages}',
+        columns: {
+          id: 'ID',
+          model: 'Model',
+          actors: 'Actors',
+          tokens: 'Tokens',
+          status: 'Status',
+          createdAt: 'Captured At'
+        },
+        account: 'Account',
+        apiKey: 'API Key',
+        rule: 'Rule',
+        inputTokens: 'Input',
+        outputTokens: 'Output',
+        totalTokens: 'Total',
+        requestedModel: 'Requested',
+        upstreamModel: 'Upstream',
+        user: 'User',
+        statusUnknown: 'Unknown',
+        noSelection: 'Select at least one trace record first',
+        deleteTitle: 'Delete Trace Record',
+        deleteConfirm: 'Delete trace #{id} for model "{model}"?',
+        deleted: 'Trace record deleted',
+        deleteSelectedTitle: 'Delete Selected Trace Records',
+        deleteSelectedConfirm: 'Delete {count} selected trace records?',
+        batchDeleted: '{count} trace records deleted',
+        emptyTitle: 'No trace records found',
+        emptyDescription: 'Captured records will appear here after the gateway stores matching requests.',
+        loadFailed: 'Failed to load trace records',
+        detailLoadFailed: 'Failed to load trace details',
+        deleteFailed: 'Failed to delete trace record',
+        batchDeleteFailed: 'Failed to delete selected trace records'
+      },
+      rules: {
+        title: 'Capture Rules',
+        description: 'Define which traffic is sampled into trace storage by model, caller, keyword, token range, and active window.',
+        create: 'Create Rule',
+        edit: 'Edit Rule',
+        created: 'Trace rule created',
+        updated: 'Trace rule updated',
+        deleteTitle: 'Delete Trace Rule',
+        deleteConfirm: 'Delete trace rule "{name}"?',
+        deleted: 'Trace rule deleted',
+        emptyTitle: 'No trace rules configured',
+        emptyDescription: 'Create a rule to start sampling only the traffic you care about.',
+        priority: 'Priority',
+        priorityLabel: 'Priority',
+        modelPatterns: 'Model Patterns',
+        modelPatternsPlaceholder: 'Comma-separated glob patterns, e.g. gpt-*, claude-*',
+        userIds: 'User IDs',
+        userIdsPlaceholder: 'Comma-separated positive user IDs',
+        apiKeyIds: 'API Key IDs',
+        apiKeyIdsPlaceholder: 'Comma-separated positive API key IDs',
+        keywords: 'Keywords',
+        keywordsPlaceholder: 'Comma-separated keywords to match in prompts or responses',
+        minTokensLabel: 'Minimum Tokens',
+        maxTokensLabel: 'Maximum Tokens',
+        samplingRatioLabel: 'Sampling Ratio',
+        activeFromLabel: 'Active From',
+        activeToLabel: 'Active To',
+        columns: {
+          name: 'Rule',
+          targets: 'Targets',
+          conditions: 'Conditions',
+          sampling: 'Sampling',
+          updatedAt: 'Updated At'
+        },
+        tokenRange: 'Token Range',
+        activeWindow: 'Active Window',
+        alwaysOn: 'Always On',
+        unbounded: 'Unbounded',
+        loadFailed: 'Failed to load trace rules',
+        saveFailed: 'Failed to save trace rule',
+        deleteFailed: 'Failed to delete trace rule'
+      },
+      export: {
+        title: 'Export Tasks',
+        description: 'Create export jobs from filtered trace data, monitor progress, and download completed files.',
+        includeRaw: 'Include raw request and response payloads',
+        targetRecords: 'Target records',
+        targetRecordsHint: 'JSON is generated after this many traces are captured',
+        metadataOnly: 'Metadata only',
+        copyFromRecords: 'Copy Record Filters',
+        createTask: 'Create Export Task',
+        created: 'Trace export task created',
+        cancelTitle: 'Cancel Export Task',
+        cancelConfirm: 'Cancel export task #{id}?',
+        cancelTask: 'Cancel Task',
+        canceled: 'Trace export task canceled',
+        taskCount: '{count} export tasks',
+        polling: 'Auto-refreshing while export jobs are running',
+        progressLabel: '{processed} / {total} records',
+        emptyTitle: 'No export tasks yet',
+        emptyDescription: 'Create a task to export trace data for offline debugging, audits, or incident response.',
+        noFilters: 'No filters applied',
+        columns: {
+          id: 'ID',
+          status: 'Status',
+          filters: 'Filters',
+          progress: 'Progress',
+          file: 'File',
+          createdAt: 'Created At'
+        },
+        status: {
+          pending: 'Pending',
+          running: 'Running',
+          succeeded: 'Succeeded',
+          failed: 'Failed',
+          canceled: 'Canceled'
+        },
+        loadFailed: 'Failed to load trace export tasks',
+        createFailed: 'Failed to create trace export task',
+        cancelFailed: 'Failed to cancel trace export task',
+        downloadFailed: 'Failed to download trace export file'
+      },
+      detail: {
+        title: 'Trace #{id}',
+        structured: 'Structured',
+        raw: 'Raw JSON',
+        noData: 'No data',
+        fields: {
+          recordId: 'Record ID',
+          taskId: 'Task ID',
+          requestId: 'Request ID',
+          responseId: 'Response ID',
+          model: 'Model',
+          protocol: 'Protocol',
+          userId: 'User ID',
+          apiKeyId: 'API Key ID',
+          accountId: 'Account ID',
+          ruleId: 'Rule ID',
+          totalTokens: 'Total Tokens',
+          upstreamStatus: 'Upstream Status',
+          createdAt: 'Captured At',
+          requestContentType: 'Request Content-Type',
+          responseContentType: 'Response Content-Type',
+          dedupeHash: 'Dedupe Hash'
+        },
+        sections: {
+          prompt: 'Prompt',
+          candidates: 'Candidates',
+          tools: 'Tools',
+          signature: 'Signature',
+          meta: 'Metadata',
+          rawRequest: 'Raw Request',
+          rawResponse: 'Raw Response',
+          rawRequestText: 'Raw Request Text',
+          rawResponseText: 'Raw Response Text'
+        }
+      },
+      validation: {
+        requiredField: '{field} is required',
+        invalidInteger: '{field} must be an integer',
+        invalidPositiveInteger: '{field} must be a positive integer',
+        invalidNonNegativeInteger: '{field} must be a non-negative integer',
+        invalidIdList: '{field} must be a comma-separated list of positive integers',
+        invalidRange: '{field} minimum cannot exceed the maximum',
+        invalidSamplingRatio: 'Sampling ratio must be greater than 0 and at most 1',
+        invalidWindowRange: 'Active window start must be earlier than the end time'
+      }
     },
 
     backup: {
@@ -2113,7 +2468,9 @@ export default {
       platforms: {
         all: 'All Platforms',
         anthropic: 'Anthropic',
+        anthropic_compatible: 'Anthropic API',
         openai: 'OpenAI',
+        openai_compatible: 'OpenAI API',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
       },
@@ -2932,10 +3289,18 @@ export default {
       groupCountTotal: '{count} groups total',
       platforms: {
         anthropic: 'Anthropic',
+        anthropic_compatible: 'Anthropic API',
         claude: 'Claude',
         openai: 'OpenAI',
+        openai_compatible: 'OpenAI API',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+      },
+      compatibleProviders: {
+        openaiDescription:
+          'For OpenRouter, SiliconFlow, Volcengine, Alibaba Cloud, and other OpenAI-compatible upstream APIs. Configure Base URL, API Key, and optional headers.',
+        anthropicDescription:
+          'For Claude mirrors and other Anthropic-compatible upstream APIs. Configure Base URL, API Key, and optional headers.'
       },
       types: {
         oauth: 'OAuth',
@@ -3466,9 +3831,16 @@ export default {
       // Upstream type
       upstream: {
         baseUrl: 'Upstream Base URL',
-        baseUrlHint: 'The address of the upstream Antigravity service, e.g., https://cloudcode-pa.googleapis.com',
+        baseUrlHint:
+          'The upstream API base URL, e.g. https://api.openai.com, https://api.anthropic.com, or another compatible provider endpoint.',
         apiKey: 'Upstream API Key',
         apiKeyHint: 'API Key for the upstream service',
+        headers: 'Custom Headers',
+        headersPlaceholder:
+          '{\n  "x-api-version": "2024-01-01",\n  "anthropic-beta": "prompt-caching-2024-07-31"\n}',
+        headersHint:
+          'Optional JSON object merged into upstream requests. Useful when compatible providers require extra auth or client headers.',
+        invalidHeaders: 'Headers must be a valid JSON object',
         pleaseEnterBaseUrl: 'Please enter upstream Base URL',
         pleaseEnterApiKey: 'Please enter upstream API Key'
       },
@@ -6562,7 +6934,7 @@ export default {
     refundReason: 'Refund Reason',
     refundReasonPlaceholder: 'Please describe your refund reason',
     stripeLoadFailed: 'Failed to load payment component. Please refresh and try again.',
-    stripeMissingParams: 'Missing order ID or client secret',
+  stripeMissingParams: 'Missing payment order or secure payment session',
     stripeNotConfigured: 'Stripe is not configured',
     errors: {
       tooManyPending: 'Too many pending orders (max {max}). Please complete or cancel existing orders first.',

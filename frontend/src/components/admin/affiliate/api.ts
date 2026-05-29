@@ -27,8 +27,10 @@ export interface AffiliateAgentIdentity {
 
 export interface DailyRevenueRankingItem extends AffiliateAgentIdentity {
   rank?: number
+  stat_date?: string
   revenue_date?: string
   date?: string
+  business_usd?: number
   business_rmb?: number
   total_business_rmb?: number
   revenue_rmb?: number
@@ -60,6 +62,12 @@ export interface RebateBalanceRankingItem extends AffiliateAgentIdentity {
   direct_user_count?: number
   direct_agent_count?: number
   direct_downline_count?: number
+  direct_total_usage_rmb?: number
+  direct_user_usage_rmb?: number
+  direct_agent_usage_rmb?: number
+  direct_total_usage_usd?: number
+  direct_user_usage_usd?: number
+  direct_agent_usage_usd?: number
   updated_at?: string
 }
 

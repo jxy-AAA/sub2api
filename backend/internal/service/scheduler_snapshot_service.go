@@ -28,6 +28,17 @@ type batchSeenKey struct {
 	platform string
 }
 
+type schedulerBucketLock struct {
+	unlock func(context.Context) error
+}
+
+func (l *schedulerBucketLock) Unlock(ctx context.Context) error {
+	if l == nil || l.unlock == nil {
+		return nil
+	}
+	return l.unlock(ctx)
+}
+
 type SchedulerSnapshotService struct {
 	cache         SchedulerCache
 	outboxRepo    SchedulerOutboxRepository
@@ -105,7 +116,7 @@ func (s *SchedulerSnapshotService) Stop() {
 }
 
 func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
-	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+	useMixed := (IsAnthropicProtocolPlatform(platform) || platform == PlatformGemini) && !hasForcePlatform
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
 
@@ -462,8 +473,10 @@ func (s *SchedulerSnapshotService) rebuildByAccount(ctx context.Context, account
 	}
 
 	var firstErr error
-	if err := s.rebuildBucketsForPlatform(ctx, account.Platform, groupIDs, reason, seen); err != nil && firstErr == nil {
-		firstErr = err
+	for _, platform := range ProtocolCompatiblePlatforms(account.Platform) {
+		if err := s.rebuildBucketsForPlatform(ctx, platform, groupIDs, reason, seen); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	if account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled() {
 		if err := s.rebuildBucketsForPlatform(ctx, PlatformAnthropic, groupIDs, reason, seen); err != nil && firstErr == nil {
@@ -481,7 +494,7 @@ func (s *SchedulerSnapshotService) rebuildByGroupIDs(ctx context.Context, groupI
 	if len(groupIDs) == 0 {
 		return nil
 	}
-	platforms := []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity}
+	platforms := []string{PlatformAnthropic, PlatformAnthropicCompatible, PlatformGemini, PlatformOpenAI, PlatformOpenAICompatible, PlatformAntigravity}
 	var firstErr error
 	for _, platform := range platforms {
 		if err := s.rebuildBucketsForPlatform(ctx, platform, groupIDs, reason, seen); err != nil && firstErr == nil {
@@ -514,7 +527,7 @@ func (s *SchedulerSnapshotService) rebuildBucketsForPlatform(ctx context.Context
 		if err := s.rebuildBucket(ctx, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeForced}, reason); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if platform == PlatformAnthropic || platform == PlatformGemini {
+		if IsAnthropicProtocolPlatform(platform) || platform == PlatformGemini {
 			if err := s.rebuildBucket(ctx, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeMixed}, reason); err != nil && firstErr == nil {
 				firstErr = err
 			}
@@ -533,11 +546,23 @@ func (s *SchedulerSnapshotService) rebuildBuckets(ctx context.Context, buckets [
 	return firstErr
 }
 
+func (s *SchedulerSnapshotService) acquireBucketLock(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (*schedulerBucketLock, bool, error) {
+	token, locked, err := s.cache.TryLockBucketWithToken(ctx, bucket, ttl)
+	if err != nil || !locked {
+		return nil, locked, err
+	}
+	return &schedulerBucketLock{
+		unlock: func(unlockCtx context.Context) error {
+			return s.cache.UnlockBucketWithToken(unlockCtx, bucket, token)
+		},
+	}, true, nil
+}
+
 func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket SchedulerBucket, reason string) error {
 	if s.cache == nil {
 		return ErrSchedulerCacheNotReady
 	}
-	ok, err := s.cache.TryLockBucket(ctx, bucket, 30*time.Second)
+	lock, ok, err := s.acquireBucketLock(ctx, bucket, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -545,7 +570,7 @@ func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket Sch
 		return nil
 	}
 	defer func() {
-		_ = s.cache.UnlockBucket(ctx, bucket)
+		_ = lock.Unlock(ctx)
 	}()
 
 	rebuildCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -643,7 +668,7 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 	}
 
 	if useMixed {
-		platforms := []string{bucket.Platform, PlatformAntigravity}
+		platforms := append(ProtocolCompatiblePlatforms(bucket.Platform), PlatformAntigravity)
 		var accounts []Account
 		var err error
 		if groupID > 0 {
@@ -666,11 +691,21 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		return filtered, nil
 	}
 
+	platforms := ProtocolCompatiblePlatforms(bucket.Platform)
 	if groupID > 0 {
+		if len(platforms) > 1 {
+			return s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, groupID, platforms)
+		}
 		return s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, bucket.Platform)
 	}
 	if s.isRunModeSimple() {
+		if len(platforms) > 1 {
+			return s.accountRepo.ListSchedulableByPlatforms(ctx, platforms)
+		}
 		return s.accountRepo.ListSchedulableByPlatform(ctx, bucket.Platform)
+	}
+	if len(platforms) > 1 {
+		return s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, platforms)
 	}
 	return s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, bucket.Platform)
 }
@@ -722,7 +757,7 @@ func (s *SchedulerSnapshotService) resolveMode(platform string, hasForcePlatform
 	if hasForcePlatform {
 		return SchedulerModeForced
 	}
-	if platform == PlatformAnthropic || platform == PlatformGemini {
+	if IsAnthropicProtocolPlatform(platform) || platform == PlatformGemini {
 		return SchedulerModeMixed
 	}
 	return SchedulerModeSingle
@@ -783,11 +818,11 @@ func (s *SchedulerSnapshotService) fullRebuildInterval() time.Duration {
 
 func (s *SchedulerSnapshotService) defaultBuckets(ctx context.Context) ([]SchedulerBucket, error) {
 	buckets := make([]SchedulerBucket, 0)
-	platforms := []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity}
+	platforms := []string{PlatformAnthropic, PlatformAnthropicCompatible, PlatformGemini, PlatformOpenAI, PlatformOpenAICompatible, PlatformAntigravity}
 	for _, platform := range platforms {
 		buckets = append(buckets, SchedulerBucket{GroupID: 0, Platform: platform, Mode: SchedulerModeSingle})
 		buckets = append(buckets, SchedulerBucket{GroupID: 0, Platform: platform, Mode: SchedulerModeForced})
-		if platform == PlatformAnthropic || platform == PlatformGemini {
+		if IsAnthropicProtocolPlatform(platform) || platform == PlatformGemini {
 			buckets = append(buckets, SchedulerBucket{GroupID: 0, Platform: platform, Mode: SchedulerModeMixed})
 		}
 	}
@@ -806,7 +841,7 @@ func (s *SchedulerSnapshotService) defaultBuckets(ctx context.Context) ([]Schedu
 		}
 		buckets = append(buckets, SchedulerBucket{GroupID: group.ID, Platform: group.Platform, Mode: SchedulerModeSingle})
 		buckets = append(buckets, SchedulerBucket{GroupID: group.ID, Platform: group.Platform, Mode: SchedulerModeForced})
-		if group.Platform == PlatformAnthropic || group.Platform == PlatformGemini {
+		if IsAnthropicProtocolPlatform(group.Platform) || group.Platform == PlatformGemini {
 			buckets = append(buckets, SchedulerBucket{GroupID: group.ID, Platform: group.Platform, Mode: SchedulerModeMixed})
 		}
 	}

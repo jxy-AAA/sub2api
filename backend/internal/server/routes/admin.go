@@ -30,6 +30,7 @@ func RegisterAdminRoutes(
 		registerSettingsRoutes(admin, h)
 		registerDataManagementRoutes(admin, h)
 		registerBackupRoutes(admin, h)
+		registerTraceRoutes(admin, h)
 		registerOpsRoutes(admin, h)
 		registerSystemRoutes(admin, h)
 		registerSubscriptionRoutes(admin, h)
@@ -40,9 +41,47 @@ func RegisterAdminRoutes(
 		registerAdminAPIKeyRoutes(admin, h)
 		registerScheduledTestRoutes(admin, h)
 		registerChannelRoutes(admin, h)
+		registerModelMarketRoutes(admin, h)
 		registerChannelMonitorRoutes(admin, h)
 		registerContentModerationRoutes(admin, h)
 		registerAffiliateRoutes(admin, h)
+	}
+}
+
+func registerTraceRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil {
+		return
+	}
+	traces := admin.Group("/traces")
+	{
+		if h.Admin.TraceExport != nil {
+			traces.GET("/export", h.Admin.TraceExport.Export)
+		}
+		if h.Admin.Trace != nil {
+			traces.GET("", h.Admin.Trace.List)
+			traces.POST("/batch-delete", h.Admin.Trace.BatchDelete)
+
+			rules := traces.Group("/rules")
+			{
+				rules.GET("", h.Admin.Trace.ListRules)
+				rules.POST("", h.Admin.Trace.CreateRule)
+				rules.GET("/:id", h.Admin.Trace.GetRuleByID)
+				rules.PUT("/:id", h.Admin.Trace.UpdateRule)
+				rules.DELETE("/:id", h.Admin.Trace.DeleteRule)
+			}
+
+			exportTasks := traces.Group("/export-tasks")
+			{
+				exportTasks.GET("", h.Admin.Trace.ListExportTasks)
+				exportTasks.POST("", h.Admin.Trace.CreateExportTask)
+				exportTasks.GET("/:id", h.Admin.Trace.GetExportTask)
+				exportTasks.POST("/:id/cancel", h.Admin.Trace.CancelExportTask)
+				exportTasks.GET("/:id/download", h.Admin.Trace.DownloadExportTask)
+			}
+
+			traces.GET("/:id", h.Admin.Trace.GetByID)
+			traces.DELETE("/:id", h.Admin.Trace.Delete)
+		}
 	}
 }
 
@@ -524,6 +563,17 @@ func registerChannelRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		channels.POST("", h.Admin.Channel.Create)
 		channels.PUT("/:id", h.Admin.Channel.Update)
 		channels.DELETE("/:id", h.Admin.Channel.Delete)
+	}
+}
+
+func registerModelMarketRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	modelMarket := admin.Group("/model-market/models")
+	{
+		modelMarket.GET("", h.Admin.ModelMarket.List)
+		modelMarket.POST("", h.Admin.ModelMarket.Create)
+		modelMarket.POST("/import-from-channels", h.Admin.ModelMarket.ImportFromChannels)
+		modelMarket.PUT("/:id", h.Admin.ModelMarket.Update)
+		modelMarket.DELETE("/:id", h.Admin.ModelMarket.Delete)
 	}
 }
 

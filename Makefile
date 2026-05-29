@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-frontend-all test-frontend-critical test-frontend-affiliate-auth-admin test-frontend-quality test-datamanagementd secret-scan
+.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-frontend-all test-frontend-coverage test-frontend-critical test-frontend-affiliate-auth-admin test-frontend-quality test-datamanagementd clean clean-local secret-scan
 
 PYTHON ?= python3
 
@@ -53,10 +53,13 @@ test-backend:
 test-frontend:
 	@pnpm --dir frontend run lint:check
 	@pnpm --dir frontend run typecheck
-	@$(MAKE) test-frontend-all
+	@$(MAKE) test-frontend-coverage
 
 test-frontend-all:
 	@pnpm --dir frontend run test:run
+
+test-frontend-coverage:
+	@pnpm --dir frontend run test:coverage
 
 test-frontend-critical:
 	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST)
@@ -69,6 +72,11 @@ test-frontend-quality:
 
 test-datamanagementd:
 	@echo "No in-repo datamanagementd tests (source not included)."
+
+clean: clean-local
+
+clean-local:
+	@$(PYTHON) tools/clean_workspace.py
 
 secret-scan:
 	@$(PYTHON) tools/secret_scan.py

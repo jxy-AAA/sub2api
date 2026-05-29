@@ -121,7 +121,7 @@ func (s *PaymentService) cancelCore(ctx context.Context, o *dbent.PaymentOrder, 
 			return checkPaidResultAlreadyPaid, nil
 		}
 	}
-	c, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(o.ID), paymentorder.StatusEQ(OrderStatusPending)).SetStatus(fs).Save(ctx)
+	c, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(o.ID), paymentorder.StatusEQ(OrderStatusPending)).SetStatus(paymentorder.Status(fs)).Save(ctx)
 	if err != nil {
 		return "", fmt.Errorf("update order status: %w", err)
 	}
@@ -284,15 +284,34 @@ func (s *PaymentService) VerifyOrderByOutTradeNo(ctx context.Context, outTradeNo
 // triggering any upstream reconciliation. Signed resume-token recovery is the
 // only public recovery path allowed to query upstream state.
 func (s *PaymentService) VerifyOrderPublic(ctx context.Context, outTradeNo string) (*dbent.PaymentOrder, error) {
+	return nil, infraerrors.Forbidden("PUBLIC_ORDER_LOOKUP_TOKEN_REQUIRED", "signed public order lookup token is required")
+}
+
+// VerifyOrderPublicWithLookupToken returns persisted public order state after
+// validating a signed short-lived lookup token.
+func (s *PaymentService) VerifyOrderPublicWithLookupToken(ctx context.Context, outTradeNo string, lookupToken string) (*dbent.PaymentOrder, error) {
 	outTradeNo, err := normalizeOrderLookupOutTradeNo(outTradeNo)
 	if err != nil {
 		return nil, err
+	}
+	claims, err := s.paymentResume().ParsePublicOrderLookupToken(strings.TrimSpace(lookupToken))
+	if err != nil {
+		return nil, err
+	}
+	if claims.OutTradeNo != "" && claims.OutTradeNo != outTradeNo {
+		return nil, infraerrors.BadRequest("INVALID_PUBLIC_ORDER_LOOKUP_TOKEN", "public order lookup token does not match out_trade_no")
 	}
 	o, err := s.entClient.PaymentOrder.Query().
 		Where(paymentorder.OutTradeNo(outTradeNo)).
 		Only(ctx)
 	if err != nil {
 		return nil, infraerrors.NotFound("NOT_FOUND", "order not found")
+	}
+	if claims.OrderID > 0 && claims.OrderID != o.ID {
+		return nil, infraerrors.BadRequest("INVALID_PUBLIC_ORDER_LOOKUP_TOKEN", "public order lookup token does not match the payment order")
+	}
+	if claims.UserID > 0 && claims.UserID != o.UserID {
+		return nil, infraerrors.BadRequest("INVALID_PUBLIC_ORDER_LOOKUP_TOKEN", "public order lookup token does not match the payment order")
 	}
 	return o, nil
 }

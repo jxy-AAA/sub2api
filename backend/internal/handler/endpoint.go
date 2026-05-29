@@ -74,7 +74,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 	inbound = strings.TrimSpace(inbound)
 
 	switch platform {
-	case service.PlatformOpenAI:
+	case service.PlatformOpenAI, service.PlatformOpenAICompatible:
 		if inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits {
 			return inbound
 		}
@@ -85,7 +85,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 		}
 		return EndpointResponses
 
-	case service.PlatformAnthropic:
+	case service.PlatformAnthropic, service.PlatformAnthropicCompatible:
 		return EndpointMessages
 
 	case service.PlatformGemini:

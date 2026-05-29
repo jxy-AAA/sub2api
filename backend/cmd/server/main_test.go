@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"testing"
@@ -21,7 +22,7 @@ func TestRunApplicationExecutesCleanupOnStartupError(t *testing.T) {
 	cleanupCalled := false
 	app := &Application{
 		Server: &http.Server{Addr: "127.0.0.1:-1"},
-		Cleanup: func() {
+		Cleanup: func(context.Context) {
 			cleanupCalled = true
 		},
 	}
@@ -29,4 +30,21 @@ func TestRunApplicationExecutesCleanupOnStartupError(t *testing.T) {
 	err := runApplication(app, time.Second, make(chan os.Signal))
 	require.Error(t, err)
 	require.True(t, cleanupCalled)
+}
+
+func TestRunApplicationPassesDeadlineBoundCleanupContext(t *testing.T) {
+	cleanupCalled := false
+	hadDeadline := false
+	app := &Application{
+		Server: &http.Server{Addr: "127.0.0.1:-1"},
+		Cleanup: func(ctx context.Context) {
+			cleanupCalled = true
+			_, hadDeadline = ctx.Deadline()
+		},
+	}
+
+	err := runApplication(app, time.Second, make(chan os.Signal))
+	require.Error(t, err)
+	require.True(t, cleanupCalled)
+	require.True(t, hadDeadline)
 }

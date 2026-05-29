@@ -2,8 +2,8 @@
 package middleware
 
 import (
-	"crypto/subtle"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -38,7 +38,7 @@ func adminAuth(
 
 		apiKey := c.GetHeader("x-api-key")
 		if apiKey != "" {
-			if !validateAdminAPIKey(c, apiKey, settingService, userService) {
+			if !validateAdminAPIKey(c, apiKey, settingService) {
 				return
 			}
 			c.Next()
@@ -103,30 +103,28 @@ func validateAdminAPIKey(
 	c *gin.Context,
 	key string,
 	settingService *service.SettingService,
-	userService *service.UserService,
 ) bool {
-	storedKey, err := settingService.GetAdminAPIKey(c.Request.Context())
+	record, ok, err := settingService.ValidateAdminAPIKey(c.Request.Context(), key)
 	if err != nil {
 		AbortWithError(c, 500, "INTERNAL_ERROR", "Internal server error")
 		return false
 	}
 
-	if storedKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(storedKey)) != 1 {
+	if !ok {
 		AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
 		return false
 	}
 
-	admin, err := userService.GetFirstAdmin(c.Request.Context())
-	if err != nil {
-		AbortWithError(c, 500, "INTERNAL_ERROR", "No admin user found")
-		return false
-	}
+	principal := service.DeriveAdminAPIKeyPrincipalFromHash(record.Hash)
 
 	c.Set(string(ContextKeyUser), AuthSubject{
-		UserID:      admin.ID,
-		Concurrency: admin.Concurrency,
+		UserID:        0,
+		Concurrency:   0,
+		PrincipalID:   principal.PrincipalID,
+		PrincipalType: principal.PrincipalType,
+		IsSystem:      true,
 	})
-	c.Set(string(ContextKeyUserRole), admin.Role)
+	c.Set(string(ContextKeyUserRole), service.RoleAdmin)
 	c.Set("auth_method", "admin_api_key")
 	return true
 }
@@ -169,8 +167,10 @@ func validateJWTForAdmin(
 	}
 
 	c.Set(string(ContextKeyUser), AuthSubject{
-		UserID:      user.ID,
-		Concurrency: user.Concurrency,
+		UserID:        user.ID,
+		Concurrency:   user.Concurrency,
+		PrincipalID:   "user:" + strconv.FormatInt(user.ID, 10),
+		PrincipalType: "user",
 	})
 	c.Set(string(ContextKeyUserRole), user.Role)
 	c.Set("auth_method", "jwt")

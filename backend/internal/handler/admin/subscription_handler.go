@@ -319,5 +319,5 @@ func getAdminIDFromContext(c *gin.Context) int64 {
 	if !ok {
 		return 0
 	}
-	return subject.UserID
+	return subject.ActorUserID()
 }

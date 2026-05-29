@@ -74,6 +74,9 @@ func TestSetupDefaultAdminConcurrency(t *testing.T) {
 func TestWriteConfigFileKeepsDefaultUserConcurrency(t *testing.T) {
 	t.Setenv("RUN_MODE", "simple")
 	t.Setenv("DATA_DIR", t.TempDir())
+	t.Setenv("DATABASE_PASSWORD", "db-secret")
+	t.Setenv("REDIS_PASSWORD", "redis-secret")
+	t.Setenv("JWT_SECRET", "jwt-secret")
 
 	if err := writeConfigFile(&SetupConfig{}); err != nil {
 		t.Fatalf("writeConfigFile() error = %v", err)
@@ -86,6 +89,15 @@ func TestWriteConfigFileKeepsDefaultUserConcurrency(t *testing.T) {
 
 	if !strings.Contains(string(data), "user_concurrency: 5") {
 		t.Fatalf("config missing default user concurrency, got:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "password: ${DATABASE_PASSWORD}") {
+		t.Fatalf("config should persist database password by env reference, got:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "secret: ${JWT_SECRET}") {
+		t.Fatalf("config should persist jwt secret by env reference, got:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "secrets_from_env: true") {
+		t.Fatalf("config should persist setup bootstrap state, got:\n%s", string(data))
 	}
 }
 

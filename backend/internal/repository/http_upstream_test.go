@@ -1,8 +1,12 @@
 package repository
 
 import (
+	"bytes"
+	"crypto/tls"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -277,12 +281,160 @@ func (s *HTTPUpstreamSuite) TestIdleTTLDoesNotEvictActive() {
 }
 
 // TestHTTPUpstreamSuite 运行测试套件
+func (s *HTTPUpstreamSuite) TestDo_RedirectRejectsCrossHostWhenAllowlistEnabled() {
+	evilHits := int32(0)
+	evil := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&evilHits, 1)
+		http.Error(w, "unexpected redirect target", http.StatusInternalServerError)
+	}))
+	s.T().Cleanup(evil.Close)
+
+	evilURL := strings.Replace(evil.URL, "https://127.0.0.1:", "https://localhost:", 1)
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evilURL+"/blocked", http.StatusFound)
+	}))
+	s.T().Cleanup(origin.Close)
+
+	s.cfg.Security.URLAllowlist = config.URLAllowlistConfig{
+		Enabled:           true,
+		UpstreamHosts:     []string{"127.0.0.1"},
+		AllowPrivateHosts: true,
+	}
+	svc := s.newService()
+	configureTestClientTLS(s.T(), svc, "", 7, 1)
+
+	req, err := http.NewRequest(http.MethodGet, origin.URL, nil)
+	require.NoError(s.T(), err)
+
+	resp, err := svc.Do(req, "", 7, 1)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "redirect target is not allowed")
+	require.Equal(s.T(), int32(0), atomic.LoadInt32(&evilHits), "redirect target must not be contacted")
+}
+
+func (s *HTTPUpstreamSuite) TestDo_RedirectAllowsSameHostWhenAllowlistEnabled() {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, "/final", http.StatusFound)
+		case "/final":
+			_, _ = io.WriteString(w, "ok")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s.T().Cleanup(server.Close)
+
+	s.cfg.Security.URLAllowlist = config.URLAllowlistConfig{
+		Enabled:           true,
+		UpstreamHosts:     []string{"127.0.0.1"},
+		AllowPrivateHosts: true,
+	}
+	svc := s.newService()
+	configureTestClientTLS(s.T(), svc, "", 8, 1)
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/start", nil)
+	require.NoError(s.T(), err)
+
+	resp, err := svc.Do(req, "", 8, 1)
+	require.NoError(s.T(), err)
+	defer func() { _ = resp.Body.Close() }()
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(s.T(), readErr)
+	require.Equal(s.T(), http.StatusOK, resp.StatusCode)
+	require.Equal(s.T(), "ok", string(body))
+}
+
+func (s *HTTPUpstreamSuite) TestDo_RedirectRejectsSameHostnameDifferentPortWhenAllowlistEnabled() {
+	otherPortHits := int32(0)
+	otherPort := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&otherPortHits, 1)
+		http.Error(w, "unexpected redirect target", http.StatusInternalServerError)
+	}))
+	s.T().Cleanup(otherPort.Close)
+
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, otherPort.URL+"/blocked", http.StatusFound)
+	}))
+	s.T().Cleanup(origin.Close)
+
+	s.cfg.Security.URLAllowlist = config.URLAllowlistConfig{
+		Enabled:           true,
+		UpstreamHosts:     []string{"127.0.0.1"},
+		AllowPrivateHosts: true,
+	}
+	svc := s.newService()
+	configureTestClientTLS(s.T(), svc, "", 9, 1)
+
+	req, err := http.NewRequest(http.MethodGet, origin.URL, nil)
+	require.NoError(s.T(), err)
+
+	resp, err := svc.Do(req, "", 9, 1)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "redirect to different origin")
+	require.Equal(s.T(), int32(0), atomic.LoadInt32(&otherPortHits), "redirect target must not be contacted")
+}
+
+func (s *HTTPUpstreamSuite) TestDo_Redirect307And308DoNotLeakPOSTBodyCrossHost() {
+	for _, statusCode := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		s.T().Run(http.StatusText(statusCode), func(t *testing.T) {
+			evilHits := int32(0)
+			leakedBodies := make(chan string, 1)
+			evil := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&evilHits, 1)
+				body, _ := io.ReadAll(r.Body)
+				leakedBodies <- string(body)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(evil.Close)
+
+			evilURL := strings.Replace(evil.URL, "https://127.0.0.1:", "https://localhost:", 1)
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, evilURL+"/leak", statusCode)
+			}))
+			t.Cleanup(origin.Close)
+
+			s.cfg.Security.URLAllowlist = config.URLAllowlistConfig{
+				Enabled:           true,
+				UpstreamHosts:     []string{"127.0.0.1"},
+				AllowPrivateHosts: true,
+			}
+			svc := s.newService()
+			configureTestClientTLS(t, svc, "", int64(statusCode), 1)
+
+			payload := []byte("top-secret-body")
+			req, err := http.NewRequest(http.MethodPost, origin.URL+"/start", bytes.NewReader(payload))
+			require.NoError(t, err)
+
+			resp, err := svc.Do(req, "", int64(statusCode), 1)
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "redirect target is not allowed")
+			require.Equal(t, int32(0), atomic.LoadInt32(&evilHits), "redirect target must not receive request")
+
+			select {
+			case body := <-leakedBodies:
+				t.Fatalf("unexpected leaked body at redirect target: %q", body)
+			default:
+			}
+		})
+	}
+}
+
 func TestHTTPUpstreamSuite(t *testing.T) {
 	suite.Run(t, new(HTTPUpstreamSuite))
 }
 
 // mustGetOrCreateClient 测试辅助函数，调用 getOrCreateClient 并断言无错误
-func mustGetOrCreateClient(t *testing.T, svc *httpUpstreamService, proxyURL string, accountID int64, concurrency int) *upstreamClientEntry {
+func mustGetOrCreateClient(t testing.TB, svc *httpUpstreamService, proxyURL string, accountID int64, concurrency int) *upstreamClientEntry {
 	t.Helper()
 	entry, err := svc.getOrCreateClient(proxyURL, accountID, concurrency)
 	require.NoError(t, err, "getOrCreateClient(%q, %d, %d)", proxyURL, accountID, concurrency)
@@ -298,4 +450,15 @@ func hasEntry(svc *httpUpstreamService, target *upstreamClientEntry) bool {
 		}
 	}
 	return false
+}
+
+func configureTestClientTLS(t testing.TB, svc *httpUpstreamService, proxyURL string, accountID int64, concurrency int) {
+	t.Helper()
+	entry := mustGetOrCreateClient(t, svc, proxyURL, accountID, concurrency)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(t, ok, "expected *http.Transport")
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = true
 }

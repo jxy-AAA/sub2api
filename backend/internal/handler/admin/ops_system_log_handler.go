@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -100,9 +99,8 @@ func (h *OpsHandler) CleanupSystemLogs(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+	subject, ok := requireAdminSubject(c)
+	if !ok {
 		return
 	}
 
@@ -151,7 +149,7 @@ func (h *OpsHandler) CleanupSystemLogs(c *gin.Context) {
 		Query:           strings.TrimSpace(req.Query),
 	}
 
-	deleted, err := h.opsService.CleanupSystemLogs(c.Request.Context(), filter, subject.UserID)
+	deleted, err := h.opsService.CleanupSystemLogs(c.Request.Context(), filter, adminActorUserID(subject))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

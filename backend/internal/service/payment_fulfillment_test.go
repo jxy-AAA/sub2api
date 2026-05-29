@@ -6,11 +6,15 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strconv"
 	"testing"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type paymentFulfillmentTestProvider struct {
@@ -365,4 +369,152 @@ func TestValidateProviderNotificationMetadataRejectsEasyPaySnapshotMismatch(t *t
 		"pid": "pid-other",
 	})
 	assert.ErrorContains(t, err, "easypay pid mismatch")
+}
+
+func TestExecuteBalanceFulfillment_RecordsDistributionPaidCreditAfterCompletion(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+
+	user, err := client.User.Create().
+		SetEmail("balance-credit@example.com").
+		SetPasswordHash("hash").
+		SetUsername("balance-credit").
+		Save(ctx)
+	require.NoError(t, err)
+
+	paidAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(88).
+		SetPayAmount(88).
+		SetFeeRate(0).
+		SetRechargeCode("BALANCE-CREDIT-ORDER").
+		SetOutTradeNo("sub2_balance_credit_order").
+		SetPaymentType(payment.TypeAlipay).
+		SetPaymentTradeNo("trade-balance-credit").
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(OrderStatusCompleted).
+		SetExpiresAt(paidAt.Add(time.Hour)).
+		SetPaidAt(paidAt).
+		SetCompletedAt(paidAt.Add(time.Minute)).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+
+	repo := &refundAffiliateRepoStub{recorded: true}
+	svc := &PaymentService{
+		entClient:        client,
+		affiliateService: &AffiliateService{repo: repo},
+	}
+
+	require.NoError(t, svc.ExecuteBalanceFulfillment(ctx, order.ID))
+	require.Equal(t, 1, repo.recordCalls)
+	require.Equal(t, user.ID, repo.lastRecordUserID)
+	require.Equal(t, order.ID, repo.lastRecordSource)
+	require.Equal(t, order.Amount, repo.lastRecordValue)
+	require.Equal(t, paidAt, repo.lastRecordAt)
+
+	logEntry, err := client.PaymentAuditLog.Query().
+		Where(
+			paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)),
+			paymentauditlog.ActionEQ("AFFILIATE_DISTRIBUTION_PAID_CREDIT_APPLIED"),
+		).
+		Only(ctx)
+	require.NoError(t, err)
+	require.Contains(t, logEntry.Detail, "\"amount\":88")
+}
+
+func TestExecuteSubscriptionFulfillment_UsesOrderAmountAndClaimIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+
+	user, err := client.User.Create().
+		SetEmail("subscription-credit@example.com").
+		SetPasswordHash("hash").
+		SetUsername("subscription-credit").
+		Save(ctx)
+	require.NoError(t, err)
+
+	group, err := client.Group.Create().
+		SetName("subscription-credit-group").
+		SetStatus(StatusActive).
+		SetSubscriptionType(SubscriptionTypeSubscription).
+		Save(ctx)
+	require.NoError(t, err)
+
+	paidAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(123).
+		SetPayAmount(99).
+		SetFeeRate(0).
+		SetRechargeCode("SUBSCRIPTION-CLAIM-ORDER").
+		SetOutTradeNo("sub2_subscription_claim_order").
+		SetPaymentType(payment.TypeAlipay).
+		SetPaymentTradeNo("trade-subscription-claim").
+		SetOrderType(payment.OrderTypeSubscription).
+		SetSubscriptionGroupID(group.ID).
+		SetSubscriptionDays(15).
+		SetStatus(OrderStatusPaid).
+		SetExpiresAt(paidAt.Add(time.Hour)).
+		SetPaidAt(paidAt).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+
+	groupRepo := &entGroupRepoForPayment{client: client}
+	userSubRepo := &entUserSubRepoForPayment{client: client}
+	subSvc := NewSubscriptionService(groupRepo, userSubRepo, nil, client, nil)
+	repo := &refundAffiliateRepoStub{}
+	svc := &PaymentService{
+		entClient:        client,
+		subscriptionSvc:  subSvc,
+		groupRepo:        groupRepo,
+		affiliateService: &AffiliateService{repo: repo},
+	}
+
+	require.NoError(t, svc.ExecuteSubscriptionFulfillment(ctx, order.ID))
+	require.Equal(t, 1, repo.recordCalls)
+	require.Equal(t, user.ID, repo.lastRecordUserID)
+	require.Equal(t, order.ID, repo.lastRecordSource)
+	require.Equal(t, order.Amount, repo.lastRecordValue)
+
+	successLog, err := client.PaymentAuditLog.Query().
+		Where(
+			paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)),
+			paymentauditlog.ActionEQ("SUBSCRIPTION_SUCCESS"),
+		).
+		Only(ctx)
+	require.NoError(t, err)
+	require.Contains(t, successLog.Detail, "\"creditedAmount\":123")
+	require.Contains(t, successLog.Detail, "\"payAmount\":99")
+
+	firstSub, err := userSubRepo.GetByUserIDAndGroupID(ctx, user.ID, group.ID)
+	require.NoError(t, err)
+
+	_, err = client.PaymentOrder.UpdateOneID(order.ID).
+		SetStatus(OrderStatusFailed).
+		Save(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.ExecuteSubscriptionFulfillment(ctx, order.ID))
+
+	secondSub, err := userSubRepo.GetByUserIDAndGroupID(ctx, user.ID, group.ID)
+	require.NoError(t, err)
+	require.Equal(t, firstSub.ExpiresAt, secondSub.ExpiresAt)
+
+	claimCount, err := client.PaymentAuditLog.Query().
+		Where(
+			paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)),
+			paymentauditlog.ActionEQ("SUBSCRIPTION_FULFILLMENT_CLAIM"),
+		).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, claimCount)
 }

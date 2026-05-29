@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -41,9 +42,25 @@ type UpdateProxyRequest struct {
 	Protocol string `json:"protocol" binding:"omitempty,oneof=http https socks5 socks5h"`
 	Host     string `json:"host"`
 	Port     int    `json:"port" binding:"omitempty,min=1,max=65535"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username *string `json:"username"`
+	Password *string `json:"password"`
 	Status   string `json:"status" binding:"omitempty,oneof=active inactive"`
+}
+
+const proxyAuthPairRequiredMessage = "proxy username and password must both be provided"
+
+func validateProxyHost(host string) error {
+	if service.NormalizeProxyHost(host) == "" {
+		return infraerrors.BadRequest("PROXY_HOST_REQUIRED", "proxy host is required")
+	}
+	return nil
+}
+
+func validateProxyCredentials(username, password string) error {
+	if service.HasPartialProxyAuth(username, password) {
+		return infraerrors.BadRequest("PROXY_AUTH_PAIR_REQUIRED", proxyAuthPairRequiredMessage)
+	}
+	return nil
 }
 
 // List handles listing all proxies with pagination
@@ -135,13 +152,20 @@ func (h *ProxyHandler) Create(c *gin.Context) {
 	}
 
 	executeAdminIdempotentJSON(c, "admin.proxies.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		host := service.NormalizeProxyHost(req.Host)
+		if err := validateProxyHost(host); err != nil {
+			return nil, err
+		}
+		if err := validateProxyCredentials(req.Username, req.Password); err != nil {
+			return nil, err
+		}
 		proxy, err := h.adminService.CreateProxy(ctx, &service.CreateProxyInput{
 			Name:     strings.TrimSpace(req.Name),
 			Protocol: strings.TrimSpace(req.Protocol),
-			Host:     strings.TrimSpace(req.Host),
+			Host:     host,
 			Port:     req.Port,
-			Username: strings.TrimSpace(req.Username),
-			Password: strings.TrimSpace(req.Password),
+			Username: req.Username,
+			Password: req.Password,
 		})
 		if err != nil {
 			return nil, err
@@ -165,15 +189,49 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		return
 	}
 
-	proxy, err := h.adminService.UpdateProxy(c.Request.Context(), proxyID, &service.UpdateProxyInput{
+	existing, err := h.adminService.GetProxy(c.Request.Context(), proxyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	username := existing.Username
+	if req.Username != nil {
+		username = *req.Username
+	}
+	password := existing.Password
+	if req.Password != nil {
+		password = *req.Password
+	}
+	if err := validateProxyCredentials(username, password); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	host := strings.TrimSpace(req.Host)
+	if host != "" {
+		host = service.NormalizeProxyHost(host)
+		if err := validateProxyHost(host); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+	}
+
+	updateInput := &service.UpdateProxyInput{
 		Name:     strings.TrimSpace(req.Name),
 		Protocol: strings.TrimSpace(req.Protocol),
-		Host:     strings.TrimSpace(req.Host),
+		Host:     host,
 		Port:     req.Port,
-		Username: strings.TrimSpace(req.Username),
-		Password: strings.TrimSpace(req.Password),
 		Status:   strings.TrimSpace(req.Status),
-	})
+	}
+	if req.Username != nil {
+		updateInput.Username = *req.Username
+	}
+	if req.Password != nil {
+		updateInput.Password = *req.Password
+	}
+
+	proxy, err := h.adminService.UpdateProxy(c.Request.Context(), proxyID, updateInput)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -322,29 +380,46 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 		return
 	}
 
+	existingProxies, err := h.listProxiesFiltered(c.Request.Context(), "", "", "", "id", "desc")
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	existingKeys := make(map[string]struct{}, len(existingProxies))
+	for i := range existingProxies {
+		existingKeys[service.ProxyIdentityKey(
+			existingProxies[i].Protocol,
+			existingProxies[i].Host,
+			existingProxies[i].Port,
+			existingProxies[i].Username,
+			existingProxies[i].Password,
+		)] = struct{}{}
+	}
+
 	created := 0
 	skipped := 0
 
 	for _, item := range req.Proxies {
-		// Trim all string fields
-		host := strings.TrimSpace(item.Host)
+		host := service.NormalizeProxyHost(item.Host)
 		protocol := strings.TrimSpace(item.Protocol)
-		username := strings.TrimSpace(item.Username)
-		password := strings.TrimSpace(item.Password)
+		username := item.Username
+		password := item.Password
 
-		// Check for duplicates (same host, port, username, password)
-		exists, err := h.adminService.CheckProxyExists(c.Request.Context(), host, item.Port, username, password)
-		if err != nil {
+		if err := validateProxyHost(host); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		if err := validateProxyCredentials(username, password); err != nil {
 			response.ErrorFrom(c, err)
 			return
 		}
 
-		if exists {
+		key := service.ProxyIdentityKey(protocol, host, item.Port, username, password)
+		if _, exists := existingKeys[key]; exists {
 			skipped++
 			continue
 		}
 
-		// Create proxy with default name
 		_, err = h.adminService.CreateProxy(c.Request.Context(), &service.CreateProxyInput{
 			Name:     "default",
 			Protocol: protocol,
@@ -354,11 +429,11 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 			Password: password,
 		})
 		if err != nil {
-			// If creation fails due to duplicate, count as skipped
 			skipped++
 			continue
 		}
 
+		existingKeys[key] = struct{}{}
 		created++
 	}
 

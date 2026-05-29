@@ -67,6 +67,8 @@ func (Account) Fields() []ent.Field {
 				domain.PlatformOpenAI,
 				domain.PlatformGemini,
 				domain.PlatformAntigravity,
+				domain.PlatformOpenAICompatible,
+				domain.PlatformAnthropicCompatible,
 			),
 
 		// type: 认证类型，如 "api_key", "oauth", "cookie" 等

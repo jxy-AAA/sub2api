@@ -29,6 +29,12 @@ func (_u *PromoCodeUpdate) Where(ps ...predicate.PromoCode) *PromoCodeUpdate {
 	return _u
 }
 
+// SetUpdatedAt sets the "updated_at" field.
+func (_u *PromoCodeUpdate) SetUpdatedAt(v time.Time) *PromoCodeUpdate {
+	_u.mutation.SetUpdatedAt(v)
+	return _u
+}
+
 // SetCode sets the "code" field.
 func (_u *PromoCodeUpdate) SetCode(v string) *PromoCodeUpdate {
 	_u.mutation.SetCode(v)
@@ -160,12 +166,6 @@ func (_u *PromoCodeUpdate) ClearNotes() *PromoCodeUpdate {
 	return _u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (_u *PromoCodeUpdate) SetUpdatedAt(v time.Time) *PromoCodeUpdate {
-	_u.mutation.SetUpdatedAt(v)
-	return _u
-}
-
 // AddUsageRecordIDs adds the "usage_records" edge to the PromoCodeUsage entity by IDs.
 func (_u *PromoCodeUpdate) AddUsageRecordIDs(ids ...int64) *PromoCodeUpdate {
 	_u.mutation.AddUsageRecordIDs(ids...)
@@ -270,6 +270,9 @@ func (_u *PromoCodeUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			}
 		}
 	}
+	if value, ok := _u.mutation.UpdatedAt(); ok {
+		_spec.SetField(promocode.FieldUpdatedAt, field.TypeTime, value)
+	}
 	if value, ok := _u.mutation.Code(); ok {
 		_spec.SetField(promocode.FieldCode, field.TypeString, value)
 	}
@@ -305,9 +308,6 @@ func (_u *PromoCodeUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.NotesCleared() {
 		_spec.ClearField(promocode.FieldNotes, field.TypeString)
-	}
-	if value, ok := _u.mutation.UpdatedAt(); ok {
-		_spec.SetField(promocode.FieldUpdatedAt, field.TypeTime, value)
 	}
 	if _u.mutation.UsageRecordsCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -372,6 +372,12 @@ type PromoCodeUpdateOne struct {
 	fields   []string
 	hooks    []Hook
 	mutation *PromoCodeMutation
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (_u *PromoCodeUpdateOne) SetUpdatedAt(v time.Time) *PromoCodeUpdateOne {
+	_u.mutation.SetUpdatedAt(v)
+	return _u
 }
 
 // SetCode sets the "code" field.
@@ -502,12 +508,6 @@ func (_u *PromoCodeUpdateOne) SetNillableNotes(v *string) *PromoCodeUpdateOne {
 // ClearNotes clears the value of the "notes" field.
 func (_u *PromoCodeUpdateOne) ClearNotes() *PromoCodeUpdateOne {
 	_u.mutation.ClearNotes()
-	return _u
-}
-
-// SetUpdatedAt sets the "updated_at" field.
-func (_u *PromoCodeUpdateOne) SetUpdatedAt(v time.Time) *PromoCodeUpdateOne {
-	_u.mutation.SetUpdatedAt(v)
 	return _u
 }
 
@@ -645,6 +645,9 @@ func (_u *PromoCodeUpdateOne) sqlSave(ctx context.Context) (_node *PromoCode, er
 			}
 		}
 	}
+	if value, ok := _u.mutation.UpdatedAt(); ok {
+		_spec.SetField(promocode.FieldUpdatedAt, field.TypeTime, value)
+	}
 	if value, ok := _u.mutation.Code(); ok {
 		_spec.SetField(promocode.FieldCode, field.TypeString, value)
 	}
@@ -680,9 +683,6 @@ func (_u *PromoCodeUpdateOne) sqlSave(ctx context.Context) (_node *PromoCode, er
 	}
 	if _u.mutation.NotesCleared() {
 		_spec.ClearField(promocode.FieldNotes, field.TypeString)
-	}
-	if value, ok := _u.mutation.UpdatedAt(); ok {
-		_spec.SetField(promocode.FieldUpdatedAt, field.TypeTime, value)
 	}
 	if _u.mutation.UsageRecordsCleared() {
 		edge := &sqlgraph.EdgeSpec{

@@ -3,6 +3,7 @@
 package account
 
 import (
+	"fmt"
 	"time"
 
 	"entgo.io/ent"
@@ -174,10 +175,6 @@ var (
 	UpdateDefaultUpdatedAt func() time.Time
 	// NameValidator is a validator for the "name" field. It is called by the builders before save.
 	NameValidator func(string) error
-	// PlatformValidator is a validator for the "platform" field. It is called by the builders before save.
-	PlatformValidator func(string) error
-	// TypeValidator is a validator for the "type" field. It is called by the builders before save.
-	TypeValidator func(string) error
 	// DefaultCredentials holds the default value on creation for the "credentials" field.
 	DefaultCredentials func() map[string]interface{}
 	// DefaultExtra holds the default value on creation for the "extra" field.
@@ -188,10 +185,6 @@ var (
 	DefaultPriority int
 	// DefaultRateMultiplier holds the default value on creation for the "rate_multiplier" field.
 	DefaultRateMultiplier float64
-	// DefaultStatus holds the default value on creation for the "status" field.
-	DefaultStatus string
-	// StatusValidator is a validator for the "status" field. It is called by the builders before save.
-	StatusValidator func(string) error
 	// DefaultAutoPauseOnExpired holds the default value on creation for the "auto_pause_on_expired" field.
 	DefaultAutoPauseOnExpired bool
 	// DefaultSchedulable holds the default value on creation for the "schedulable" field.
@@ -199,6 +192,87 @@ var (
 	// SessionWindowStatusValidator is a validator for the "session_window_status" field. It is called by the builders before save.
 	SessionWindowStatusValidator func(string) error
 )
+
+// Platform defines the type for the "platform" enum field.
+type Platform string
+
+// Platform values.
+const (
+	PlatformAnthropic           Platform = "anthropic"
+	PlatformOpenai              Platform = "openai"
+	PlatformGemini              Platform = "gemini"
+	PlatformAntigravity         Platform = "antigravity"
+	PlatformOpenaiCompatible    Platform = "openai_compatible"
+	PlatformAnthropicCompatible Platform = "anthropic_compatible"
+)
+
+func (pl Platform) String() string {
+	return string(pl)
+}
+
+// PlatformValidator is a validator for the "platform" field enum values. It is called by the builders before save.
+func PlatformValidator(pl Platform) error {
+	switch pl {
+	case PlatformAnthropic, PlatformOpenai, PlatformGemini, PlatformAntigravity, PlatformOpenaiCompatible, PlatformAnthropicCompatible:
+		return nil
+	default:
+		return fmt.Errorf("account: invalid enum value for platform field: %q", pl)
+	}
+}
+
+// Type defines the type for the "type" enum field.
+type Type string
+
+// Type values.
+const (
+	TypeOauth          Type = "oauth"
+	TypeSetupToken     Type = "setup-token"
+	TypeApikey         Type = "apikey"
+	TypeUpstream       Type = "upstream"
+	TypeBedrock        Type = "bedrock"
+	TypeServiceAccount Type = "service_account"
+)
+
+func (_type Type) String() string {
+	return string(_type)
+}
+
+// TypeValidator is a validator for the "type" field enum values. It is called by the builders before save.
+func TypeValidator(_type Type) error {
+	switch _type {
+	case TypeOauth, TypeSetupToken, TypeApikey, TypeUpstream, TypeBedrock, TypeServiceAccount:
+		return nil
+	default:
+		return fmt.Errorf("account: invalid enum value for type field: %q", _type)
+	}
+}
+
+// Status defines the type for the "status" enum field.
+type Status string
+
+// StatusActive is the default value of the Status enum.
+const DefaultStatus = StatusActive
+
+// Status values.
+const (
+	StatusActive   Status = "active"
+	StatusDisabled Status = "disabled"
+	StatusError    Status = "error"
+)
+
+func (s Status) String() string {
+	return string(s)
+}
+
+// StatusValidator is a validator for the "status" field enum values. It is called by the builders before save.
+func StatusValidator(s Status) error {
+	switch s {
+	case StatusActive, StatusDisabled, StatusError:
+		return nil
+	default:
+		return fmt.Errorf("account: invalid enum value for status field: %q", s)
+	}
+}
 
 // OrderOption defines the ordering options for the Account queries.
 type OrderOption func(*sql.Selector)

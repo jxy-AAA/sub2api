@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -396,11 +395,11 @@ func (h *OpsHandler) RetryRequestErrorClient(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+	subject, ok := requireAdminSubject(c)
+	if !ok {
 		return
 	}
+	operatorID := adminActorUserID(subject)
 
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -409,7 +408,7 @@ func (h *OpsHandler) RetryRequestErrorClient(c *gin.Context) {
 		return
 	}
 
-	result, err := h.opsService.RetryError(c.Request.Context(), subject.UserID, id, service.OpsRetryModeClient, nil)
+	result, err := h.opsService.RetryError(c.Request.Context(), operatorID, id, service.OpsRetryModeClient, nil)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -429,11 +428,11 @@ func (h *OpsHandler) RetryRequestErrorUpstreamEvent(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+	subject, ok := requireAdminSubject(c)
+	if !ok {
 		return
 	}
+	operatorID := adminActorUserID(subject)
 
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -449,7 +448,7 @@ func (h *OpsHandler) RetryRequestErrorUpstreamEvent(c *gin.Context) {
 		return
 	}
 
-	result, err := h.opsService.RetryUpstreamEvent(c.Request.Context(), subject.UserID, id, idx)
+	result, err := h.opsService.RetryUpstreamEvent(c.Request.Context(), operatorID, id, idx)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -576,11 +575,11 @@ func (h *OpsHandler) RetryUpstreamError(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+	subject, ok := requireAdminSubject(c)
+	if !ok {
 		return
 	}
+	operatorID := adminActorUserID(subject)
 
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -589,7 +588,7 @@ func (h *OpsHandler) RetryUpstreamError(c *gin.Context) {
 		return
 	}
 
-	result, err := h.opsService.RetryError(c.Request.Context(), subject.UserID, id, service.OpsRetryModeUpstream, nil)
+	result, err := h.opsService.RetryError(c.Request.Context(), operatorID, id, service.OpsRetryModeUpstream, nil)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -728,11 +727,11 @@ func (h *OpsHandler) RetryErrorRequest(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+	subject, ok := requireAdminSubject(c)
+	if !ok {
 		return
 	}
+	operatorID := adminActorUserID(subject)
 
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -760,7 +759,7 @@ func (h *OpsHandler) RetryErrorRequest(c *gin.Context) {
 		return
 	}
 
-	result, err := h.opsService.RetryError(c.Request.Context(), subject.UserID, id, req.Mode, req.PinnedAccountID)
+	result, err := h.opsService.RetryError(c.Request.Context(), operatorID, id, req.Mode, req.PinnedAccountID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -818,11 +817,11 @@ func (h *OpsHandler) UpdateErrorResolution(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+	subject, ok := requireAdminSubject(c)
+	if !ok {
 		return
 	}
+	operatorID := adminActorUserID(subject)
 
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -836,7 +835,7 @@ func (h *OpsHandler) UpdateErrorResolution(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	uid := subject.UserID
+	uid := operatorID
 	if err := h.opsService.UpdateErrorResolution(c.Request.Context(), id, req.Resolved, &uid, nil); err != nil {
 		response.ErrorFrom(c, err)
 		return

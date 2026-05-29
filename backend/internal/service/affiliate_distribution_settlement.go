@@ -30,14 +30,16 @@ var ErrAffiliateDistributionPaidCreditConflict = infraerrors.Conflict(
 )
 
 type AffiliateDistributionUsageSettlementCommand struct {
-	UsageLogID     int64
-	UserID         int64
-	GroupID        int64
-	Model          string
-	RequestedModel string
-	TotalCost      float64
-	ActualCost     float64
-	UsageCreatedAt time.Time
+	UsageLogID        int64
+	UserID            int64
+	GroupID           int64
+	Model             string
+	RequestedModel    string
+	TotalCost         float64
+	ActualCost        float64
+	RateMultiplier    float64
+	HasRateMultiplier bool
+	UsageCreatedAt    time.Time
 }
 
 type AffiliateDistributionUsageSettlementService interface {
@@ -120,6 +122,16 @@ func settleAffiliateDistributionUsageBestEffort(
 		return
 	}
 	if usageLog.GroupID == nil || *usageLog.GroupID <= 0 {
+		logger.LegacyPrintf(
+			logKey,
+			"Affiliate distribution usage settlement skipped: missing group_id usage_log_id=%d user_id=%d model=%s requested_model=%s actual_cost=%.8f total_cost=%.8f",
+			usageLog.ID,
+			usageLog.UserID,
+			strings.TrimSpace(usageLog.Model),
+			strings.TrimSpace(usageLog.RequestedModel),
+			usageLog.ActualCost,
+			usageLog.TotalCost,
+		)
 		return
 	}
 
@@ -127,14 +139,16 @@ func settleAffiliateDistributionUsageBestEffort(
 	defer cancel()
 
 	cmd := AffiliateDistributionUsageSettlementCommand{
-		UsageLogID:     usageLog.ID,
-		UserID:         usageLog.UserID,
-		GroupID:        *usageLog.GroupID,
-		Model:          strings.TrimSpace(usageLog.Model),
-		RequestedModel: strings.TrimSpace(usageLog.RequestedModel),
-		TotalCost:      usageLog.TotalCost,
-		ActualCost:     usageLog.ActualCost,
-		UsageCreatedAt: usageLog.CreatedAt,
+		UsageLogID:        usageLog.ID,
+		UserID:            usageLog.UserID,
+		GroupID:           *usageLog.GroupID,
+		Model:             strings.TrimSpace(usageLog.Model),
+		RequestedModel:    strings.TrimSpace(usageLog.RequestedModel),
+		TotalCost:         usageLog.TotalCost,
+		ActualCost:        usageLog.ActualCost,
+		RateMultiplier:    usageLog.RateMultiplier,
+		HasRateMultiplier: true,
+		UsageCreatedAt:    usageLog.CreatedAt,
 	}
 	if _, err := settlementService.SettleUsage(settlementCtx, cmd); err != nil {
 		logger.LegacyPrintf(logKey, "Affiliate distribution usage settlement failed: usage_log_id=%d err=%v", usageLog.ID, err)

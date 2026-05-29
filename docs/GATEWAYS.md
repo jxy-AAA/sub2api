@@ -18,6 +18,27 @@ Important config:
 Use `force_http` as the fast rollback switch if WebSocket behavior needs to be
 disabled without removing the surrounding config.
 
+### OpenAI-compatible clients
+
+- Use this mode for GPT-style tools such as Cursor and any OpenAI SDK-compatible client.
+- Point the client Base URL at your Sub2API deployment and keep using the usual routes:
+  - `/v1/chat/completions`
+  - `/v1/responses`
+  - `/v1/models`
+- The user-facing `/model-market` page is the fastest way to confirm which models are exposed through OpenAI-compatible upstreams and what their pricing looks like.
+
+## Anthropic-compatible gateway
+
+Sub2API also supports Anthropic-compatible routing for Claude-style clients.
+
+### Anthropic-compatible clients
+
+- Use this mode for Claude Code and Anthropic SDK-compatible clients.
+- Point the client Base URL at your Sub2API deployment and use:
+  - `/v1/messages`
+  - `/v1/models` when that model listing route is exposed by the upstream integration
+- Check `/model-market` to see which models are marked as Anthropic-compatible before wiring Claude Code to a specific deployment.
+
 ## Gemini gateway
 
 Gemini traffic can be backed by OAuth accounts and optional quota policy config:

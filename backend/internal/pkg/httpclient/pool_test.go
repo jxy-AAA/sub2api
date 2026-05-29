@@ -4,10 +4,37 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+type countingRoundTripper struct {
+	closed int
+}
+
+func (rt *countingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (rt *countingRoundTripper) CloseIdleConnections() {
+	rt.closed++
+}
+
+func useSharedClientCacheForTest(t *testing.T, capacity int, ttl time.Duration, now func() time.Time) *sharedClientCache {
+	t.Helper()
+
+	original := sharedClients
+	testCache := newSharedClientCache(capacity, ttl, now)
+	sharedClients = testCache
+	t.Cleanup(func() {
+		closeIdleHTTPClients(testCache.closeAll())
+		sharedClients = original
+	})
+	return testCache
+}
 
 func TestBuildValidatedDialContextRejectsPrivateResolvedIP(t *testing.T) {
 	dialCalled := false
@@ -62,4 +89,62 @@ func TestBuildValidatedDialContextRejectsPrivateLiteralHost(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not allowed")
 	require.False(t, dialCalled)
+}
+
+func TestGetClientEvictsLeastRecentlyUsedEntryWhenCapacityReached(t *testing.T) {
+	cache := useSharedClientCacheForTest(t, 2, time.Hour, time.Now)
+
+	first, err := GetClient(Options{ProxyURL: "http://proxy-a.local:8080", Timeout: time.Second})
+	require.NoError(t, err)
+
+	second, err := GetClient(Options{ProxyURL: "http://proxy-b.local:8080", Timeout: time.Second})
+	require.NoError(t, err)
+
+	third, err := GetClient(Options{ProxyURL: "http://proxy-c.local:8080", Timeout: time.Second})
+	require.NoError(t, err)
+
+	require.NotNil(t, third)
+	require.Equal(t, 2, cache.len())
+
+	secondAgain, err := GetClient(Options{ProxyURL: "http://proxy-b.local:8080", Timeout: time.Second})
+	require.NoError(t, err)
+	require.Same(t, second, secondAgain)
+
+	firstAgain, err := GetClient(Options{ProxyURL: "http://proxy-a.local:8080", Timeout: time.Second})
+	require.NoError(t, err)
+	require.NotSame(t, first, firstAgain)
+}
+
+func TestGetClientExpiresStaleEntry(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	cache := useSharedClientCacheForTest(t, 2, time.Minute, func() time.Time {
+		return now
+	})
+
+	first, err := GetClient(Options{ProxyURL: "http://proxy.local:8080", Timeout: time.Second})
+	require.NoError(t, err)
+	require.Equal(t, 1, cache.len())
+
+	now = now.Add(2 * time.Minute)
+
+	second, err := GetClient(Options{ProxyURL: "http://proxy.local:8080", Timeout: time.Second})
+	require.NoError(t, err)
+	require.NotSame(t, first, second)
+	require.Equal(t, 1, cache.len())
+}
+
+func TestCloseSharedClientsClearsCacheAndClosesIdleConnections(t *testing.T) {
+	cache := useSharedClientCacheForTest(t, 2, time.Hour, time.Now)
+
+	firstTransport := &countingRoundTripper{}
+	secondTransport := &countingRoundTripper{}
+
+	_, _, _ = cache.store("first", &http.Client{Transport: firstTransport})
+	_, _, _ = cache.store("second", &http.Client{Transport: secondTransport})
+
+	CloseSharedClients()
+
+	require.Equal(t, 0, cache.len())
+	require.Equal(t, 1, firstTransport.closed)
+	require.Equal(t, 1, secondTransport.closed)
 }

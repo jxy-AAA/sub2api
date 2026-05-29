@@ -96,10 +96,10 @@ func (s *PaymentConfigService) decryptAndMaskConfig(providerKey, encrypted strin
 }
 
 // pendingOrderStatuses are order statuses considered "in progress".
-var pendingOrderStatuses = []string{
-	payment.OrderStatusPending,
-	payment.OrderStatusPaid,
-	payment.OrderStatusRecharging,
+var pendingOrderStatuses = []paymentorder.Status{
+	paymentorder.Status(payment.OrderStatusPending),
+	paymentorder.Status(payment.OrderStatusPaid),
+	paymentorder.Status(payment.OrderStatusRecharging),
 }
 
 // providerSensitiveConfigFields is the authoritative list of config keys that

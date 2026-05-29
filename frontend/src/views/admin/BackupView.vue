@@ -1,7 +1,7 @@
 <template>
     <div class="space-y-6">
       <!-- S3 Storage Config -->
-      <div class="card p-6">
+      <div v-if="canExportTaodingTrace" class="card p-6">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 class="text-base font-semibold text-gray-900 dark:text-white">
@@ -88,6 +88,28 @@
         <div class="mt-4">
           <button type="button" class="btn btn-primary btn-sm" :disabled="savingSchedule" @click="saveSchedule">
             {{ savingSchedule ? t('common.loading') : t('common.save') }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Requirement Export -->
+      <div class="card p-6">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="max-w-2xl">
+            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+              {{ traceExportCopy.title }}
+            </h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ traceExportCopy.description }}
+            </p>
+          </div>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm"
+            :disabled="exportingTrace"
+            @click="handleExportRequirementJson"
+          >
+            {{ exportingTrace ? traceExportCopy.loading : traceExportCopy.action }}
           </button>
         </div>
       </div>
@@ -282,11 +304,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api'
-import { useAppStore } from '@/stores'
+import { useAppStore, useAuthStore } from '@/stores'
 import type { BackupS3Config, BackupScheduleConfig, BackupRecord } from '@/api/admin/backup'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 // S3 config
 const s3Form = ref<BackupS3Config>({
@@ -317,11 +340,33 @@ const loadingBackups = ref(false)
 const creatingBackup = ref(false)
 const restoringId = ref('')
 const manualExpireDays = ref(14)
+const exportingTrace = ref(false)
+const canExportTaodingTrace = computed(() => authStore.user?.is_root_admin === true)
 
 // Polling
 const pollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const restoringPollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const MAX_POLL_COUNT = 900
+
+const traceExportCopy = computed(() =>
+  locale.value.startsWith('zh')
+    ? {
+        title: '\u6dd8\u4e01\u6570\u636e\u5bfc\u51fa',
+        description: '\u4e00\u952e\u5bfc\u51fa\u5f53\u524d\u5408\u89c4\u622a\u7559\u7684\u9700\u6c42 JSON\uff0c\u7528\u4e8e\u6309\u9700\u6c42\u6587\u6863\u63d0\u4ea4\u6dd8\u4e01\u6570\u636e\u3002',
+        action: '\u5bfc\u51fa\u9700\u6c42 JSON',
+        loading: '\u5bfc\u51fa\u4e2d...',
+        success: '\u6dd8\u4e01\u9700\u6c42 JSON \u5df2\u5f00\u59cb\u4e0b\u8f7d',
+        failed: '\u5bfc\u51fa\u9700\u6c42 JSON \u5931\u8d25',
+      }
+    : {
+        title: 'Taoding Data Export',
+        description: 'Download the intercepted compliance JSON for Taoding requirement delivery.',
+        action: 'Export Requirement JSON',
+        loading: 'Exporting...',
+        success: 'Requirement JSON download started',
+        failed: 'Failed to export requirement JSON',
+      }
+)
 
 function updateRecordInList(updated: BackupRecord) {
   const idx = backups.value.findIndex(r => r.id === updated.id)
@@ -543,6 +588,32 @@ async function downloadBackup(id: string) {
     window.open(result.url, '_blank')
   } catch (error) {
     appStore.showError((error as { message?: string })?.message || t('errors.networkError'))
+  }
+}
+
+function formatExportTimestamp() {
+  const now = new Date()
+  const pad2 = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`
+}
+
+async function handleExportRequirementJson() {
+  if (exportingTrace.value) return
+
+  exportingTrace.value = true
+  try {
+    const blob = await adminAPI.backup.exportRequirementJson()
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `sub2api-taoding-data-${formatExportTimestamp()}.json`
+    link.click()
+    window.URL.revokeObjectURL(url)
+    appStore.showSuccess(traceExportCopy.value.success)
+  } catch (error) {
+    appStore.showError((error as { message?: string })?.message || traceExportCopy.value.failed)
+  } finally {
+    exportingTrace.value = false
   }
 }
 

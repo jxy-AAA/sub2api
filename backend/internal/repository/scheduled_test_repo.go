@@ -14,6 +14,8 @@ type scheduledTestPlanRepository struct {
 	db *sql.DB
 }
 
+const scheduledTestClaimDefaultLimit = 100
+
 func NewScheduledTestPlanRepository(db *sql.DB) service.ScheduledTestPlanRepository {
 	return &scheduledTestPlanRepository{db: db}
 }
@@ -62,6 +64,57 @@ func (r *scheduledTestPlanRepository) ListDue(ctx context.Context, now time.Time
 	return scanPlans(rows)
 }
 
+func (r *scheduledTestPlanRepository) ClaimDue(ctx context.Context, now time.Time, leaseUntil time.Time, limit int) ([]*service.ScheduledTestPlan, error) {
+	if limit <= 0 {
+		limit = scheduledTestClaimDefaultLimit
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
+		WITH due AS (
+			SELECT id
+			FROM scheduled_test_plans
+			WHERE enabled = true AND next_run_at IS NOT NULL AND next_run_at <= $1
+			ORDER BY next_run_at ASC
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE scheduled_test_plans AS plans
+		SET next_run_at = $3, updated_at = NOW()
+		FROM due
+		WHERE plans.id = due.id
+		RETURNING plans.id, plans.account_id, plans.model_id, plans.cron_expression, plans.enabled, plans.max_results, plans.auto_recover, plans.last_run_at, plans.next_run_at, plans.created_at, plans.updated_at
+	`, now, limit, leaseUntil)
+	if err != nil {
+		return nil, err
+	}
+	plans, scanErr := scanPlans(rows)
+	closeErr := rows.Close()
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	committed = true
+
+	return plans, nil
+}
+
 func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
 	row := r.db.QueryRowContext(ctx, `
 		UPDATE scheduled_test_plans
@@ -77,11 +130,20 @@ func (r *scheduledTestPlanRepository) Delete(ctx context.Context, id int64) erro
 	return err
 }
 
-func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int64, lastRunAt time.Time, nextRunAt time.Time) error {
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE scheduled_test_plans SET last_run_at = $2, next_run_at = $3, updated_at = NOW() WHERE id = $1
-	`, id, lastRunAt, nextRunAt)
-	return err
+func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int64, claimedUntil time.Time, lastRunAt time.Time, nextRunAt time.Time) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE scheduled_test_plans
+		SET last_run_at = $3, next_run_at = $4, updated_at = NOW()
+		WHERE id = $1 AND next_run_at = $2
+	`, id, claimedUntil, lastRunAt, nextRunAt)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 // --- Result Repository ---

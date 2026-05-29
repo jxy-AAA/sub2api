@@ -190,11 +190,12 @@ function readRouteQueryString(key: string): string {
 }
 
 async function stripResumeTokenFromUrl(): Promise<void> {
-  if (!readRouteQueryString('resume_token')) {
+  if (!readRouteQueryString('resume_token') && !readRouteQueryString('lookup_token')) {
     return
   }
   const query = { ...route.query }
   delete query.resume_token
+  delete query.lookup_token
   await router.replace({
     path: route.path,
     query,
@@ -250,9 +251,9 @@ async function resolveOrderFromResumeToken(resumeToken: string): Promise<Payment
   }
 }
 
-async function resolveOrderFromOutTradeNo(outTradeNo: string): Promise<PaymentOrder | null> {
+async function resolveOrderFromOutTradeNo(outTradeNo: string, lookupToken: string): Promise<PaymentOrder | null> {
   try {
-    const result = await paymentAPI.verifyOrderPublic(outTradeNo)
+    const result = await paymentAPI.verifyOrderPublic(outTradeNo, lookupToken)
     return result.data
   } catch (_err: unknown) {
     return null
@@ -300,7 +301,8 @@ function scheduleStatusRefresh(refreshOrder: (() => Promise<PaymentOrder | null>
 
 onMounted(async () => {
   const resumeToken = readRouteQueryString('resume_token')
-  if (resumeToken) {
+  const lookupToken = readRouteQueryString('lookup_token')
+  if (resumeToken || lookupToken) {
     await stripResumeTokenFromUrl()
   }
   const routeOrderId = Number(readRouteQueryString('order_id')) || 0
@@ -338,7 +340,7 @@ onMounted(async () => {
   }
 
   const hasLegacyFallbackContext = readRouteQueryString('trade_status').trim() !== ''
-  const shouldUsePublicOutTradeNo = outTradeNo !== '' && (hasLegacyFallbackContext || routeOrderId > 0 || orderId > 0)
+  const shouldUsePublicOutTradeNo = lookupToken !== '' && outTradeNo !== '' && (hasLegacyFallbackContext || routeOrderId > 0 || orderId > 0)
 
   if (!order.value && orderId && (!resumeToken || routeOrderId > 0)) {
     try {
@@ -349,7 +351,7 @@ onMounted(async () => {
   }
 
   if (!order.value && shouldUsePublicOutTradeNo && (!resumeToken || resumeTokenLookupFailed)) {
-    const legacyOrder = await resolveOrderFromOutTradeNo(outTradeNo)
+    const legacyOrder = await resolveOrderFromOutTradeNo(outTradeNo, lookupToken)
     if (legacyOrder) {
       order.value = legacyOrder
       if (!orderId) {
@@ -384,7 +386,7 @@ onMounted(async () => {
     }
 
     if (shouldUsePublicOutTradeNo) {
-      return await resolveOrderFromOutTradeNo(outTradeNo)
+      return await resolveOrderFromOutTradeNo(outTradeNo, lookupToken)
     }
 
     return null

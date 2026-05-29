@@ -193,13 +193,13 @@ func mustCreateAccount(t *testing.T, client *dbent.Client, a *service.Account) *
 
 	create := client.Account.Create().
 		SetName(a.Name).
-		SetPlatform(a.Platform).
-		SetType(a.Type).
+		SetPlatform(toDBAccountPlatform(a.Platform)).
+		SetType(toDBAccountType(a.Type)).
 		SetCredentials(a.Credentials).
 		SetExtra(a.Extra).
 		SetConcurrency(a.Concurrency).
 		SetPriority(a.Priority).
-		SetStatus(a.Status).
+		SetStatus(toDBAccountStatus(a.Status)).
 		SetSchedulable(a.Schedulable).
 		SetErrorMessage(a.ErrorMessage)
 

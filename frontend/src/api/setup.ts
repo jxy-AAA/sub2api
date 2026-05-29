@@ -12,9 +12,14 @@ const setupClient = axios.create({
   }
 })
 
+const SETUP_TOKEN_STORAGE_KEY = 'sub2api_setup_token'
+const SETUP_TOKEN_HEADER = 'X-Setup-Token'
+
 export interface SetupStatus {
   needs_setup: boolean
   step: string
+  setup_token_required?: boolean
+  setup_token_available?: boolean
 }
 
 export interface DatabaseConfig {
@@ -56,6 +61,30 @@ export interface InstallResponse {
   message: string
   restart: boolean
 }
+
+export function getSetupToken(): string {
+  if (typeof window === 'undefined') return ''
+  return window.sessionStorage.getItem(SETUP_TOKEN_STORAGE_KEY) || ''
+}
+
+export function setSetupToken(token: string): void {
+  if (typeof window === 'undefined') return
+  const normalized = token.trim()
+  if (!normalized) {
+    window.sessionStorage.removeItem(SETUP_TOKEN_STORAGE_KEY)
+    return
+  }
+  window.sessionStorage.setItem(SETUP_TOKEN_STORAGE_KEY, normalized)
+}
+
+setupClient.interceptors.request.use((config) => {
+  const token = getSetupToken()
+  if (token) {
+    config.headers = config.headers ?? {}
+    config.headers[SETUP_TOKEN_HEADER] = token
+  }
+  return config
+})
 
 /**
  * Get setup status

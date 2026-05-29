@@ -105,6 +105,7 @@ import type { PaymentOrder } from '@/types/payment'
 import type { Stripe, StripeElements } from '@stripe/stripe-js'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { consumeStripeLaunchSession } from './stripeLaunchSession'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -129,10 +130,46 @@ let stripeInstance: Stripe | null = null
 let elementsInstance: StripeElements | null = null
 let redirectTimer: ReturnType<typeof setTimeout> | null = null
 
+function readRouteQueryString(key: string): string {
+  const value = route.query[key]
+  if (Array.isArray(value)) {
+    return typeof value[0] === 'string' ? value[0] : ''
+  }
+  return typeof value === 'string' ? value : ''
+}
+
+async function sanitizeStripeRouteQuery(): Promise<void> {
+  const sessionId = readRouteQueryString('session_id')
+  const leakedClientSecret = readRouteQueryString('client_secret')
+  if (!sessionId && !leakedClientSecret) {
+    return
+  }
+
+  const query = { ...route.query }
+  delete query.session_id
+  delete query.client_secret
+  await router.replace({
+    path: route.path,
+    query,
+  })
+}
+
 onMounted(async () => {
-  const orderId = Number(route.query.order_id)
-  const clientSecret = String(route.query.client_secret || '')
-  const method = String(route.query.method || '')
+  let orderId = Number(readRouteQueryString('order_id'))
+  const method = readRouteQueryString('method')
+  const sessionId = readRouteQueryString('session_id')
+  const launchSession = sessionId
+    ? consumeStripeLaunchSession(sessionId, {
+      expectedOrderId: orderId || undefined,
+      expectedMethod: method || undefined,
+    })
+    : null
+  if (!orderId && launchSession?.orderId) {
+    orderId = launchSession.orderId
+  }
+  const clientSecret = launchSession?.clientSecret || ''
+
+  await sanitizeStripeRouteQuery()
 
   if (!orderId || !clientSecret) {
     loading.value = false

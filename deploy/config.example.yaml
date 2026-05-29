@@ -12,6 +12,7 @@ server:
   mode: "release"
   frontend_url: ""
   read_header_timeout: 30
+  read_body_timeout: 30
   idle_timeout: 120
   shutdown_timeout: 30
   trusted_proxies: []
@@ -258,6 +259,15 @@ usage_cleanup:
   worker_interval_seconds: 10
   task_timeout_seconds: 1800
 
+trace_export:
+  enabled: true
+  export_dir: "./data/trace-exports"
+  poll_interval_seconds: 15
+  batch_size: 200
+  task_timeout_seconds: 3600
+  cleanup_batch_size: 50
+  max_records_per_task: 100000
+
 idempotency:
   observe_only: true
   default_ttl_seconds: 86400
@@ -410,6 +420,7 @@ turnstile:
   required: false
 
 gemini:
+  allow_native_query_api_key: false
   oauth:
     client_id: ""
     client_secret: ""

@@ -114,12 +114,24 @@ func TestEmailOAuthCallbackExistingEmailLogsInWhenInvitationEnabled(t *testing.T
 
 	require.Equal(t, http.StatusFound, recorder.Code)
 	location := recorder.Header().Get("Location")
-	require.Contains(t, location, "access_token=")
-	require.Contains(t, location, "redirect=%252Fdashboard")
+	require.Equal(t, "/auth/oauth/callback", location)
 
 	sessionCount, err := client.PendingAuthSession.Query().Count(ctx)
 	require.NoError(t, err)
-	require.Zero(t, sessionCount)
+	require.Equal(t, 1, sessionCount)
+
+	session, err := client.PendingAuthSession.Query().Only(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, session.TargetUserID)
+	require.Equal(t, user.ID, *session.TargetUserID)
+	require.Equal(t, "existing@example.com", session.ResolvedEmail)
+	completion, ok := readCompletionResponse(session.LocalFlowState)
+	require.True(t, ok)
+	require.Equal(t, "/dashboard", completion["redirect"])
+	_, hasAccessToken := completion["access_token"]
+	require.False(t, hasAccessToken)
+	_, hasRefreshToken := completion["refresh_token"]
+	require.False(t, hasRefreshToken)
 
 	identityCount, err := client.AuthIdentity.Query().Where(
 		authidentity.ProviderTypeEQ("google"),
@@ -127,7 +139,24 @@ func TestEmailOAuthCallbackExistingEmailLogsInWhenInvitationEnabled(t *testing.T
 	).Count(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 1, identityCount)
-	_ = user
+}
+
+func TestEmailOAuthCallbackProviderErrorUsesQueryWithoutTokenLeak(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/google/callback", nil)
+
+	redirectEmailOAuthError(c, "/auth/oauth/callback", "provider_error", "oauth failed", "denied")
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	location := recorder.Header().Get("Location")
+	require.Contains(t, location, "/auth/oauth/callback?")
+	require.Contains(t, location, "error=provider_error")
+	require.Contains(t, location, "error_message=oauth+failed")
+	require.Contains(t, location, "error_description=denied")
+	require.NotContains(t, location, "#")
+	require.NotContains(t, location, "access_token")
+	require.NotContains(t, location, "refresh_token")
 }
 
 func TestEmailOAuthCallbackCreatesPasswordRegistrationSessionForNewEmail(t *testing.T) {

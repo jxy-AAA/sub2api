@@ -420,12 +420,19 @@ function userTimezone(): string {
   }
 }
 
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 function todayDate() {
-  return new Date().toISOString().slice(0, 10)
+  return formatLocalDate(new Date())
 }
 
 function currentMonth() {
-  return new Date().toISOString().slice(0, 7)
+  return todayDate().slice(0, 7)
 }
 
 function buildParams() {
@@ -571,7 +578,7 @@ function getDirectAgentCount(row: RowItem) {
 }
 
 function getDirectUsageAmount(row: RowItem) {
-  return readNumber(row as Record<string, unknown>, ['direct_total_usage_rmb', 'direct_total_usage_usd', 'business_rmb', 'business_usd'])
+  return readNumber(row as Record<string, unknown>, ['direct_total_usage_rmb', 'direct_total_usage_usd'])
 }
 
 function getDirectUserUsageAmount(row: RowItem) {

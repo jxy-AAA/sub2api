@@ -1817,6 +1817,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
+	platforms := OpenAIProtocolPlatforms()
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
 		return accounts, err
@@ -1824,11 +1825,11 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	var accounts []Account
 	var err error
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableByPlatforms(ctx, platforms)
 	} else if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, platforms)
 	} else {
-		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, platforms)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
@@ -1959,7 +1960,7 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return "", "", errors.New("access_token not found in credentials")
 		}
 		return accessToken, "oauth", nil
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeUpstream:
 		apiKey := account.GetOpenAIApiKey()
 		if apiKey == "" {
 			return "", "", errors.New("api_key not found in credentials")
@@ -2013,6 +2014,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	originalModel := reqModel
 	compatMessagesBridge := isOpenAICompatMessagesBridgeBody(body)
 	setOpenAICompatMessagesBridgeContext(c, compatMessagesBridge)
+	traceProtocol := inferGatewayTraceProtocol(c, "openai")
+	captureGatewayClientRequest(c, traceProtocol, originalBody, map[string]any{
+		"account_id":             account.ID,
+		"account_type":           string(account.Type),
+		"original_model":         originalModel,
+		"stream":                 reqStream,
+		"compat_messages_bridge": compatMessagesBridge,
+	})
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
@@ -2301,7 +2310,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			case PlatformOpenAI:
 				// For OpenAI API Key, remove max_output_tokens (not supported)
 				// For OpenAI OAuth (Responses API), keep it (supported)
-				if account.Type == AccountTypeAPIKey {
+				if account.IsStaticKeyAccount() {
 					delete(reqBody, "max_output_tokens")
 					bodyModified = true
 					markPatchDelete("max_output_tokens")
@@ -2330,7 +2339,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 		// Also handle max_completion_tokens (similar logic)
 		if _, hasMaxCompletionTokens := reqBody["max_completion_tokens"]; hasMaxCompletionTokens {
-			if account.Type == AccountTypeAPIKey || account.Platform != PlatformOpenAI {
+			if account.IsStaticKeyAccount() || account.Platform != PlatformOpenAI {
 				delete(reqBody, "max_completion_tokens")
 				bodyModified = true
 				markPatchDelete("max_completion_tokens")
@@ -2841,14 +2850,47 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	upstreamPassthroughModel := ""
+	requestModel := strings.TrimSpace(reqModel)
+	if requestModel == "" {
+		requestModel = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+		reqModel = requestModel
+	}
+	forwardModel := requestModel
+	if account != nil && requestModel != "" && len(account.GetModelMapping()) > 0 {
+		mappedModel, matched := account.ResolveMappedModel(requestModel)
+		if !matched {
+			message := fmt.Sprintf("model %s is not supported by account %s", requestModel, account.Name)
+			setOpsUpstreamError(c, http.StatusBadRequest, message, "")
+			if c != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": gin.H{
+						"type":    "invalid_request_error",
+						"message": message,
+						"param":   "model",
+					},
+				})
+			}
+			return nil, fmt.Errorf("openai passthrough model unsupported: %s", requestModel)
+		}
+		if mappedModel != requestModel {
+			nextBody, setErr := sjson.SetBytes(body, "model", mappedModel)
+			if setErr != nil {
+				return nil, fmt.Errorf("set passthrough model mapping: %w", setErr)
+			}
+			body = nextBody
+			forwardModel = mappedModel
+			upstreamPassthroughModel = mappedModel
+		}
+	}
 	if isOpenAIResponsesCompactPath(c) {
-		compactMappedModel := resolveOpenAICompactForwardModel(account, reqModel)
-		if compactMappedModel != "" && compactMappedModel != reqModel {
+		compactMappedModel := resolveOpenAICompactForwardModel(account, forwardModel)
+		if compactMappedModel != "" && compactMappedModel != forwardModel {
 			nextBody, setErr := sjson.SetBytes(body, "model", compactMappedModel)
 			if setErr != nil {
 				return nil, fmt.Errorf("set compact passthrough model: %w", setErr)
 			}
 			body = nextBody
+			forwardModel = compactMappedModel
 			upstreamPassthroughModel = compactMappedModel
 		}
 	}
@@ -3114,7 +3156,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	switch account.Type {
 	case AccountTypeOAuth:
 		targetURL = chatgptCodexURL
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeUpstream:
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL != "" {
 			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
@@ -3144,6 +3186,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			}
 		}
 	}
+	applyAccountCredentialHeaders(req.Header, account)
 
 	// 覆盖入站鉴权残留，并注入上游认证
 	req.Header.Del("authorization")
@@ -3210,6 +3253,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if req.Header.Get("content-type") == "" {
 		req.Header.Set("content-type", "application/json")
 	}
+
+	captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "openai"), req, body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+	})
 
 	return req, nil
 }
@@ -3539,12 +3587,23 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	defer putSSEScannerBuf64K(scanBuf)
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "openai"), resp, traceBuf, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         true,
+		"format":         "sse",
+		"passthrough":    true,
+	})
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		return &openaiStreamingResultPassthrough{usage: usage, firstTokenMs: firstTokenMs, imageCount: imageCounter.Count()}
 	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		traceBuf.WriteLine(line)
 		lineStartsClientOutput := false
 		forceFlushFailedEvent := false
 		if data, ok := extractOpenAISSEDataLine(line); ok {
@@ -3664,6 +3723,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, err
 	}
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "openai"), resp, body, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         false,
+		"passthrough":    true,
+	})
 
 	// Detect SSE responses from upstream and convert to JSON.
 	// Some upstreams (e.g. other sub2api instances) may return SSE even when
@@ -3708,6 +3773,14 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 // preserving passthrough payloads, except compact-only model remapping may
 // rewrite model fields back to the original requested model.
 func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "openai"), resp, body, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         false,
+		"format":         "sse",
+		"passthrough":    true,
+	})
+
 	bodyText := string(body)
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
 
@@ -3820,7 +3893,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	case AccountTypeOAuth:
 		// OAuth accounts use ChatGPT internal API
 		targetURL = chatgptCodexURL
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeUpstream:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL == "" {
@@ -3865,6 +3938,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 		}
 	}
+	applyAccountCredentialHeaders(req.Header, account)
+	req.Header.Set("authorization", "Bearer "+token)
 	if account.Type == AccountTypeOAuth {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
 		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
@@ -3916,6 +3991,14 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		req.Header.Set("content-type", "application/json")
 	}
 
+	captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "openai"), req, body, map[string]any{
+		"account_id":       account.ID,
+		"account_type":     string(account.Type),
+		"stream":           isStream,
+		"prompt_cache_key": strings.TrimSpace(promptCacheKey) != "",
+		"is_codex_cli":     isCodexCLI,
+	})
+
 	return req, nil
 }
 
@@ -3927,6 +4010,11 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	requestBody []byte,
 ) (*OpenAIForwardResult, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "openai"), resp, body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"error":        true,
+	})
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -4083,6 +4171,11 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	writeError compatErrorWriter,
 ) (*OpenAIForwardResult, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "openai"), resp, body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"error":        true,
+	})
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	if upstreamMsg == "" {
@@ -4279,6 +4372,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	failedMessage := ""
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
+	traceBuf := newGatewayTraceBodyBuffer()
 	var streamFailoverErr error
 	sendErrorEvent := func(reason string) {
 		if errorEventSent || clientDisconnected {
@@ -4374,6 +4468,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if streamFailoverErr != nil {
 			return
 		}
+		traceBuf.WriteLine(line)
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 
@@ -4670,6 +4765,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if err != nil {
 		return nil, err
 	}
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "openai"), resp, body, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         false,
+	})
 
 	// Detect SSE responses for ALL account types via Content-Type header.
 	// Some OpenAI-compatible upstreams (including other sub2api instances)
@@ -4724,6 +4826,13 @@ func isEventStreamResponse(header http.Header) bool {
 }
 
 func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "openai"), resp, body, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         false,
+		"format":         "sse",
+	})
+
 	bodyText := string(body)
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
 
@@ -5213,7 +5322,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
-	if s.rateLimitService != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI {
+	if s.rateLimitService != nil && input.Account != nil && input.Account.IsOpenAI() {
 		s.rateLimitService.ResetOpenAI403Counter(ctx, input.Account.ID)
 	}
 

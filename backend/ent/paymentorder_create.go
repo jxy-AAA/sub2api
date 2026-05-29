@@ -23,6 +23,34 @@ type PaymentOrderCreate struct {
 	conflict []sql.ConflictOption
 }
 
+// SetCreatedAt sets the "created_at" field.
+func (_c *PaymentOrderCreate) SetCreatedAt(v time.Time) *PaymentOrderCreate {
+	_c.mutation.SetCreatedAt(v)
+	return _c
+}
+
+// SetNillableCreatedAt sets the "created_at" field if the given value is not nil.
+func (_c *PaymentOrderCreate) SetNillableCreatedAt(v *time.Time) *PaymentOrderCreate {
+	if v != nil {
+		_c.SetCreatedAt(*v)
+	}
+	return _c
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (_c *PaymentOrderCreate) SetUpdatedAt(v time.Time) *PaymentOrderCreate {
+	_c.mutation.SetUpdatedAt(v)
+	return _c
+}
+
+// SetNillableUpdatedAt sets the "updated_at" field if the given value is not nil.
+func (_c *PaymentOrderCreate) SetNillableUpdatedAt(v *time.Time) *PaymentOrderCreate {
+	if v != nil {
+		_c.SetUpdatedAt(*v)
+	}
+	return _c
+}
+
 // SetUserID sets the "user_id" field.
 func (_c *PaymentOrderCreate) SetUserID(v int64) *PaymentOrderCreate {
 	_c.mutation.SetUserID(v)
@@ -156,13 +184,13 @@ func (_c *PaymentOrderCreate) SetNillableQrCodeImg(v *string) *PaymentOrderCreat
 }
 
 // SetOrderType sets the "order_type" field.
-func (_c *PaymentOrderCreate) SetOrderType(v string) *PaymentOrderCreate {
+func (_c *PaymentOrderCreate) SetOrderType(v paymentorder.OrderType) *PaymentOrderCreate {
 	_c.mutation.SetOrderType(v)
 	return _c
 }
 
 // SetNillableOrderType sets the "order_type" field if the given value is not nil.
-func (_c *PaymentOrderCreate) SetNillableOrderType(v *string) *PaymentOrderCreate {
+func (_c *PaymentOrderCreate) SetNillableOrderType(v *paymentorder.OrderType) *PaymentOrderCreate {
 	if v != nil {
 		_c.SetOrderType(*v)
 	}
@@ -246,13 +274,13 @@ func (_c *PaymentOrderCreate) SetProviderSnapshot(v map[string]interface{}) *Pay
 }
 
 // SetStatus sets the "status" field.
-func (_c *PaymentOrderCreate) SetStatus(v string) *PaymentOrderCreate {
+func (_c *PaymentOrderCreate) SetStatus(v paymentorder.Status) *PaymentOrderCreate {
 	_c.mutation.SetStatus(v)
 	return _c
 }
 
 // SetNillableStatus sets the "status" field if the given value is not nil.
-func (_c *PaymentOrderCreate) SetNillableStatus(v *string) *PaymentOrderCreate {
+func (_c *PaymentOrderCreate) SetNillableStatus(v *paymentorder.Status) *PaymentOrderCreate {
 	if v != nil {
 		_c.SetStatus(*v)
 	}
@@ -487,34 +515,6 @@ func (_c *PaymentOrderCreate) SetNillableSrcURL(v *string) *PaymentOrderCreate {
 	return _c
 }
 
-// SetCreatedAt sets the "created_at" field.
-func (_c *PaymentOrderCreate) SetCreatedAt(v time.Time) *PaymentOrderCreate {
-	_c.mutation.SetCreatedAt(v)
-	return _c
-}
-
-// SetNillableCreatedAt sets the "created_at" field if the given value is not nil.
-func (_c *PaymentOrderCreate) SetNillableCreatedAt(v *time.Time) *PaymentOrderCreate {
-	if v != nil {
-		_c.SetCreatedAt(*v)
-	}
-	return _c
-}
-
-// SetUpdatedAt sets the "updated_at" field.
-func (_c *PaymentOrderCreate) SetUpdatedAt(v time.Time) *PaymentOrderCreate {
-	_c.mutation.SetUpdatedAt(v)
-	return _c
-}
-
-// SetNillableUpdatedAt sets the "updated_at" field if the given value is not nil.
-func (_c *PaymentOrderCreate) SetNillableUpdatedAt(v *time.Time) *PaymentOrderCreate {
-	if v != nil {
-		_c.SetUpdatedAt(*v)
-	}
-	return _c
-}
-
 // SetUser sets the "user" edge to the User entity.
 func (_c *PaymentOrderCreate) SetUser(v *User) *PaymentOrderCreate {
 	return _c.SetUserID(v.ID)
@@ -555,6 +555,14 @@ func (_c *PaymentOrderCreate) ExecX(ctx context.Context) {
 
 // defaults sets the default values of the builder before save.
 func (_c *PaymentOrderCreate) defaults() {
+	if _, ok := _c.mutation.CreatedAt(); !ok {
+		v := paymentorder.DefaultCreatedAt()
+		_c.mutation.SetCreatedAt(v)
+	}
+	if _, ok := _c.mutation.UpdatedAt(); !ok {
+		v := paymentorder.DefaultUpdatedAt()
+		_c.mutation.SetUpdatedAt(v)
+	}
 	if _, ok := _c.mutation.FeeRate(); !ok {
 		v := paymentorder.DefaultFeeRate
 		_c.mutation.SetFeeRate(v)
@@ -579,18 +587,16 @@ func (_c *PaymentOrderCreate) defaults() {
 		v := paymentorder.DefaultForceRefund
 		_c.mutation.SetForceRefund(v)
 	}
-	if _, ok := _c.mutation.CreatedAt(); !ok {
-		v := paymentorder.DefaultCreatedAt()
-		_c.mutation.SetCreatedAt(v)
-	}
-	if _, ok := _c.mutation.UpdatedAt(); !ok {
-		v := paymentorder.DefaultUpdatedAt()
-		_c.mutation.SetUpdatedAt(v)
-	}
 }
 
 // check runs all checks and user-defined validators on the builder.
 func (_c *PaymentOrderCreate) check() error {
+	if _, ok := _c.mutation.CreatedAt(); !ok {
+		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "PaymentOrder.created_at"`)}
+	}
+	if _, ok := _c.mutation.UpdatedAt(); !ok {
+		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "PaymentOrder.updated_at"`)}
+	}
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "PaymentOrder.user_id"`)}
 	}
@@ -717,12 +723,6 @@ func (_c *PaymentOrderCreate) check() error {
 			return &ValidationError{Name: "src_host", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.src_host": %w`, err)}
 		}
 	}
-	if _, ok := _c.mutation.CreatedAt(); !ok {
-		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "PaymentOrder.created_at"`)}
-	}
-	if _, ok := _c.mutation.UpdatedAt(); !ok {
-		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "PaymentOrder.updated_at"`)}
-	}
 	if len(_c.mutation.UserIDs()) == 0 {
 		return &ValidationError{Name: "user", err: errors.New(`ent: missing required edge "PaymentOrder.user"`)}
 	}
@@ -753,6 +753,14 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 		_spec = sqlgraph.NewCreateSpec(paymentorder.Table, sqlgraph.NewFieldSpec(paymentorder.FieldID, field.TypeInt64))
 	)
 	_spec.OnConflict = _c.conflict
+	if value, ok := _c.mutation.CreatedAt(); ok {
+		_spec.SetField(paymentorder.FieldCreatedAt, field.TypeTime, value)
+		_node.CreatedAt = value
+	}
+	if value, ok := _c.mutation.UpdatedAt(); ok {
+		_spec.SetField(paymentorder.FieldUpdatedAt, field.TypeTime, value)
+		_node.UpdatedAt = value
+	}
 	if value, ok := _c.mutation.UserEmail(); ok {
 		_spec.SetField(paymentorder.FieldUserEmail, field.TypeString, value)
 		_node.UserEmail = value
@@ -806,7 +814,7 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 		_node.QrCodeImg = &value
 	}
 	if value, ok := _c.mutation.OrderType(); ok {
-		_spec.SetField(paymentorder.FieldOrderType, field.TypeString, value)
+		_spec.SetField(paymentorder.FieldOrderType, field.TypeEnum, value)
 		_node.OrderType = value
 	}
 	if value, ok := _c.mutation.PlanID(); ok {
@@ -834,7 +842,7 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 		_node.ProviderSnapshot = value
 	}
 	if value, ok := _c.mutation.Status(); ok {
-		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
+		_spec.SetField(paymentorder.FieldStatus, field.TypeEnum, value)
 		_node.Status = value
 	}
 	if value, ok := _c.mutation.RefundAmount(); ok {
@@ -909,14 +917,6 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 		_spec.SetField(paymentorder.FieldSrcURL, field.TypeString, value)
 		_node.SrcURL = &value
 	}
-	if value, ok := _c.mutation.CreatedAt(); ok {
-		_spec.SetField(paymentorder.FieldCreatedAt, field.TypeTime, value)
-		_node.CreatedAt = value
-	}
-	if value, ok := _c.mutation.UpdatedAt(); ok {
-		_spec.SetField(paymentorder.FieldUpdatedAt, field.TypeTime, value)
-		_node.UpdatedAt = value
-	}
 	if nodes := _c.mutation.UserIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
@@ -941,7 +941,7 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 // of the `INSERT` statement. For example:
 //
 //	client.PaymentOrder.Create().
-//		SetUserID(v).
+//		SetCreatedAt(v).
 //		OnConflict(
 //			// Update the row with the new values
 //			// the was proposed for insertion.
@@ -950,7 +950,7 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.PaymentOrderUpsert) {
-//			SetUserID(v+v).
+//			SetCreatedAt(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *PaymentOrderCreate) OnConflict(opts ...sql.ConflictOption) *PaymentOrderUpsertOne {
@@ -985,6 +985,18 @@ type (
 		*sql.UpdateSet
 	}
 )
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *PaymentOrderUpsert) SetUpdatedAt(v time.Time) *PaymentOrderUpsert {
+	u.Set(paymentorder.FieldUpdatedAt, v)
+	return u
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *PaymentOrderUpsert) UpdateUpdatedAt() *PaymentOrderUpsert {
+	u.SetExcluded(paymentorder.FieldUpdatedAt)
+	return u
+}
 
 // SetUserID sets the "user_id" field.
 func (u *PaymentOrderUpsert) SetUserID(v int64) *PaymentOrderUpsert {
@@ -1197,7 +1209,7 @@ func (u *PaymentOrderUpsert) ClearQrCodeImg() *PaymentOrderUpsert {
 }
 
 // SetOrderType sets the "order_type" field.
-func (u *PaymentOrderUpsert) SetOrderType(v string) *PaymentOrderUpsert {
+func (u *PaymentOrderUpsert) SetOrderType(v paymentorder.OrderType) *PaymentOrderUpsert {
 	u.Set(paymentorder.FieldOrderType, v)
 	return u
 }
@@ -1335,7 +1347,7 @@ func (u *PaymentOrderUpsert) ClearProviderSnapshot() *PaymentOrderUpsert {
 }
 
 // SetStatus sets the "status" field.
-func (u *PaymentOrderUpsert) SetStatus(v string) *PaymentOrderUpsert {
+func (u *PaymentOrderUpsert) SetStatus(v paymentorder.Status) *PaymentOrderUpsert {
 	u.Set(paymentorder.FieldStatus, v)
 	return u
 }
@@ -1646,18 +1658,6 @@ func (u *PaymentOrderUpsert) ClearSrcURL() *PaymentOrderUpsert {
 	return u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (u *PaymentOrderUpsert) SetUpdatedAt(v time.Time) *PaymentOrderUpsert {
-	u.Set(paymentorder.FieldUpdatedAt, v)
-	return u
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *PaymentOrderUpsert) UpdateUpdatedAt() *PaymentOrderUpsert {
-	u.SetExcluded(paymentorder.FieldUpdatedAt)
-	return u
-}
-
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -1701,6 +1701,20 @@ func (u *PaymentOrderUpsertOne) Update(set func(*PaymentOrderUpsert)) *PaymentOr
 		set(&PaymentOrderUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *PaymentOrderUpsertOne) SetUpdatedAt(v time.Time) *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetUpdatedAt(v)
+	})
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *PaymentOrderUpsertOne) UpdateUpdatedAt() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateUpdatedAt()
+	})
 }
 
 // SetUserID sets the "user_id" field.
@@ -1949,7 +1963,7 @@ func (u *PaymentOrderUpsertOne) ClearQrCodeImg() *PaymentOrderUpsertOne {
 }
 
 // SetOrderType sets the "order_type" field.
-func (u *PaymentOrderUpsertOne) SetOrderType(v string) *PaymentOrderUpsertOne {
+func (u *PaymentOrderUpsertOne) SetOrderType(v paymentorder.OrderType) *PaymentOrderUpsertOne {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.SetOrderType(v)
 	})
@@ -2110,7 +2124,7 @@ func (u *PaymentOrderUpsertOne) ClearProviderSnapshot() *PaymentOrderUpsertOne {
 }
 
 // SetStatus sets the "status" field.
-func (u *PaymentOrderUpsertOne) SetStatus(v string) *PaymentOrderUpsertOne {
+func (u *PaymentOrderUpsertOne) SetStatus(v paymentorder.Status) *PaymentOrderUpsertOne {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.SetStatus(v)
 	})
@@ -2473,20 +2487,6 @@ func (u *PaymentOrderUpsertOne) ClearSrcURL() *PaymentOrderUpsertOne {
 	})
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (u *PaymentOrderUpsertOne) SetUpdatedAt(v time.Time) *PaymentOrderUpsertOne {
-	return u.Update(func(s *PaymentOrderUpsert) {
-		s.SetUpdatedAt(v)
-	})
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *PaymentOrderUpsertOne) UpdateUpdatedAt() *PaymentOrderUpsertOne {
-	return u.Update(func(s *PaymentOrderUpsert) {
-		s.UpdateUpdatedAt()
-	})
-}
-
 // Exec executes the query.
 func (u *PaymentOrderUpsertOne) Exec(ctx context.Context) error {
 	if len(u.create.conflict) == 0 {
@@ -2622,7 +2622,7 @@ func (_c *PaymentOrderCreateBulk) ExecX(ctx context.Context) {
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.PaymentOrderUpsert) {
-//			SetUserID(v+v).
+//			SetCreatedAt(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *PaymentOrderCreateBulk) OnConflict(opts ...sql.ConflictOption) *PaymentOrderUpsertBulk {
@@ -2696,6 +2696,20 @@ func (u *PaymentOrderUpsertBulk) Update(set func(*PaymentOrderUpsert)) *PaymentO
 		set(&PaymentOrderUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *PaymentOrderUpsertBulk) SetUpdatedAt(v time.Time) *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetUpdatedAt(v)
+	})
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *PaymentOrderUpsertBulk) UpdateUpdatedAt() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateUpdatedAt()
+	})
 }
 
 // SetUserID sets the "user_id" field.
@@ -2944,7 +2958,7 @@ func (u *PaymentOrderUpsertBulk) ClearQrCodeImg() *PaymentOrderUpsertBulk {
 }
 
 // SetOrderType sets the "order_type" field.
-func (u *PaymentOrderUpsertBulk) SetOrderType(v string) *PaymentOrderUpsertBulk {
+func (u *PaymentOrderUpsertBulk) SetOrderType(v paymentorder.OrderType) *PaymentOrderUpsertBulk {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.SetOrderType(v)
 	})
@@ -3105,7 +3119,7 @@ func (u *PaymentOrderUpsertBulk) ClearProviderSnapshot() *PaymentOrderUpsertBulk
 }
 
 // SetStatus sets the "status" field.
-func (u *PaymentOrderUpsertBulk) SetStatus(v string) *PaymentOrderUpsertBulk {
+func (u *PaymentOrderUpsertBulk) SetStatus(v paymentorder.Status) *PaymentOrderUpsertBulk {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.SetStatus(v)
 	})
@@ -3465,20 +3479,6 @@ func (u *PaymentOrderUpsertBulk) UpdateSrcURL() *PaymentOrderUpsertBulk {
 func (u *PaymentOrderUpsertBulk) ClearSrcURL() *PaymentOrderUpsertBulk {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.ClearSrcURL()
-	})
-}
-
-// SetUpdatedAt sets the "updated_at" field.
-func (u *PaymentOrderUpsertBulk) SetUpdatedAt(v time.Time) *PaymentOrderUpsertBulk {
-	return u.Update(func(s *PaymentOrderUpsert) {
-		s.SetUpdatedAt(v)
-	})
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *PaymentOrderUpsertBulk) UpdateUpdatedAt() *PaymentOrderUpsertBulk {
-	return u.Update(func(s *PaymentOrderUpsert) {
-		s.UpdateUpdatedAt()
 	})
 }
 

@@ -45,8 +45,7 @@ func RegisterPaymentRoutes(
 
 	// --- Public payment endpoints (no auth) ---
 	// Signed resume-token recovery is the preferred public lookup path.
-	// The legacy anonymous out_trade_no verify endpoint remains available as a
-	// persisted-state compatibility path for staggered upgrades.
+	// The legacy out_trade_no verify endpoint now requires a signed lookup token.
 	public := v1.Group("/payment/public")
 	{
 		public.POST("/orders/verify", paymentHandler.VerifyOrderPublic)

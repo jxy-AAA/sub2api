@@ -34,6 +34,22 @@ func TestAccountRepositoryValidateAccountForPersistenceRejectsInvalidEnums(t *te
 	require.ErrorIs(t, err, service.ErrAccountInvalidStatus)
 }
 
+func TestAccountRepositoryValidateAccountForPersistenceAcceptsCompatiblePlatforms(t *testing.T) {
+	repo := &accountRepository{}
+
+	for _, platform := range []string{
+		service.PlatformOpenAICompatible,
+		service.PlatformAnthropicCompatible,
+	} {
+		err := repo.validateAccountForPersistence(context.Background(), &service.Account{
+			Platform: platform,
+			Type:     service.AccountTypeUpstream,
+			Status:   service.StatusActive,
+		})
+		require.NoError(t, err, "platform=%s", platform)
+	}
+}
+
 func TestAccountRepositoryValidateAccountForPersistenceAcceptsExistingTLSProfile(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &accountRepository{sql: db}

@@ -1,27 +1,28 @@
 package repository
 
 import (
-	"reflect"
-	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
-	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
 )
 
-func forceHTTPVersion(t *testing.T, client *req.Client) string {
+func useSharedReqClientCacheForTest(t *testing.T, capacity int, ttl time.Duration, now func() time.Time) *sharedReqClientCache {
 	t.Helper()
-	transport := client.GetTransport()
-	field := reflect.ValueOf(transport).Elem().FieldByName("forceHttpVersion")
-	require.True(t, field.IsValid(), "forceHttpVersion field not found")
-	require.True(t, field.CanAddr(), "forceHttpVersion field not addressable")
-	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().String()
+
+	original := sharedReqClients
+	testCache := newSharedReqClientCache(capacity, ttl, now)
+	sharedReqClients = testCache
+	t.Cleanup(func() {
+		closeIdleReqClients(testCache.closeAll())
+		sharedReqClients = original
+	})
+	return testCache
 }
 
-func TestGetSharedReqClient_ForceHTTP2SeparatesCache(t *testing.T) {
-	sharedReqClients = sync.Map{}
+func TestGetSharedReqClientForceHTTP2SeparatesCache(t *testing.T) {
+	useSharedReqClientCacheForTest(t, 8, time.Hour, time.Now)
+
 	base := reqClientOptions{
 		ProxyURL: "http://proxy.local:8080",
 		Timeout:  time.Second,
@@ -38,44 +39,94 @@ func TestGetSharedReqClient_ForceHTTP2SeparatesCache(t *testing.T) {
 	require.NotEqual(t, buildReqClientKey(base), buildReqClientKey(force))
 }
 
-func TestGetSharedReqClient_ReuseCachedClient(t *testing.T) {
-	sharedReqClients = sync.Map{}
+func TestGetSharedReqClientReuseCachedClient(t *testing.T) {
+	useSharedReqClientCacheForTest(t, 8, time.Hour, time.Now)
+
 	opts := reqClientOptions{
 		ProxyURL: "http://proxy.local:8080",
 		Timeout:  2 * time.Second,
 	}
+
 	first, err := getSharedReqClient(opts)
 	require.NoError(t, err)
+
 	second, err := getSharedReqClient(opts)
 	require.NoError(t, err)
+
 	require.Same(t, first, second)
 }
 
-func TestGetSharedReqClient_IgnoresNonClientCache(t *testing.T) {
-	sharedReqClients = sync.Map{}
-	opts := reqClientOptions{
-		ProxyURL: " http://proxy.local:8080 ",
-		Timeout:  3 * time.Second,
-	}
-	key := buildReqClientKey(opts)
-	sharedReqClients.Store(key, "invalid")
+func TestGetSharedReqClientEvictsLeastRecentlyUsedEntry(t *testing.T) {
+	cache := useSharedReqClientCacheForTest(t, 2, time.Hour, time.Now)
 
-	client, err := getSharedReqClient(opts)
+	first, err := getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy-a.local:8080",
+		Timeout:  time.Second,
+	})
 	require.NoError(t, err)
 
-	require.NotNil(t, client)
-	loaded, ok := sharedReqClients.Load(key)
-	require.True(t, ok)
-	require.IsType(t, "invalid", loaded)
+	second, err := getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy-b.local:8080",
+		Timeout:  time.Second,
+	})
+	require.NoError(t, err)
+
+	third, err := getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy-c.local:8080",
+		Timeout:  time.Second,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, third)
+	require.Equal(t, 2, cache.len())
+
+	secondAgain, err := getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy-b.local:8080",
+		Timeout:  time.Second,
+	})
+	require.NoError(t, err)
+	require.Same(t, second, secondAgain)
+
+	firstAgain, err := getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy-a.local:8080",
+		Timeout:  time.Second,
+	})
+	require.NoError(t, err)
+	require.NotSame(t, first, firstAgain)
 }
 
-func TestGetSharedReqClient_ImpersonateAndProxy(t *testing.T) {
-	sharedReqClients = sync.Map{}
+func TestGetSharedReqClientExpiresStaleEntry(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	cache := useSharedReqClientCacheForTest(t, 2, time.Minute, func() time.Time {
+		return now
+	})
+
+	first, err := getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy.local:8080",
+		Timeout:  time.Second,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, cache.len())
+
+	now = now.Add(2 * time.Minute)
+
+	second, err := getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy.local:8080",
+		Timeout:  time.Second,
+	})
+	require.NoError(t, err)
+	require.NotSame(t, first, second)
+	require.Equal(t, 1, cache.len())
+}
+
+func TestGetSharedReqClientImpersonateAndProxy(t *testing.T) {
+	useSharedReqClientCacheForTest(t, 8, time.Hour, time.Now)
+
 	opts := reqClientOptions{
 		ProxyURL:    "  http://proxy.local:8080  ",
 		Timeout:     4 * time.Second,
 		Impersonate: true,
 	}
+
 	client, err := getSharedReqClient(opts)
 	require.NoError(t, err)
 
@@ -83,38 +134,53 @@ func TestGetSharedReqClient_ImpersonateAndProxy(t *testing.T) {
 	require.Equal(t, "http://proxy.local:8080|4s|true|false", buildReqClientKey(opts))
 }
 
-func TestGetSharedReqClient_InvalidProxyURL(t *testing.T) {
-	sharedReqClients = sync.Map{}
-	opts := reqClientOptions{
+func TestGetSharedReqClientInvalidProxyURL(t *testing.T) {
+	useSharedReqClientCacheForTest(t, 8, time.Hour, time.Now)
+
+	_, err := getSharedReqClient(reqClientOptions{
 		ProxyURL: "://missing-scheme",
 		Timeout:  time.Second,
-	}
-	_, err := getSharedReqClient(opts)
+	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid proxy URL")
 }
 
-func TestGetSharedReqClient_ProxyURLMissingHost(t *testing.T) {
-	sharedReqClients = sync.Map{}
-	opts := reqClientOptions{
+func TestGetSharedReqClientProxyURLMissingHost(t *testing.T) {
+	useSharedReqClientCacheForTest(t, 8, time.Hour, time.Now)
+
+	_, err := getSharedReqClient(reqClientOptions{
 		ProxyURL: "http://",
 		Timeout:  time.Second,
-	}
-	_, err := getSharedReqClient(opts)
+	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "proxy URL missing host")
 }
 
-func TestCreateOpenAIReqClient_Timeout120Seconds(t *testing.T) {
-	sharedReqClients = sync.Map{}
-	client, err := createOpenAIReqClient("http://proxy.local:8080")
+func TestCreatePrivacyReqClientTimeout30Seconds(t *testing.T) {
+	useSharedReqClientCacheForTest(t, 8, time.Hour, time.Now)
+
+	client, err := CreatePrivacyReqClient("http://proxy.local:8080")
 	require.NoError(t, err)
-	require.Equal(t, 120*time.Second, client.GetClient().Timeout)
+	require.Equal(t, 30*time.Second, client.GetClient().Timeout)
 }
 
-func TestCreateGeminiReqClient_ForceHTTP2Disabled(t *testing.T) {
-	sharedReqClients = sync.Map{}
-	client, err := createGeminiReqClient("http://proxy.local:8080")
+func TestCloseSharedReqClientsClearsCache(t *testing.T) {
+	cache := useSharedReqClientCacheForTest(t, 2, time.Hour, time.Now)
+
+	_, err := getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy-a.local:8080",
+		Timeout:  time.Second,
+	})
 	require.NoError(t, err)
-	require.Equal(t, "", forceHTTPVersion(t, client))
+
+	_, err = getSharedReqClient(reqClientOptions{
+		ProxyURL: "http://proxy-b.local:8080",
+		Timeout:  time.Second,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, cache.len())
+
+	CloseSharedReqClients()
+
+	require.Equal(t, 0, cache.len())
 }

@@ -443,9 +443,8 @@ func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
 		response.Error(c, http.StatusServiceUnavailable, "Usage cleanup service unavailable")
 		return
 	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Unauthorized(c, "Unauthorized")
+	subject, ok := requireHumanAdminSubject(c, "admin JWT required for usage cleanup")
+	if !ok {
 		return
 	}
 
@@ -572,9 +571,8 @@ func (h *UsageHandler) CancelCleanupTask(c *gin.Context) {
 		response.Error(c, http.StatusServiceUnavailable, "Usage cleanup service unavailable")
 		return
 	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Unauthorized(c, "Unauthorized")
+	subject, ok := requireHumanAdminSubject(c, "admin JWT required for usage cleanup")
+	if !ok {
 		return
 	}
 	idStr := strings.TrimSpace(c.Param("id"))

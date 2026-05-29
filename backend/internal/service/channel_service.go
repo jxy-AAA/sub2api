@@ -890,6 +890,18 @@ func (s *ChannelService) List(ctx context.Context, params pagination.PaginationP
 	return channels, res, nil
 }
 
+// ListAll returns all channels with normalized billing source metadata.
+func (s *ChannelService) ListAll(ctx context.Context) ([]Channel, error) {
+	channels, err := s.repo.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range channels {
+		channels[i].normalizeBillingModelSource()
+	}
+	return channels, nil
+}
+
 // modelEntry 表示一个模型模式条目（用于冲突检测）
 type modelEntry struct {
 	pattern  string // 原始模式（如 "claude-*" 或 "claude-opus-4"）

@@ -41,6 +41,73 @@ func (s *geminiCompatHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL str
 	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
+func TestGeminiHandleStreamingResponse_CapturesRawWrappedSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	rawLines := []string{
+		`data: {"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"q":"weather"}}}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1}}}`,
+		``,
+		``,
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+			"x-request-id": []string{"rid_gemini_stream"},
+		},
+		Body: io.NopCloser(strings.NewReader(strings.Join(rawLines, "\n"))),
+	}
+
+	svc := &GeminiMessagesCompatService{}
+	result, err := svc.handleStreamingResponse(c, resp, time.Now(), "claude-sonnet-4-5")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	captures := GetGatewayTraceCaptures(c)
+	require.Len(t, captures, 1)
+	require.Equal(t, "gemini.messages", captures[0].Protocol)
+	require.Equal(t, strings.Join(rawLines, "\n"), captures[0].Body)
+	require.Equal(t, "sse", captures[0].Meta["raw_transport"])
+	require.Equal(t, 1, captures[0].Meta["raw_event_count"])
+	require.Equal(t, true, captures[0].Meta["raw_stream_terminated"])
+	require.Contains(t, captures[0].Body, `"response"`)
+	require.Contains(t, captures[0].Body, `"functionCall"`)
+}
+
+func TestCollectGeminiSSE_PreservesRawTranscript(t *testing.T) {
+	rawLines := []string{
+		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"hel"}]}}]}}`,
+		``,
+		`data: {"response":{"candidates":[{"content":{"parts":[{"text":"lo"}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2}}}`,
+		``,
+	}
+	traceBuf := newGatewayTraceBodyBuffer()
+
+	collected, usage, err := collectGeminiSSE(strings.NewReader(strings.Join(rawLines, "\n")), true, traceBuf)
+	require.NoError(t, err)
+	require.Equal(t, strings.Join(rawLines, "\n"), string(traceBuf.Bytes()))
+
+	candidates, ok := collected["candidates"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, candidates)
+	firstCandidate, ok := candidates[0].(map[string]any)
+	require.True(t, ok)
+	content, ok := firstCandidate["content"].(map[string]any)
+	require.True(t, ok)
+	parts, ok := content["parts"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, parts)
+	firstPart, ok := parts[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "hello", firstPart["text"])
+	require.Equal(t, 5, usage.InputTokens)
+	require.Equal(t, 2, usage.OutputTokens)
+}
+
 // TestConvertClaudeToolsToGeminiTools_CustomType 测试custom类型工具转换
 func TestConvertClaudeToolsToGeminiTools_CustomType(t *testing.T) {
 	tests := []struct {

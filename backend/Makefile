@@ -1,4 +1,4 @@
-.PHONY: build generate lint test test-default test-unit test-contract test-integration test-e2e test-e2e-local
+.PHONY: build generate lint test test-default test-unit test-race test-contract test-integration test-e2e test-e2e-local
 
 VERSION ?= $(shell tr -d '\r\n' < ./cmd/server/VERSION)
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
@@ -10,7 +10,7 @@ generate:
 	go generate ./ent
 	go generate ./cmd/server
 
-test: test-default test-unit test-contract lint
+test: test-default test-unit test-race test-contract lint
 
 lint:
 	golangci-lint run ./...
@@ -20,6 +20,9 @@ test-default:
 
 test-unit:
 	go test -tags=unit ./...
+
+test-race:
+	go test -race ./...
 
 test-contract:
 	go test -tags=contract ./internal/repository -run "TestMigrationsRunner_|TestUsageCleanupRepositoryIntegration_"

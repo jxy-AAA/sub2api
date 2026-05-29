@@ -145,6 +145,13 @@ func (a *Account) IsOAuth() bool {
 	return a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken
 }
 
+func (a *Account) IsStaticKeyAccount() bool {
+	if a == nil {
+		return false
+	}
+	return IsStaticKeyAccountType(a.Type)
+}
+
 // IsPrivacySet 检查账号的 privacy 是否已成功设置。
 // OpenAI: privacy_mode == "training_off"
 // Antigravity: privacy_mode == "privacy_set"
@@ -720,7 +727,7 @@ func (a *Account) ResolveCompactMappedModel(requestedModel string) (mappedModel 
 }
 
 func (a *Account) GetBaseURL() string {
-	if a.Type != AccountTypeAPIKey {
+	if !a.IsStaticKeyAccount() {
 		return ""
 	}
 	baseURL := a.GetCredential("base_url")
@@ -958,15 +965,15 @@ func (a *Account) IsBedrockAPIKey() bool {
 
 // IsAPIKeyOrBedrock 返回账号类型是否支持配额和池模式等特性
 func (a *Account) IsAPIKeyOrBedrock() bool {
-	return a.Type == AccountTypeAPIKey || a.Type == AccountTypeBedrock
+	return a.Type == AccountTypeAPIKey || a.Type == AccountTypeUpstream || a.Type == AccountTypeBedrock
 }
 
 func (a *Account) IsOpenAI() bool {
-	return a.Platform == PlatformOpenAI
+	return IsOpenAIProtocolPlatform(a.Platform)
 }
 
 func (a *Account) IsAnthropic() bool {
-	return a.Platform == PlatformAnthropic
+	return IsAnthropicProtocolPlatform(a.Platform)
 }
 
 func (a *Account) IsOpenAIOAuth() bool {
@@ -974,14 +981,14 @@ func (a *Account) IsOpenAIOAuth() bool {
 }
 
 func (a *Account) IsOpenAIApiKey() bool {
-	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
+	return a.IsOpenAI() && a.IsStaticKeyAccount()
 }
 
 func (a *Account) GetOpenAIBaseURL() string {
 	if !a.IsOpenAI() {
 		return ""
 	}
-	if a.Type == AccountTypeAPIKey {
+	if a.IsStaticKeyAccount() {
 		baseURL := a.GetCredential("base_url")
 		if baseURL != "" {
 			return baseURL
@@ -1018,11 +1025,73 @@ func (a *Account) GetOpenAIApiKey() string {
 	return a.GetCredential("api_key")
 }
 
+func (a *Account) GetOpenAIModelsEndpoint() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("models_endpoint"))
+}
+
 func (a *Account) GetOpenAIUserAgent() string {
 	if !a.IsOpenAI() {
 		return ""
 	}
 	return a.GetCredential("user_agent")
+}
+
+func (a *Account) GetCredentialHeaders() map[string]string {
+	if a == nil || a.Credentials == nil {
+		return nil
+	}
+	raw, ok := a.Credentials["headers"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch headers := raw.(type) {
+	case map[string]string:
+		if len(headers) == 0 {
+			return nil
+		}
+		out := make(map[string]string, len(headers))
+		for key, value := range headers {
+			trimmedKey := strings.TrimSpace(key)
+			trimmedValue := strings.TrimSpace(value)
+			if trimmedKey == "" || trimmedValue == "" {
+				continue
+			}
+			out[trimmedKey] = trimmedValue
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case map[string]any:
+		if len(headers) == 0 {
+			return nil
+		}
+		out := make(map[string]string, len(headers))
+		for key, value := range headers {
+			trimmedKey := strings.TrimSpace(key)
+			if trimmedKey == "" {
+				continue
+			}
+			text, ok := value.(string)
+			if !ok {
+				continue
+			}
+			trimmedValue := strings.TrimSpace(text)
+			if trimmedValue == "" {
+				continue
+			}
+			out[trimmedKey] = trimmedValue
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func (a *Account) GetChatGPTAccountID() string {
@@ -1052,7 +1121,7 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 	}
 	switch capability {
 	case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative:
-		return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
+		return a.Type == AccountTypeOAuth || a.IsStaticKeyAccount()
 	default:
 		return true
 	}
@@ -1126,7 +1195,13 @@ func (a *Account) IsOveragesEnabled() bool {
 // 兼容字段：accounts.extra.openai_oauth_passthrough（历史 OAuth 开关）。
 // 字段缺失或类型不正确时，按 false（关闭）处理。
 func (a *Account) IsOpenAIPassthroughEnabled() bool {
-	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
+	if a.Platform == PlatformOpenAICompatible && a.IsStaticKeyAccount() {
+		return true
+	}
+	if a.Extra == nil {
 		return false
 	}
 	if enabled, ok := a.Extra["openai_passthrough"].(bool); ok {
@@ -1313,7 +1388,13 @@ func (a *Account) IsOpenAIOAuthPassthroughEnabled() bool {
 // 字段：accounts.extra.anthropic_passthrough。
 // 字段缺失或类型不正确时，按 false（关闭）处理。
 func (a *Account) IsAnthropicAPIKeyPassthroughEnabled() bool {
-	if a == nil || a.Platform != PlatformAnthropic || a.Type != AccountTypeAPIKey || a.Extra == nil {
+	if a == nil || !a.IsAnthropic() || !a.IsStaticKeyAccount() {
+		return false
+	}
+	if a.Platform == PlatformAnthropicCompatible {
+		return true
+	}
+	if a.Extra == nil {
 		return false
 	}
 	enabled, ok := a.Extra["anthropic_passthrough"].(bool)
@@ -1331,7 +1412,7 @@ const (
 // 三态：default（跟随渠道）/ enabled（强制开启）/ disabled（强制关闭）。
 // 兼容旧 bool 值：true→enabled, false→default（并记录 debug 日志）。
 func (a *Account) GetWebSearchEmulationMode() string {
-	if a == nil || a.Platform != PlatformAnthropic || a.Type != AccountTypeAPIKey || a.Extra == nil {
+	if a == nil || !a.IsAnthropic() || !a.IsStaticKeyAccount() || a.Extra == nil {
 		return WebSearchModeDefault
 	}
 	raw := a.Extra[featureKeyWebSearchEmulation]
@@ -1381,7 +1462,7 @@ const (
 // IsAnthropicOAuthOrSetupToken 判断是否为 Anthropic OAuth 或 SetupToken 类型账号
 // 仅这两类账号支持 5h 窗口额度控制和会话数量控制
 func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
-	return a.Platform == PlatformAnthropic && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
+	return a.IsAnthropic() && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
 }
 
 // IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装

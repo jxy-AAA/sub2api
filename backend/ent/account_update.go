@@ -92,13 +92,13 @@ func (_u *AccountUpdate) ClearNotes() *AccountUpdate {
 }
 
 // SetPlatform sets the "platform" field.
-func (_u *AccountUpdate) SetPlatform(v string) *AccountUpdate {
+func (_u *AccountUpdate) SetPlatform(v account.Platform) *AccountUpdate {
 	_u.mutation.SetPlatform(v)
 	return _u
 }
 
 // SetNillablePlatform sets the "platform" field if the given value is not nil.
-func (_u *AccountUpdate) SetNillablePlatform(v *string) *AccountUpdate {
+func (_u *AccountUpdate) SetNillablePlatform(v *account.Platform) *AccountUpdate {
 	if v != nil {
 		_u.SetPlatform(*v)
 	}
@@ -106,13 +106,13 @@ func (_u *AccountUpdate) SetNillablePlatform(v *string) *AccountUpdate {
 }
 
 // SetType sets the "type" field.
-func (_u *AccountUpdate) SetType(v string) *AccountUpdate {
+func (_u *AccountUpdate) SetType(v account.Type) *AccountUpdate {
 	_u.mutation.SetType(v)
 	return _u
 }
 
 // SetNillableType sets the "type" field if the given value is not nil.
-func (_u *AccountUpdate) SetNillableType(v *string) *AccountUpdate {
+func (_u *AccountUpdate) SetNillableType(v *account.Type) *AccountUpdate {
 	if v != nil {
 		_u.SetType(*v)
 	}
@@ -242,13 +242,13 @@ func (_u *AccountUpdate) AddRateMultiplier(v float64) *AccountUpdate {
 }
 
 // SetStatus sets the "status" field.
-func (_u *AccountUpdate) SetStatus(v string) *AccountUpdate {
+func (_u *AccountUpdate) SetStatus(v account.Status) *AccountUpdate {
 	_u.mutation.SetStatus(v)
 	return _u
 }
 
 // SetNillableStatus sets the "status" field if the given value is not nil.
-func (_u *AccountUpdate) SetNillableStatus(v *string) *AccountUpdate {
+func (_u *AccountUpdate) SetNillableStatus(v *account.Status) *AccountUpdate {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
@@ -694,10 +694,10 @@ func (_u *AccountUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 		_spec.ClearField(account.FieldNotes, field.TypeString)
 	}
 	if value, ok := _u.mutation.Platform(); ok {
-		_spec.SetField(account.FieldPlatform, field.TypeString, value)
+		_spec.SetField(account.FieldPlatform, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.GetType(); ok {
-		_spec.SetField(account.FieldType, field.TypeString, value)
+		_spec.SetField(account.FieldType, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.Credentials(); ok {
 		_spec.SetField(account.FieldCredentials, field.TypeJSON, value)
@@ -733,7 +733,7 @@ func (_u *AccountUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 		_spec.AddField(account.FieldRateMultiplier, field.TypeFloat64, value)
 	}
 	if value, ok := _u.mutation.Status(); ok {
-		_spec.SetField(account.FieldStatus, field.TypeString, value)
+		_spec.SetField(account.FieldStatus, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.ErrorMessage(); ok {
 		_spec.SetField(account.FieldErrorMessage, field.TypeString, value)
@@ -1019,13 +1019,13 @@ func (_u *AccountUpdateOne) ClearNotes() *AccountUpdateOne {
 }
 
 // SetPlatform sets the "platform" field.
-func (_u *AccountUpdateOne) SetPlatform(v string) *AccountUpdateOne {
+func (_u *AccountUpdateOne) SetPlatform(v account.Platform) *AccountUpdateOne {
 	_u.mutation.SetPlatform(v)
 	return _u
 }
 
 // SetNillablePlatform sets the "platform" field if the given value is not nil.
-func (_u *AccountUpdateOne) SetNillablePlatform(v *string) *AccountUpdateOne {
+func (_u *AccountUpdateOne) SetNillablePlatform(v *account.Platform) *AccountUpdateOne {
 	if v != nil {
 		_u.SetPlatform(*v)
 	}
@@ -1033,13 +1033,13 @@ func (_u *AccountUpdateOne) SetNillablePlatform(v *string) *AccountUpdateOne {
 }
 
 // SetType sets the "type" field.
-func (_u *AccountUpdateOne) SetType(v string) *AccountUpdateOne {
+func (_u *AccountUpdateOne) SetType(v account.Type) *AccountUpdateOne {
 	_u.mutation.SetType(v)
 	return _u
 }
 
 // SetNillableType sets the "type" field if the given value is not nil.
-func (_u *AccountUpdateOne) SetNillableType(v *string) *AccountUpdateOne {
+func (_u *AccountUpdateOne) SetNillableType(v *account.Type) *AccountUpdateOne {
 	if v != nil {
 		_u.SetType(*v)
 	}
@@ -1169,13 +1169,13 @@ func (_u *AccountUpdateOne) AddRateMultiplier(v float64) *AccountUpdateOne {
 }
 
 // SetStatus sets the "status" field.
-func (_u *AccountUpdateOne) SetStatus(v string) *AccountUpdateOne {
+func (_u *AccountUpdateOne) SetStatus(v account.Status) *AccountUpdateOne {
 	_u.mutation.SetStatus(v)
 	return _u
 }
 
 // SetNillableStatus sets the "status" field if the given value is not nil.
-func (_u *AccountUpdateOne) SetNillableStatus(v *string) *AccountUpdateOne {
+func (_u *AccountUpdateOne) SetNillableStatus(v *account.Status) *AccountUpdateOne {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
@@ -1651,10 +1651,10 @@ func (_u *AccountUpdateOne) sqlSave(ctx context.Context) (_node *Account, err er
 		_spec.ClearField(account.FieldNotes, field.TypeString)
 	}
 	if value, ok := _u.mutation.Platform(); ok {
-		_spec.SetField(account.FieldPlatform, field.TypeString, value)
+		_spec.SetField(account.FieldPlatform, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.GetType(); ok {
-		_spec.SetField(account.FieldType, field.TypeString, value)
+		_spec.SetField(account.FieldType, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.Credentials(); ok {
 		_spec.SetField(account.FieldCredentials, field.TypeJSON, value)
@@ -1690,7 +1690,7 @@ func (_u *AccountUpdateOne) sqlSave(ctx context.Context) (_node *Account, err er
 		_spec.AddField(account.FieldRateMultiplier, field.TypeFloat64, value)
 	}
 	if value, ok := _u.mutation.Status(); ok {
-		_spec.SetField(account.FieldStatus, field.TypeString, value)
+		_spec.SetField(account.FieldStatus, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.ErrorMessage(); ok {
 		_spec.SetField(account.FieldErrorMessage, field.TypeString, value)

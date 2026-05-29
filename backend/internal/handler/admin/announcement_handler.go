@@ -8,7 +8,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -109,11 +108,11 @@ func (h *AnnouncementHandler) Create(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	subject, ok := requireAdminSubject(c)
 	if !ok {
-		response.Unauthorized(c, "User not found in context")
 		return
 	}
+	actorID, hasActorID := subject.HumanUserID()
 
 	input := &service.CreateAnnouncementInput{
 		Title:      req.Title,
@@ -121,7 +120,9 @@ func (h *AnnouncementHandler) Create(c *gin.Context) {
 		Status:     req.Status,
 		NotifyMode: req.NotifyMode,
 		Targeting:  req.Targeting,
-		ActorID:    &subject.UserID,
+	}
+	if hasActorID {
+		input.ActorID = &actorID
 	}
 
 	if req.StartsAt != nil && *req.StartsAt > 0 {
@@ -157,11 +158,11 @@ func (h *AnnouncementHandler) Update(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	subject, ok := requireAdminSubject(c)
 	if !ok {
-		response.Unauthorized(c, "User not found in context")
 		return
 	}
+	actorID, hasActorID := subject.HumanUserID()
 
 	input := &service.UpdateAnnouncementInput{
 		Title:      req.Title,
@@ -169,7 +170,9 @@ func (h *AnnouncementHandler) Update(c *gin.Context) {
 		Status:     req.Status,
 		NotifyMode: req.NotifyMode,
 		Targeting:  req.Targeting,
-		ActorID:    &subject.UserID,
+	}
+	if hasActorID {
+		input.ActorID = &actorID
 	}
 
 	if req.StartsAt != nil {

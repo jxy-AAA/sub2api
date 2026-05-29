@@ -141,6 +141,32 @@ function buildAccount() {
   } as any
 }
 
+function buildCompatibleUpstreamAccount() {
+  return {
+    id: 9,
+    name: 'Compatible Upstream',
+    notes: 'sync me',
+    platform: 'openai_compatible',
+    type: 'upstream',
+    credentials: {
+      base_url: 'https://old-compatible.example.com/v1',
+      api_key: 'old-compatible-key',
+      headers: {
+        'x-old-header': 'old-value'
+      }
+    },
+    extra: {},
+    proxy_id: null,
+    concurrency: 2,
+    priority: 3,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [101, 202],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
 function mountModal(account = buildAccount()) {
   return mount(EditAccountModal, {
     props: {
@@ -236,5 +262,36 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.codex_image_generation_bridge).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
+  })
+
+  it('keeps compatible upstream payload fields and group bindings when saving', async () => {
+    const account = buildCompatibleUpstreamAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('input[placeholder="https://api.example.com/v1"]').setValue('https://compat.example.com/v1')
+    await wrapper.get('input[placeholder="sk-..."]').setValue('sk-compatible-new')
+    await wrapper
+      .get('textarea[placeholder="admin.accounts.upstream.headersPlaceholder"]')
+      .setValue('{\n  "x-api-version": "2024-01-01",\n  "x-provider": "openrouter"\n}')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]).toMatchObject({
+      group_ids: [101, 202],
+      credentials: {
+        base_url: 'https://compat.example.com/v1',
+        api_key: 'sk-compatible-new',
+        headers: {
+          'x-api-version': '2024-01-01',
+          'x-provider': 'openrouter'
+        }
+      }
+    })
   })
 })

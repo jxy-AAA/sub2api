@@ -277,6 +277,7 @@ import Icon from '@/components/icons/Icon.vue'
 import type { PaymentMethodOption } from '@/components/payment/PaymentMethodSelector.vue'
 import { buildPaymentErrorToastMessage, describePaymentScenarioError } from './paymentUx'
 import { hasWechatResumeQuery, parseWechatResumeRoute, stripWechatResumeQuery } from './paymentWechatResume'
+import { clearStripeLaunchSession, createStripeLaunchSession } from './stripeLaunchSession'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -376,6 +377,7 @@ async function invokeWechatJsapiPayment(payload: Record<string, unknown>): Promi
 }
 
 const paymentState = ref<PaymentRecoverySnapshot>(emptyPaymentState())
+let currentStripeLaunchSessionId = ''
 
 function persistRecoverySnapshot(snapshot: PaymentRecoverySnapshot) {
   if (typeof window === 'undefined' || !snapshot.orderId) return
@@ -387,10 +389,17 @@ function removeRecoverySnapshot() {
   clearPaymentRecoverySnapshot(window.localStorage, PAYMENT_RECOVERY_STORAGE_KEY)
 }
 
+function clearCurrentStripeLaunchSession() {
+  if (!currentStripeLaunchSessionId) return
+  clearStripeLaunchSession(currentStripeLaunchSessionId)
+  currentStripeLaunchSessionId = ''
+}
+
 function resetPayment() {
   paymentPhase.value = 'select'
   paymentState.value = emptyPaymentState()
   removeRecoverySnapshot()
+  clearCurrentStripeLaunchSession()
 }
 
 async function redirectToPaymentResult(state: PaymentRecoverySnapshot): Promise<void> {
@@ -455,6 +464,7 @@ function onPaymentDone() {
 
 function onPaymentSuccess() {
   removeRecoverySnapshot()
+  clearCurrentStripeLaunchSession()
   authStore.refreshUser()
   if (paymentState.value.orderType === 'subscription') {
     subscriptionStore.fetchActiveSubscriptions(true).catch(() => {})
@@ -463,6 +473,7 @@ function onPaymentSuccess() {
 
 function onPaymentSettled() {
   removeRecoverySnapshot()
+  clearCurrentStripeLaunchSession()
 }
 
 // All checkout data from single API call
@@ -660,10 +671,97 @@ async function confirmSubscribe() {
   await createOrder(selectedPlan.value.price, 'subscription', selectedPlan.value.id)
 }
 
+function buildStripePopupUrl(result: CreateOrderResult, stripeMethod: string, sessionId: string): string {
+  return router.resolve({
+    path: '/payment/stripe-popup',
+    query: {
+      order_id: String(result.order_id),
+      session_id: sessionId || undefined,
+      method: stripeMethod || undefined,
+      amount: String(result.pay_amount || result.amount || 0),
+    },
+  }).href
+}
+
+function buildStripeRouteUrl(result: CreateOrderResult, stripeMethod: string, sessionId: string): string {
+  return router.resolve({
+    path: '/payment/stripe',
+    query: {
+      order_id: String(result.order_id),
+      session_id: sessionId,
+      method: stripeMethod || undefined,
+    },
+  }).href
+}
+
+function openStripePopup(options: {
+  popupUrl: string
+  fallbackUrl: string
+  clientSecret: string
+  publishableKey: string
+  resumeToken: string
+}) {
+  const fallbackToRoute = () => {
+    if (options.fallbackUrl) {
+      void router.push(options.fallbackUrl).catch(() => {})
+    }
+  }
+
+  if (!options.clientSecret || !options.publishableKey) {
+    fallbackToRoute()
+    return
+  }
+
+  const popup = window.open(options.popupUrl, 'paymentPopup', getPaymentPopupFeatures())
+  if (!popup || popup.closed) {
+    fallbackToRoute()
+    return
+  }
+
+  let readyTimeout: number | null = null
+  const cleanup = () => {
+    if (readyTimeout) {
+      window.clearTimeout(readyTimeout)
+      readyTimeout = null
+    }
+    window.removeEventListener('message', handleReady)
+  }
+  const closePopup = () => {
+    try {
+      if (!popup.closed) {
+        popup.close()
+      }
+    } catch {
+      // Ignore popup close failures.
+    }
+  }
+  const handleReady = (event: MessageEvent) => {
+    if (event.origin !== window.location.origin) return
+    if (event.source !== popup) return
+    if (event.data?.type !== 'STRIPE_POPUP_READY') return
+
+    cleanup()
+    popup.postMessage({
+      type: 'STRIPE_POPUP_INIT',
+      clientSecret: options.clientSecret,
+      publishableKey: options.publishableKey,
+      resumeToken: options.resumeToken,
+    }, window.location.origin)
+  }
+
+  window.addEventListener('message', handleReady)
+  readyTimeout = window.setTimeout(() => {
+    cleanup()
+    closePopup()
+    fallbackToRoute()
+  }, 15000)
+}
+
 async function createOrder(orderAmount: number, orderType: OrderType, planId?: number, options: CreateOrderOptions = {}) {
   submitting.value = true
   errorMessage.value = ''
   errorHintMessage.value = ''
+  clearCurrentStripeLaunchSession()
   const requestType = normalizeVisibleMethod(options.paymentType || selectedMethod.value) || options.paymentType || selectedMethod.value
   try {
     const payload = buildCreateOrderPayload({
@@ -695,27 +793,31 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
     const stripeMethod = visibleMethod === 'stripe'
       ? ''
       : visibleMethod === 'wxpay' ? 'wechat_pay' : 'alipay'
-    const stripeRouteUrl = result.client_secret
-      ? router.resolve({
-        path: '/payment/stripe',
-        query: {
-          order_id: String(result.order_id),
-          client_secret: result.client_secret,
-          method: stripeMethod || undefined,
-          resume_token: result.resume_token || undefined,
-        },
-      }).href
+    const stripeSessionId = result.client_secret
+      ? createStripeLaunchSession({
+        orderId: result.order_id,
+        clientSecret: result.client_secret || '',
+        method: stripeMethod,
+      })
+      : ''
+    currentStripeLaunchSessionId = stripeSessionId
+    const stripePopupUrl = stripeSessionId
+      ? buildStripePopupUrl(result, stripeMethod, stripeSessionId)
+      : ''
+    const stripeRouteUrl = stripeSessionId
+      ? buildStripeRouteUrl(result, stripeMethod, stripeSessionId)
       : ''
     const decision = decidePaymentLaunch(result, {
       visibleMethod,
       orderType,
       isMobile: isMobileDevice(),
       isWechatBrowser: typeof window !== 'undefined' && /MicroMessenger/i.test(window.navigator.userAgent),
-      stripePopupUrl: stripeRouteUrl,
+      stripePopupUrl,
       stripeRouteUrl,
     })
 
     if (decision.kind === 'wechat_oauth' && decision.oauth?.authorize_url) {
+      clearCurrentStripeLaunchSession()
       window.location.href = buildWechatOAuthAuthorizeUrl(decision.oauth.authorize_url, {
         paymentType: visibleMethod,
         orderType,
@@ -726,22 +828,30 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
     }
 
     if (decision.kind === 'unhandled') {
+      clearCurrentStripeLaunchSession()
       applyScenarioError({ reason: 'UNHANDLED_PAYMENT_SCENARIO' }, visibleMethod)
       return
     }
 
-    paymentState.value = decision.paymentState
+    paymentState.value = { ...decision.paymentState, clientSecret: '' }
     paymentPhase.value = 'paying'
-    persistRecoverySnapshot(decision.recovery)
+    persistRecoverySnapshot({ ...decision.recovery, clientSecret: '' })
 
     if (decision.kind === 'stripe_popup') {
-      openWindow(decision.paymentState.payUrl)
+      openStripePopup({
+        popupUrl: decision.paymentState.payUrl,
+        fallbackUrl: stripeRouteUrl,
+        clientSecret: result.client_secret || '',
+        publishableKey: checkout.value.stripe_publishable_key || '',
+        resumeToken: result.resume_token || '',
+      })
       return
     }
     if (decision.kind === 'stripe_route') {
-      window.location.href = decision.paymentState.payUrl
+      await router.push(decision.paymentState.payUrl)
       return
     }
+    clearCurrentStripeLaunchSession()
     if (decision.kind === 'wechat_jsapi' && decision.jsapi) {
       try {
         const jsapiResult = await invokeWechatJsapiPayment(decision.jsapi as Record<string, unknown>)
@@ -886,16 +996,16 @@ async function attemptMobileQrFallback(err: unknown, context: MobileQrFallbackCo
     })
     const result = await paymentStore.createOrder(payload) as CreateOrderResult & { resume_token?: string }
     const stripeMethod = visibleMethod === 'wxpay' ? 'wechat_pay' : 'alipay'
-    const stripeRouteUrl = result.client_secret
-      ? router.resolve({
-        path: '/payment/stripe',
-        query: {
-          order_id: String(result.order_id),
-          client_secret: result.client_secret,
-          method: stripeMethod,
-          resume_token: result.resume_token || undefined,
-        },
-      }).href
+    const stripeSessionId = result.client_secret
+      ? createStripeLaunchSession({
+        orderId: result.order_id,
+        clientSecret: result.client_secret || '',
+        method: stripeMethod,
+      })
+      : ''
+    currentStripeLaunchSessionId = stripeSessionId
+    const stripeRouteUrl = stripeSessionId
+      ? buildStripeRouteUrl(result, stripeMethod, stripeSessionId)
       : ''
     const decision = decidePaymentLaunch(result, {
       visibleMethod,
@@ -907,6 +1017,7 @@ async function attemptMobileQrFallback(err: unknown, context: MobileQrFallbackCo
     })
 
     if (decision.kind !== 'qr_waiting' || !decision.paymentState.qrCode) {
+      clearCurrentStripeLaunchSession()
       return false
     }
 

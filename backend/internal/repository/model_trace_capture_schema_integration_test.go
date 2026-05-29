@@ -1,0 +1,57 @@
+//go:build integration || contract
+
+package repository
+
+import "testing"
+
+func TestMigrationsRunner_ModelTraceCapturesSchemaStayAligned(t *testing.T) {
+	tx := testTx(t)
+
+	requireTableExists(t, tx, "model_trace_captures")
+	requireColumn(t, tx, "model_trace_captures", "task_id", "character varying", 128, false)
+	requireColumn(t, tx, "model_trace_captures", "request_id", "character varying", 128, true)
+	requireColumn(t, tx, "model_trace_captures", "response_id", "character varying", 128, true)
+	requireColumn(t, tx, "model_trace_captures", "user_id", "bigint", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "api_key_id", "bigint", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "group_id", "bigint", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "account_id", "bigint", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "capture_rule_id", "bigint", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "protocol", "character varying", 80, false)
+	requireColumn(t, tx, "model_trace_captures", "model", "character varying", 200, false)
+	requireColumn(t, tx, "model_trace_captures", "requested_model", "character varying", 200, false)
+	requireColumn(t, tx, "model_trace_captures", "upstream_model", "character varying", 200, false)
+	requireColumn(t, tx, "model_trace_captures", "request_content_type", "text", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "response_content_type", "text", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "input_tokens", "bigint", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "output_tokens", "bigint", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "total_tokens", "bigint", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "upstream_status_code", "integer", 0, true)
+	requireColumn(t, tx, "model_trace_captures", "scaffold", "character varying", 100, false)
+	requireColumn(t, tx, "model_trace_captures", "scaffold_version", "character varying", 120, false)
+	requireColumn(t, tx, "model_trace_captures", "prompt_json", "jsonb", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "candidates_json", "jsonb", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "tools_json", "jsonb", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "signature_json", "jsonb", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "meta_json", "jsonb", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "raw_request_json", "jsonb", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "raw_response_json", "jsonb", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "raw_request_text", "text", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "raw_response_text", "text", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "dedupe_hash", "character", 64, false)
+	requireColumn(t, tx, "model_trace_captures", "prompt_hash", "character", 64, false)
+	requireColumn(t, tx, "model_trace_captures", "created_at", "timestamp with time zone", 0, false)
+
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_dedupe_hash")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_created_at")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_user_id")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_api_key_id")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_account_id")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_protocol")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_capture_rule_id")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_model")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_total_tokens")
+	requireIndex(t, tx, "model_trace_captures", "model_trace_captures_task_id_unique")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_prompt_hash")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_request_id")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_response_id")
+}

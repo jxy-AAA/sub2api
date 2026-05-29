@@ -56,15 +56,7 @@
             data-1p-ignore
             data-lpignore="true"
             data-bwignore="true"
-            :placeholder="
-              account.platform === 'openai'
-                ? 'sk-proj-...'
-                : account.platform === 'gemini'
-                  ? 'AIza...'
-                  : account.platform === 'antigravity'
-                    ? 'sk-...'
-                    : 'sk-ant-...'
-            "
+            :placeholder="editApiKeyPlaceholder"
           />
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
@@ -545,15 +537,22 @@
 
       <!-- Upstream fields (only for upstream type) -->
       <div v-if="account.type === 'upstream'" class="space-y-4">
+        <div
+          v-if="isCompatiblePlatform(account.platform)"
+          class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-sm text-teal-800 dark:border-teal-900/40 dark:bg-teal-900/20 dark:text-teal-200"
+        >
+          <p class="font-medium">{{ compatiblePlatformLabel }}</p>
+          <p class="mt-1 text-xs text-teal-700 dark:text-teal-200">{{ upstreamBaseUrlHint }}</p>
+        </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.upstream.baseUrl') }}</label>
           <input
             v-model="editBaseUrl"
             type="text"
             class="input"
-            placeholder="https://cloudcode-pa.googleapis.com"
+            :placeholder="upstreamBaseUrlPlaceholder"
           />
-          <p class="input-hint">{{ t('admin.accounts.upstream.baseUrlHint') }}</p>
+          <p class="input-hint">{{ upstreamBaseUrlHint }}</p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.upstream.apiKey') }}</label>
@@ -561,9 +560,135 @@
             v-model="editApiKey"
             type="password"
             class="input font-mono"
-            placeholder="sk-..."
+            :placeholder="editApiKeyPlaceholder"
           />
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.upstream.headers') }}</label>
+          <textarea
+            v-model="editHeadersText"
+            rows="4"
+            class="input font-mono"
+            :placeholder="t('admin.accounts.upstream.headersPlaceholder')"
+          ></textarea>
+          <p class="input-hint">{{ t('admin.accounts.upstream.headersHint') }}</p>
+        </div>
+        <div v-if="isCompatiblePlatform(account.platform)" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+          <div class="mb-4 flex gap-2">
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'whitelist'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'whitelist'
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              {{ t('admin.accounts.modelWhitelist') }}
+            </button>
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'mapping'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'mapping'
+                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              {{ t('admin.accounts.modelMapping') }}
+            </button>
+          </div>
+
+          <div v-if="modelRestrictionMode === 'whitelist'">
+            <ModelWhitelistSelector v-model="allowedModels" :platform="account.platform" />
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
+              <span v-if="allowedModels.length === 0">{{
+                t('admin.accounts.supportsAllModels')
+              }}</span>
+            </p>
+          </div>
+
+          <div v-else>
+            <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
+              <p class="text-xs text-purple-700 dark:text-purple-400">
+                {{ t('admin.accounts.mapRequestModels') }}
+              </p>
+            </div>
+
+            <div v-if="modelMappings.length > 0" class="mb-3 space-y-2">
+              <div
+                v-for="(mapping, index) in modelMappings"
+                :key="'compatible-upstream-' + getModelMappingKey(mapping)"
+                class="flex items-center gap-2"
+              >
+                <input
+                  v-model="mapping.from"
+                  type="text"
+                  class="input flex-1"
+                  :placeholder="t('admin.accounts.requestModel')"
+                />
+                <svg
+                  class="h-4 w-4 flex-shrink-0 text-gray-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M14 5l7 7m0 0l-7 7m7-7H3"
+                  />
+                </svg>
+                <input
+                  v-model="mapping.to"
+                  type="text"
+                  class="input flex-1"
+                  :placeholder="t('admin.accounts.actualModel')"
+                />
+                <button
+                  type="button"
+                  @click="removeModelMapping(index)"
+                  class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
+                >
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              @click="addModelMapping"
+              class="mb-3 w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-dark-500 dark:text-gray-400 dark:hover:border-dark-400 dark:hover:text-gray-300"
+            >
+              + {{ t('admin.accounts.addMapping') }}
+            </button>
+
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="preset in presetMappings"
+                :key="'compatible-upstream-' + preset.label"
+                type="button"
+                @click="addPresetMapping(preset.from, preset.to)"
+                :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+              >
+                + {{ preset.label }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -2196,6 +2321,14 @@ import { formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } fro
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
+  getCompatiblePlatformDisplayName,
+  getPlatformApiKeyPlaceholder,
+  getPlatformBaseUrlPlaceholder,
+  getPlatformDefaultBaseUrl,
+  getPlatformModelPresetPlatform,
+  isCompatiblePlatform
+} from '@/utils/platforms'
+import {
   OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF,
   OPENAI_WS_MODE_PASSTHROUGH,
@@ -2243,6 +2376,21 @@ const baseUrlHint = computed(() => {
   if (props.account.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
+const upstreamBaseUrlHint = computed(() => {
+  if (props.account?.platform === 'openai_compatible') {
+    return t('admin.accounts.compatibleProviders.openaiDescription')
+  }
+  if (props.account?.platform === 'anthropic_compatible') {
+    return t('admin.accounts.compatibleProviders.anthropicDescription')
+  }
+  return t('admin.accounts.upstream.baseUrlHint')
+})
+const upstreamBaseUrlPlaceholder = computed(() =>
+  getPlatformBaseUrlPlaceholder(props.account?.platform)
+)
+const compatiblePlatformLabel = computed(() =>
+  getCompatiblePlatformDisplayName(props.account?.platform)
+)
 
 const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
 const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
@@ -2259,6 +2407,10 @@ type TempUnschedRuleForm = TempUnschedRuleFormInput
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const editHeadersText = ref('')
+const editApiKeyPlaceholder = computed(() =>
+  getPlatformApiKeyPlaceholder(props.account?.platform)
+)
 // Bedrock credentials
 const editBedrockAccessKeyId = ref('')
 const editBedrockSecretAccessKey = ref('')
@@ -2454,7 +2606,9 @@ const openAICompactStatusKey = computed(() => {
 })
 
 // Computed: current preset mappings based on platform
-const presetMappings = computed(() => getPresetMappingsByPlatform(props.account?.platform || 'anthropic'))
+const presetMappings = computed(() =>
+  getPresetMappingsByPlatform(getPlatformModelPresetPlatform(props.account?.platform))
+)
 const tempUnschedPresets = computed(() => [
   {
     label: t('admin.accounts.tempUnschedulable.presets.overloadLabel'),
@@ -2487,9 +2641,7 @@ const tempUnschedPresets = computed(() => [
 
 // Computed: default base URL based on platform
 const defaultBaseUrl = computed(() => {
-  if (props.account?.platform === 'openai') return 'https://api.openai.com'
-  if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
-  return 'https://api.anthropic.com'
+  return getPlatformDefaultBaseUrl(props.account?.platform)
 })
 
 const mixedChannelWarningMessageText = computed(() => {
@@ -2498,6 +2650,26 @@ const mixedChannelWarningMessageText = computed(() => {
   }
   return mixedChannelWarningRawMessage.value
 })
+
+function parseEditHeadersText(): Record<string, string> | null {
+  if (!editHeadersText.value.trim()) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(editHeadersText.value)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('invalid headers')
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed).map(([key, value]) => [key, String(value)])
+    )
+  } catch {
+    appStore.showError(t('admin.accounts.upstream.invalidHeaders'))
+    return null
+  }
+}
 
 const form = reactive({
   name: '',
@@ -2574,6 +2746,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   editVertexProjectId.value = ''
   editVertexClientEmail.value = ''
   editVertexLocation.value = 'us-central1'
+  editHeadersText.value = ''
 
   // Load mixed scheduling setting (only for antigravity accounts)
   mixedScheduling.value = false
@@ -2707,12 +2880,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Initialize API Key fields for apikey type
   if (newAccount.type === 'apikey' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
-    const platformDefaultUrl =
-      newAccount.platform === 'openai'
-        ? 'https://api.openai.com'
-        : newAccount.platform === 'gemini'
-          ? 'https://generativelanguage.googleapis.com'
-          : 'https://api.anthropic.com'
+    const platformDefaultUrl = getPlatformDefaultBaseUrl(newAccount.platform)
     editBaseUrl.value = (credentials.base_url as string) || platformDefaultUrl
 
     // Load model mappings and detect mode
@@ -2803,7 +2971,32 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     }
   } else if (newAccount.type === 'upstream' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
-    editBaseUrl.value = (credentials.base_url as string) || ''
+    editBaseUrl.value = (credentials.base_url as string) || getPlatformDefaultBaseUrl(newAccount.platform)
+    editHeadersText.value = credentials.headers ? JSON.stringify(credentials.headers, null, 2) : ''
+    if (isCompatiblePlatform(newAccount.platform)) {
+      const existingMappings = credentials.model_mapping as Record<string, string> | undefined
+      if (existingMappings && typeof existingMappings === 'object') {
+        const entries = Object.entries(existingMappings)
+        const isWhitelistMode = entries.length > 0 && entries.every(([from, to]) => from === to)
+        if (isWhitelistMode) {
+          modelRestrictionMode.value = 'whitelist'
+          allowedModels.value = entries.map(([from]) => from)
+          modelMappings.value = []
+        } else {
+          modelRestrictionMode.value = 'mapping'
+          modelMappings.value = entries.map(([from, to]) => ({ from, to }))
+          allowedModels.value = []
+        }
+      } else {
+        modelRestrictionMode.value = 'whitelist'
+        modelMappings.value = []
+        allowedModels.value = []
+      }
+    } else {
+      modelRestrictionMode.value = 'whitelist'
+      modelMappings.value = []
+      allowedModels.value = []
+    }
   } else if ((newAccount.platform === 'gemini' || newAccount.platform === 'anthropic') && newAccount.type === 'service_account' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editVertexProjectId.value = (credentials.project_id as string) || ''
@@ -2830,12 +3023,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       allowedModels.value = []
     }
   } else {
-    const platformDefaultUrl =
-      newAccount.platform === 'openai'
-        ? 'https://api.openai.com'
-        : newAccount.platform === 'gemini'
-          ? 'https://generativelanguage.googleapis.com'
-          : 'https://api.anthropic.com'
+    const platformDefaultUrl = getPlatformDefaultBaseUrl(newAccount.platform)
     editBaseUrl.value = platformDefaultUrl
 
     // Load model mappings for OpenAI OAuth accounts
@@ -3370,12 +3558,41 @@ const handleSubmit = async () => {
       updatePayload.credentials = newCredentials
     } else if (props.account.type === 'upstream') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const headers = parseEditHeadersText()
+      if (headers === null) {
+        return
+      }
+
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
 
-      newCredentials.base_url = editBaseUrl.value.trim()
+      newCredentials.base_url = editBaseUrl.value.trim() || getPlatformDefaultBaseUrl(props.account.platform)
 
       if (editApiKey.value.trim()) {
         newCredentials.api_key = editApiKey.value.trim()
+      } else if (!currentCredentials.api_key) {
+        const apiKeyError = validateApiKeyRequirement(editApiKey.value, currentCredentials.api_key)
+        appStore.showError(t(apiKeyError || 'admin.accounts.apiKeyIsRequired'))
+        return
+      }
+
+      if (Object.keys(headers).length > 0) {
+        newCredentials.headers = headers
+      } else if (isCompatiblePlatform(props.account.platform) || currentCredentials.headers) {
+        delete newCredentials.headers
+      }
+
+      if (isCompatiblePlatform(props.account.platform)) {
+        delete newCredentials.model_whitelist
+        const modelMapping = buildModelMappingObject(
+          modelRestrictionMode.value,
+          allowedModels.value,
+          modelMappings.value
+        )
+        if (modelMapping) {
+          newCredentials.model_mapping = modelMapping
+        } else {
+          delete newCredentials.model_mapping
+        }
       }
 
       // Add intercept warmup requests setting

@@ -28,6 +28,12 @@ func (_u *PaymentProviderInstanceUpdate) Where(ps ...predicate.PaymentProviderIn
 	return _u
 }
 
+// SetUpdatedAt sets the "updated_at" field.
+func (_u *PaymentProviderInstanceUpdate) SetUpdatedAt(v time.Time) *PaymentProviderInstanceUpdate {
+	_u.mutation.SetUpdatedAt(v)
+	return _u
+}
+
 // SetProviderKey sets the "provider_key" field.
 func (_u *PaymentProviderInstanceUpdate) SetProviderKey(v string) *PaymentProviderInstanceUpdate {
 	_u.mutation.SetProviderKey(v)
@@ -175,12 +181,6 @@ func (_u *PaymentProviderInstanceUpdate) SetNillableAllowUserRefund(v *bool) *Pa
 	return _u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (_u *PaymentProviderInstanceUpdate) SetUpdatedAt(v time.Time) *PaymentProviderInstanceUpdate {
-	_u.mutation.SetUpdatedAt(v)
-	return _u
-}
-
 // Mutation returns the PaymentProviderInstanceMutation object of the builder.
 func (_u *PaymentProviderInstanceUpdate) Mutation() *PaymentProviderInstanceMutation {
 	return _u.mutation
@@ -259,6 +259,9 @@ func (_u *PaymentProviderInstanceUpdate) sqlSave(ctx context.Context) (_node int
 			}
 		}
 	}
+	if value, ok := _u.mutation.UpdatedAt(); ok {
+		_spec.SetField(paymentproviderinstance.FieldUpdatedAt, field.TypeTime, value)
+	}
 	if value, ok := _u.mutation.ProviderKey(); ok {
 		_spec.SetField(paymentproviderinstance.FieldProviderKey, field.TypeString, value)
 	}
@@ -292,9 +295,6 @@ func (_u *PaymentProviderInstanceUpdate) sqlSave(ctx context.Context) (_node int
 	if value, ok := _u.mutation.AllowUserRefund(); ok {
 		_spec.SetField(paymentproviderinstance.FieldAllowUserRefund, field.TypeBool, value)
 	}
-	if value, ok := _u.mutation.UpdatedAt(); ok {
-		_spec.SetField(paymentproviderinstance.FieldUpdatedAt, field.TypeTime, value)
-	}
 	if _node, err = sqlgraph.UpdateNodes(ctx, _u.driver, _spec); err != nil {
 		if _, ok := err.(*sqlgraph.NotFoundError); ok {
 			err = &NotFoundError{paymentproviderinstance.Label}
@@ -313,6 +313,12 @@ type PaymentProviderInstanceUpdateOne struct {
 	fields   []string
 	hooks    []Hook
 	mutation *PaymentProviderInstanceMutation
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (_u *PaymentProviderInstanceUpdateOne) SetUpdatedAt(v time.Time) *PaymentProviderInstanceUpdateOne {
+	_u.mutation.SetUpdatedAt(v)
+	return _u
 }
 
 // SetProviderKey sets the "provider_key" field.
@@ -462,12 +468,6 @@ func (_u *PaymentProviderInstanceUpdateOne) SetNillableAllowUserRefund(v *bool) 
 	return _u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (_u *PaymentProviderInstanceUpdateOne) SetUpdatedAt(v time.Time) *PaymentProviderInstanceUpdateOne {
-	_u.mutation.SetUpdatedAt(v)
-	return _u
-}
-
 // Mutation returns the PaymentProviderInstanceMutation object of the builder.
 func (_u *PaymentProviderInstanceUpdateOne) Mutation() *PaymentProviderInstanceMutation {
 	return _u.mutation
@@ -576,6 +576,9 @@ func (_u *PaymentProviderInstanceUpdateOne) sqlSave(ctx context.Context) (_node 
 			}
 		}
 	}
+	if value, ok := _u.mutation.UpdatedAt(); ok {
+		_spec.SetField(paymentproviderinstance.FieldUpdatedAt, field.TypeTime, value)
+	}
 	if value, ok := _u.mutation.ProviderKey(); ok {
 		_spec.SetField(paymentproviderinstance.FieldProviderKey, field.TypeString, value)
 	}
@@ -608,9 +611,6 @@ func (_u *PaymentProviderInstanceUpdateOne) sqlSave(ctx context.Context) (_node 
 	}
 	if value, ok := _u.mutation.AllowUserRefund(); ok {
 		_spec.SetField(paymentproviderinstance.FieldAllowUserRefund, field.TypeBool, value)
-	}
-	if value, ok := _u.mutation.UpdatedAt(); ok {
-		_spec.SetField(paymentproviderinstance.FieldUpdatedAt, field.TypeTime, value)
 	}
 	_node = &PaymentProviderInstance{config: _u.config}
 	_spec.Assign = _node.assignValues

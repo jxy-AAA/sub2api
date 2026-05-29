@@ -52,10 +52,6 @@ linters:
         - G115
         - G201
         - G202
-        - G301
-        - G302
-        - G304
-        - G306
         - G404
       severity: high
       confidence: high
@@ -120,6 +116,71 @@ linters:
       local-variables-are-used: false
       # Default: true — must be true, ent generates 130K+ lines of code
       generated-is-used: true
+
+  exclusions:
+    rules:
+      # Keep filesystem-related gosec suppressions scoped to the exact file and
+      # rule instead of disabling G301/G302/G304/G306 for the whole repo.
+      - path: internal/handler/page_handler\.go
+        linters:
+          - gosec
+        text: "G301:"
+      - path: internal/pkg/logger/logger\.go
+        linters:
+          - gosec
+        text: "G301:"
+      - path: internal/repository/github_release_service\.go
+        linters:
+          - gosec
+        text: "G304:"
+      - path: internal/repository/github_release_service_test\.go
+        linters:
+          - gosec
+        text: "G704:"
+      - path: internal/service/gateway_service\.go
+        linters:
+          - gosec
+        text: "G301:"
+      - path: internal/service/gateway_service\.go
+        linters:
+          - gosec
+        text: "G304:"
+      - path: internal/service/gateway_service\.go
+        linters:
+          - gosec
+        text: "G703:"
+      - path: internal/service/ops_metrics_collector\.go
+        linters:
+          - gosec
+        text: "G304:"
+      - path: internal/service/pricing_service\.go
+        linters:
+          - gosec
+        text: "G301:"
+      - path: internal/service/pricing_service\.go
+        linters:
+          - gosec
+        text: "G304:"
+      - path: internal/service/pricing_service\.go
+        linters:
+          - gosec
+        text: "G306:"
+      - path: internal/service/trace_export_task_executor\.go
+        linters:
+          - gosec
+        text: "G304:"
+      - path: internal/service/trace_export_task_service\.go
+        linters:
+          - gosec
+        text: "G304:"
+      - path: internal/service/update_service\.go
+        linters:
+          - gosec
+        text: "G302:"
+      - path: internal/service/update_service\.go
+        linters:
+          - gosec
+        text: "G304:"
 
 formatters:
   enable:

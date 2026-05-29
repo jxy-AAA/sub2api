@@ -1,14 +1,18 @@
 package setup
 
 import (
+	"crypto/subtle"
 	"fmt"
+	"net"
 	"net/http"
 	"net/mail"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/sysutil"
 
@@ -17,6 +21,16 @@ import (
 
 // installMutex prevents concurrent installation attempts (TOCTOU protection)
 var installMutex sync.Mutex
+
+const (
+	setupTokenHeaderName = "X-Setup-Token"
+	setupTokenEnvKey     = "SETUP_TOKEN"
+)
+
+var (
+	setupTokenOnce   sync.Once
+	setupTokenCached string
+)
 
 // RegisterRoutes registers setup wizard routes
 func RegisterRoutes(r *gin.Engine) {
@@ -38,15 +52,21 @@ func RegisterRoutes(r *gin.Engine) {
 
 // SetupStatus represents the current setup state
 type SetupStatus struct {
-	NeedsSetup bool   `json:"needs_setup"`
-	Step       string `json:"step"`
+	NeedsSetup          bool   `json:"needs_setup"`
+	Step                string `json:"step"`
+	SetupTokenRequired  bool   `json:"setup_token_required,omitempty"`
+	SetupTokenAvailable bool   `json:"setup_token_available,omitempty"`
 }
 
 // getStatus returns the current setup status
 func getStatus(c *gin.Context) {
+	token := getSetupAccessToken()
+	localRequest := isLocalSetupRequest(c)
 	response.Success(c, SetupStatus{
-		NeedsSetup: NeedsSetup(),
-		Step:       "welcome",
+		NeedsSetup:          NeedsSetup(),
+		Step:                "welcome",
+		SetupTokenRequired:  !localRequest,
+		SetupTokenAvailable: token != "",
 	})
 }
 
@@ -58,8 +78,64 @@ func setupGuard() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if !isAuthorizedSetupRequest(c) {
+			response.Error(c, http.StatusForbidden, "Setup is restricted to local requests or requires a valid setup token")
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
+}
+
+func isAuthorizedSetupRequest(c *gin.Context) bool {
+	if isLocalSetupRequest(c) {
+		return true
+	}
+	token := strings.TrimSpace(c.GetHeader(setupTokenHeaderName))
+	expected := getSetupAccessToken()
+	if token == "" || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+}
+
+func isLocalSetupRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	peerIP := parseRemotePeerIP(c.Request.RemoteAddr)
+	if peerIP == nil {
+		return false
+	}
+	return peerIP.IsLoopback()
+}
+
+func parseRemotePeerIP(remoteAddr string) net.IP {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return nil
+	}
+
+	host := remoteAddr
+	if parsedHost, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = parsedHost
+	} else if strings.HasPrefix(remoteAddr, "[") && strings.HasSuffix(remoteAddr, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(remoteAddr, "["), "]")
+	}
+
+	return net.ParseIP(strings.TrimSpace(host))
+}
+
+func getSetupAccessToken() string {
+	setupTokenOnce.Do(func() {
+		setupTokenCached = strings.TrimSpace(os.Getenv(setupTokenEnvKey))
+		if setupTokenCached == "" {
+			logger.LegacyPrintf("setup", "Remote setup is disabled unless %s is configured; non-local setup requests must provide that token manually or via %s", setupTokenEnvKey, setupTokenHeaderName)
+			return
+		}
+		logger.LegacyPrintf("setup", "Remote setup token is configured via %s; provide it manually in the setup wizard or via %s", setupTokenEnvKey, setupTokenHeaderName)
+	})
+	return setupTokenCached
 }
 
 // validateHostname checks if a hostname/IP is safe (no injection characters)

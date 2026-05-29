@@ -43,6 +43,12 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	originalModel := ccReq.Model
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
+	captureGatewayClientRequest(c, inferGatewayTraceProtocol(c, "anthropic"), body, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": originalModel,
+		"stream":         clientStream,
+	})
 
 	// 2. Convert CC → Responses → Anthropic (chained conversion)
 	responsesReq, err := apicompat.ChatCompletionsToResponses(&ccReq)
@@ -61,7 +67,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 	// 4. Model mapping
 	mappedModel := originalModel
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+	if account.IsStaticKeyAccount() || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(originalModel)
 	}
 	if mappedModel == originalModel && account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
@@ -69,7 +75,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		if normalized != originalModel {
 			mappedModel = normalized
 		}
-	} else if mappedModel == originalModel && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+	} else if mappedModel == originalModel && account.Platform == PlatformAnthropic && !account.IsStaticKeyAccount() {
 		normalized := claude.NormalizeModelID(originalModel)
 		if normalized != originalModel {
 			mappedModel = normalized
@@ -124,6 +130,11 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
+	captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "anthropic"), upstreamReq, anthropicBody, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         reqStream,
+	})
 
 	// 11. Send request
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
@@ -223,6 +234,12 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	startTime time.Time,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "anthropic"), resp, traceBuf, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         false,
+	})
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -236,6 +253,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		traceBuf.WriteLine(line)
 		if !strings.HasPrefix(line, "event: ") {
 			continue
 		}
@@ -244,6 +262,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 			break
 		}
 		dataLine := scanner.Text()
+		traceBuf.WriteLine(dataLine)
 		if !strings.HasPrefix(dataLine, "data: ") {
 			continue
 		}
@@ -350,6 +369,12 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	includeUsage bool,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "anthropic"), resp, traceBuf, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         true,
+	})
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -437,6 +462,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		traceBuf.WriteLine(line)
 		if !strings.HasPrefix(line, "event: ") {
 			continue
 		}
@@ -445,6 +471,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 			break
 		}
 		dataLine := scanner.Text()
+		traceBuf.WriteLine(dataLine)
 		if !strings.HasPrefix(dataLine, "data: ") {
 			continue
 		}

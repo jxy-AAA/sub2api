@@ -368,24 +368,27 @@ func (s *AccountService) validateGroupIDsExist(ctx context.Context, groupIDs []i
 }
 
 func (s *AccountService) validateRequireOAuthOnlyGroups(ctx context.Context, accountType string, groupIDs []int64) error {
-	if accountType != AccountTypeAPIKey || len(groupIDs) == 0 {
+	return validateRequireOAuthOnlyGroupsForRepo(ctx, s.groupRepo, accountType, groupIDs)
+}
+
+func validateRequireOAuthOnlyGroupsForRepo(ctx context.Context, groupRepo GroupRepository, accountType string, groupIDs []int64) error {
+	if !IsStaticKeyAccountType(accountType) || len(groupIDs) == 0 {
 		return nil
 	}
-	if s.groupRepo == nil {
+	if groupRepo == nil {
 		return fmt.Errorf("group repository not configured")
 	}
 
 	for _, groupID := range groupIDs {
-		group, err := s.groupRepo.GetByID(ctx, groupID)
+		group, err := groupRepo.GetByID(ctx, groupID)
 		if err != nil {
 			return err
 		}
 		if !group.RequireOAuthOnly {
 			continue
 		}
-		switch group.Platform {
-		case PlatformOpenAI, PlatformAntigravity, PlatformAnthropic, PlatformGemini:
-			return fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", group.Name)
+		if IsOAuthOnlyGroupPlatform(group.Platform) {
+			return fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，静态 key 类型账号无法加入", group.Name)
 		}
 	}
 	return nil
@@ -528,12 +531,12 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 		return fmt.Errorf("get account: %w", err)
 	}
 
-	switch account.Platform {
-	case PlatformAnthropic:
+	switch {
+	case IsAnthropicProtocolPlatform(account.Platform):
 		return nil
-	case PlatformOpenAI:
+	case IsOpenAIProtocolPlatform(account.Platform):
 		return nil
-	case PlatformGemini:
+	case account.Platform == PlatformGemini, account.Platform == PlatformAntigravity:
 		return nil
 	default:
 		return fmt.Errorf("unsupported platform: %s", account.Platform)

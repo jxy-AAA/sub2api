@@ -269,6 +269,7 @@ describe('PaymentResultView', () => {
     routeState.query = {
       resume_token: 'resume-fail',
       out_trade_no: 'legacy-should-not-run',
+      lookup_token: 'lookup-legacy-fallback',
       trade_status: 'TRADE_SUCCESS',
     }
     resolveOrderPublicByResumeToken.mockRejectedValueOnce(new Error('resume failed'))
@@ -290,7 +291,7 @@ describe('PaymentResultView', () => {
     await flushPromises()
 
     expect(resolveOrderPublicByResumeToken).toHaveBeenCalledWith('resume-fail')
-    expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-should-not-run')
+    expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-should-not-run', 'lookup-legacy-fallback')
     expect(pollOrderStatus).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('payment.result.success')
   })
@@ -324,6 +325,7 @@ describe('PaymentResultView', () => {
   it('uses public out_trade_no verification when no signed resume context is available', async () => {
     routeState.query = {
       out_trade_no: 'legacy-123',
+      lookup_token: 'lookup-legacy-123',
       trade_status: 'TRADE_SUCCESS',
     }
     verifyOrderPublic.mockResolvedValue({
@@ -340,7 +342,14 @@ describe('PaymentResultView', () => {
 
     await flushPromises()
 
-    expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-123')
+    expect(routerReplace).toHaveBeenCalledWith({
+      path: '/payment/result',
+      query: {
+        out_trade_no: 'legacy-123',
+        trade_status: 'TRADE_SUCCESS',
+      },
+    })
+    expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-123', 'lookup-legacy-123')
     expect(pollOrderStatus).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('payment.result.success')
   })
@@ -348,6 +357,7 @@ describe('PaymentResultView', () => {
   it('does not use public out_trade_no verification for bare order numbers without legacy return markers', async () => {
     routeState.query = {
       out_trade_no: 'legacy-bare',
+      lookup_token: 'lookup-bare',
     }
 
     mount(PaymentResultView, {

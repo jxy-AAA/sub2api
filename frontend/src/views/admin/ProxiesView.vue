@@ -1169,23 +1169,26 @@ const parseProxyUrl = (
   const trimmed = line.trim()
   if (!trimmed) return null
 
-  // Regex to parse proxy URL (supports http, https, socks5, socks5h)
-  const regex = /^(https?|socks5h?):\/\/(?:([^:@]+):([^@]+)@)?([^:]+):(\d+)$/i
-  const match = trimmed.match(regex)
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    return null
+  }
 
-  if (!match) return null
+  const protocol = parsed.protocol.replace(/:$/, '').toLowerCase()
+  if (!['http', 'https', 'socks5', 'socks5h'].includes(protocol)) return null
 
-  const [, protocol, username, password, host, port] = match
-  const portNum = parseInt(port, 10)
+  const portNum = Number(parsed.port)
 
   if (portNum < 1 || portNum > 65535) return null
 
   return {
     protocol: protocol.toLowerCase() as ProxyProtocol,
-    host: host.trim(),
+    host: parsed.hostname.replace(/^\[(.*)\]$/, '$1').trim(),
     port: portNum,
-    username: username?.trim() || '',
-    password: password?.trim() || ''
+    username: decodeURIComponent(parsed.username || '').trim(),
+    password: decodeURIComponent(parsed.password || '').trim()
   }
 }
 
@@ -1834,7 +1837,9 @@ function buildAuthPart(row: any): string {
 }
 
 function buildProxyUrl(row: any): string {
-  return `${row.protocol}://${buildAuthPart(row)}${row.host}:${row.port}`
+  const host = String(row.host || '')
+  const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  return `${row.protocol}://${buildAuthPart(row)}${formattedHost}:${row.port}`
 }
 
 function getCopyFormats(row: any) {

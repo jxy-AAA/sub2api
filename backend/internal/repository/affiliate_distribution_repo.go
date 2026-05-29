@@ -11,6 +11,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
@@ -71,6 +72,57 @@ func affiliateDistributionRebateAmountRMB(usageAmountUSD, parentRate, childRate 
 	return rebateAmount
 }
 
+func affiliateDistributionFiniteNonNegative(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0
+}
+
+func affiliateDistributionBusinessAmountUSD(usageAmountUSD, childRate float64) float64 {
+	if !affiliateDistributionFiniteNonNegative(usageAmountUSD) || usageAmountUSD <= 0 {
+		return 0
+	}
+	return usageAmountUSD
+}
+
+func affiliateDistributionSettlementAmounts(cmd service.AffiliateDistributionUsageSettlementCommand) (rawUsageUSD, paidUsageUSD, consumerRate float64, hasConsumerRate bool) {
+	if !math.IsNaN(cmd.TotalCost) && !math.IsInf(cmd.TotalCost, 0) && cmd.TotalCost > affiliateDistributionPaidCreditTolerance {
+		rawUsageUSD = cmd.TotalCost
+	}
+	if !math.IsNaN(cmd.ActualCost) && !math.IsInf(cmd.ActualCost, 0) && cmd.ActualCost > affiliateDistributionPaidCreditTolerance {
+		paidUsageUSD = cmd.ActualCost
+	}
+	if cmd.HasRateMultiplier && affiliateDistributionFiniteNonNegative(cmd.RateMultiplier) {
+		consumerRate = cmd.RateMultiplier
+		hasConsumerRate = true
+		if paidUsageUSD <= affiliateDistributionPaidCreditTolerance && rawUsageUSD > affiliateDistributionPaidCreditTolerance {
+			paidUsageUSD = rawUsageUSD * consumerRate
+		}
+	}
+	if rawUsageUSD <= affiliateDistributionPaidCreditTolerance && paidUsageUSD > affiliateDistributionPaidCreditTolerance {
+		rawUsageUSD = paidUsageUSD
+	}
+	if paidUsageUSD <= affiliateDistributionPaidCreditTolerance && !hasConsumerRate {
+		paidUsageUSD = rawUsageUSD
+	}
+	return rawUsageUSD, paidUsageUSD, consumerRate, hasConsumerRate
+}
+
+func affiliateDistributionProratedRawUsage(rawUsageUSD, paidUsageUSD, eligiblePaidUsageUSD float64) float64 {
+	if rawUsageUSD <= affiliateDistributionPaidCreditTolerance ||
+		paidUsageUSD <= affiliateDistributionPaidCreditTolerance ||
+		eligiblePaidUsageUSD <= affiliateDistributionPaidCreditTolerance {
+		return 0
+	}
+	if math.IsNaN(rawUsageUSD) || math.IsInf(rawUsageUSD, 0) ||
+		math.IsNaN(paidUsageUSD) || math.IsInf(paidUsageUSD, 0) ||
+		math.IsNaN(eligiblePaidUsageUSD) || math.IsInf(eligiblePaidUsageUSD, 0) {
+		return 0
+	}
+	if eligiblePaidUsageUSD >= paidUsageUSD-affiliateDistributionPaidCreditTolerance {
+		return rawUsageUSD
+	}
+	return rawUsageUSD * (eligiblePaidUsageUSD / paidUsageUSD)
+}
+
 func scanAgentGroupRates(rows *sql.Rows, inheritedUpstreamUserID *int64) ([]service.AgentGroupRate, error) {
 	items := make([]service.AgentGroupRate, 0)
 	for rows.Next() {
@@ -114,7 +166,7 @@ func (r *affiliateDistributionRepository) GetDistributionOverview(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	today := truncateToUTCDate(time.Now())
+	today := truncateToShanghaiDate(time.Now())
 	businessUSD, rebateRMB, err := r.getDailyTotals(ctx, userID, today)
 	if err != nil {
 		return nil, err
@@ -222,22 +274,45 @@ func (r *affiliateDistributionRepository) ListDirectSubordinates(ctx context.Con
 		return nil, service.ErrUserNotFound
 	}
 	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, `
+WITH child_counts AS (
+    SELECT inviter_id AS user_id, COUNT(*)::integer AS actual_children
+    FROM user_affiliates
+    WHERE inviter_id IS NOT NULL
+    GROUP BY inviter_id
+), direct_usage AS (
+    SELECT s.direct_child_user_id AS user_id,
+           COALESCE(SUM(s.usage_amount_usd), 0)::double precision AS direct_total_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd::double precision / $3::double precision), 0)::double precision AS direct_total_usage_rmb,
+           COALESCE(SUM(s.rebate_amount), 0)::double precision AS today_rebate_rmb
+    FROM affiliate_distribution_usage_settlements s
+    WHERE s.beneficiary_user_id = $1
+      AND s.settlement_day = $2
+      AND s.direct_child_user_id IS NOT NULL
+    GROUP BY s.direct_child_user_id
+)
 SELECT ua.user_id,
        COALESCE(u.email, ''),
        COALESCE(u.username, ''),
-       (u.role = 'admin' OR ua.aff_count > 0) AS is_admin,
+       (u.role = 'admin' OR COALESCE(cc.actual_children, 0) > 0) AS is_admin,
        ua.created_at,
-       COALESCE(dm.revenue_amount_usd, 0)::double precision,
-       COALESCE(dm.rebate_amount, 0)::double precision,
+       COALESCE(du.direct_total_usage_usd, 0)::double precision,
+       COALESCE(du.direct_total_usage_rmb, 0)::double precision,
+       COALESCE(du.today_rebate_rmb, 0)::double precision,
+       COALESCE(du.direct_total_usage_usd, 0)::double precision,
+       COALESCE(du.direct_total_usage_rmb, 0)::double precision,
+       CASE WHEN u.role <> 'admin' AND COALESCE(cc.actual_children, 0) = 0 THEN COALESCE(du.direct_total_usage_usd, 0) ELSE 0 END::double precision,
+       CASE WHEN u.role <> 'admin' AND COALESCE(cc.actual_children, 0) = 0 THEN COALESCE(du.direct_total_usage_rmb, 0) ELSE 0 END::double precision,
+       CASE WHEN u.role = 'admin' OR COALESCE(cc.actual_children, 0) > 0 THEN COALESCE(du.direct_total_usage_usd, 0) ELSE 0 END::double precision,
+       CASE WHEN u.role = 'admin' OR COALESCE(cc.actual_children, 0) > 0 THEN COALESCE(du.direct_total_usage_rmb, 0) ELSE 0 END::double precision,
        COALESCE(rb.current_amount, 0)::double precision
 FROM user_affiliates ua
 JOIN users u ON u.id = ua.user_id
-LEFT JOIN affiliate_distribution_daily_metrics dm
-       ON dm.user_id = ua.user_id AND dm.metric_date = $2
+LEFT JOIN child_counts cc ON cc.user_id = ua.user_id
+LEFT JOIN direct_usage du ON du.user_id = ua.user_id
 LEFT JOIN affiliate_distribution_rebate_balances rb
        ON rb.user_id = ua.user_id
 WHERE ua.inviter_id = $1
-ORDER BY ua.created_at ASC`, userID, truncateToUTCDate(time.Now()))
+ORDER BY ua.created_at ASC`, userID, truncateToShanghaiDate(time.Now()), affiliateRateMultiplierFenPerUSD)
 	if err != nil {
 		return nil, fmt.Errorf("list direct subordinates: %w", err)
 	}
@@ -246,7 +321,23 @@ ORDER BY ua.created_at ASC`, userID, truncateToUTCDate(time.Now()))
 	for rows.Next() {
 		var item service.AgentDirectMember
 		var createdAt sql.NullTime
-		if err := rows.Scan(&item.UserID, &item.Email, &item.Username, &item.IsAgent, &createdAt, &item.TodayBusinessUSD, &item.TodayRebateRMB, &item.CurrentRebateBalanceRMB); err != nil {
+		if err := rows.Scan(
+			&item.UserID,
+			&item.Email,
+			&item.Username,
+			&item.IsAgent,
+			&createdAt,
+			&item.TodayBusinessUSD,
+			&item.TodayBusinessRMB,
+			&item.TodayRebateRMB,
+			&item.DirectTotalUsageUSD,
+			&item.DirectTotalUsageRMB,
+			&item.DirectUserUsageUSD,
+			&item.DirectUserUsageRMB,
+			&item.DirectAgentUsageUSD,
+			&item.DirectAgentUsageRMB,
+			&item.CurrentRebateBalanceRMB,
+		); err != nil {
 			return nil, err
 		}
 		if createdAt.Valid {
@@ -282,37 +373,50 @@ func (r *affiliateDistributionRepository) ListUserDistributionHistory(ctx contex
 	startDay := filter.StartAt
 	endDay := filter.EndAt
 	if startDay == nil {
-		now := truncateToUTCDate(time.Now())
+		now := truncateToShanghaiDate(time.Now())
 		startDay = &now
 	}
 	if endDay == nil {
-		now := truncateToUTCDate(time.Now())
+		now := truncateToShanghaiDate(time.Now())
 		endDay = &now
 	}
 	countSQL := `
 SELECT COUNT(*)
 FROM (
-    SELECT metric_date
-    FROM affiliate_distribution_daily_metrics
-    WHERE user_id = $1
-      AND metric_date BETWEEN $2 AND $3
-    GROUP BY metric_date
+    SELECT settlement_day
+    FROM affiliate_distribution_usage_settlements
+    WHERE beneficiary_user_id = $1
+      AND settlement_day BETWEEN $2 AND $3
+    GROUP BY settlement_day
 ) t`
 	total, err := scanInt64(ctx, clientFromContext(ctx, r.client), countSQL, userID, startDay, endDay)
 	if err != nil {
 		return nil, 0, err
 	}
 	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, `
-SELECT metric_date::text,
-       COALESCE(revenue_amount_usd, 0)::double precision,
-       COALESCE(rebate_amount, 0)::double precision,
-       0::integer,
-       0::integer,
-       COALESCE(last_usage_at, NOW())
-FROM affiliate_distribution_daily_metrics
-WHERE user_id = $1
-  AND metric_date BETWEEN $2 AND $3
-ORDER BY metric_date DESC
+WITH child_counts AS (
+    SELECT inviter_id AS user_id, COUNT(*)::integer AS actual_children
+    FROM user_affiliates
+    WHERE inviter_id IS NOT NULL
+    GROUP BY inviter_id
+)
+SELECT s.settlement_day::text,
+       COALESCE(SUM(s.usage_amount_usd), 0)::double precision,
+       COALESCE(SUM(s.rebate_amount), 0)::double precision,
+       COUNT(DISTINCT s.direct_child_user_id) FILTER (
+           WHERE COALESCE(child_u.role <> 'admin', true) AND COALESCE(child_cc.actual_children, 0) = 0
+       )::integer,
+       COUNT(DISTINCT s.direct_child_user_id) FILTER (
+           WHERE COALESCE(child_u.role = 'admin', false) OR COALESCE(child_cc.actual_children, 0) > 0
+       )::integer,
+       COALESCE(MAX(s.updated_at), MAX(s.created_at), NOW())
+FROM affiliate_distribution_usage_settlements s
+LEFT JOIN users child_u ON child_u.id = s.direct_child_user_id
+LEFT JOIN child_counts child_cc ON child_cc.user_id = s.direct_child_user_id
+WHERE s.beneficiary_user_id = $1
+  AND s.settlement_day BETWEEN $2 AND $3
+GROUP BY s.settlement_day
+ORDER BY s.settlement_day DESC
 LIMIT $4 OFFSET $5`, userID, startDay, endDay, pageSize, offset)
 	if err != nil {
 		return nil, 0, err
@@ -330,83 +434,146 @@ LIMIT $4 OFFSET $5`, userID, startDay, endDay, pageSize, offset)
 }
 
 func (r *affiliateDistributionRepository) ListDailyBusinessRanking(ctx context.Context, filter service.AgentRankingFilter) ([]service.AgentDailyBusinessRankingItem, int64, error) {
-	statDate := truncateToUTCDate(time.Now())
+	statDate := truncateToShanghaiDate(time.Now())
 	if filter.StatDate != nil {
-		statDate = truncateToUTCDate(*filter.StatDate)
+		statDate = truncateToShanghaiDate(*filter.StatDate)
 	}
 	_, pageSize, offset := normalizePage(filter.Page, filter.PageSize)
 	search := "%" + strings.TrimSpace(filter.Search) + "%"
 	scopeCTE, scopeArgs, nextArgIndex := buildAffiliateScopeCTE(filter.RootUserID, filter.OnlyDescendants, 1)
-	statDateArgIndex := nextArgIndex
-	searchArgIndex := nextArgIndex + 1
+	searchArgIndex := nextArgIndex
+	statDateArgIndex := nextArgIndex + 1
 	limitArgIndex := nextArgIndex + 2
 	offsetArgIndex := nextArgIndex + 3
 	countSQL := fmt.Sprintf(`
 WITH %s,
-business AS (
-    SELECT s.beneficiary_user_id AS user_id,
-           s.settlement_day::text AS stat_date,
-           COALESCE(SUM(s.revenue_amount_usd), 0)::double precision AS business_usd,
-           COALESCE(SUM((s.usage_amount_usd * s.child_rate_multiplier) / %.1f), 0)::double precision AS business_rmb,
-           COALESCE(MAX(s.updated_at), MAX(s.created_at), NOW()) AS last_calculated_at
-    FROM affiliate_distribution_usage_settlements s
-    JOIN scope_users scope ON scope.user_id = s.beneficiary_user_id
-    WHERE s.settlement_day = $%d
-    GROUP BY s.beneficiary_user_id, s.settlement_day
+child_counts AS (
+    SELECT inviter_id AS user_id, COUNT(*)::integer AS actual_children
+    FROM user_affiliates
+    WHERE inviter_id IS NOT NULL
+    GROUP BY inviter_id
+),
+agents AS (
+    SELECT scope.user_id
+    FROM scope_users scope
+    JOIN users u ON u.id = scope.user_id
+    LEFT JOIN child_counts cc ON cc.user_id = scope.user_id
+    WHERE u.role = 'admin' OR COALESCE(cc.actual_children, 0) > 0
 )
 SELECT COUNT(*)
-FROM business b
-JOIN users u ON u.id = b.user_id
-WHERE u.email ILIKE $%d OR u.username ILIKE $%d`, scopeCTE, affiliateRateMultiplierFenPerUSD, statDateArgIndex, searchArgIndex, searchArgIndex)
-	countArgs := append(append([]any{}, scopeArgs...), statDate, search)
+FROM agents a
+JOIN users u ON u.id = a.user_id
+WHERE u.email ILIKE $%d OR u.username ILIKE $%d`, scopeCTE, searchArgIndex, searchArgIndex)
+	countArgs := append(append([]any{}, scopeArgs...), search)
 	total, err := scanInt64(ctx, clientFromContext(ctx, r.client), countSQL, countArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
 	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, fmt.Sprintf(`
 WITH %s,
+child_counts AS (
+    SELECT inviter_id AS user_id, COUNT(*)::integer AS actual_children
+    FROM user_affiliates
+    WHERE inviter_id IS NOT NULL
+    GROUP BY inviter_id
+),
 direct_counts AS (
     SELECT ua.inviter_id AS user_id,
-           COUNT(*) FILTER (WHERE child_u.role = 'admin' OR COALESCE(child_ua.aff_count, 0) > 0)::integer AS direct_agents,
-           COUNT(*) FILTER (WHERE child_u.role <> 'admin' AND COALESCE(child_ua.aff_count, 0) = 0)::integer AS direct_users
+           COUNT(*)::integer AS direct_children_count,
+           COUNT(*) FILTER (WHERE child_u.role = 'admin' OR COALESCE(child_cc.actual_children, 0) > 0)::integer AS direct_agents,
+           COUNT(*) FILTER (WHERE child_u.role <> 'admin' AND COALESCE(child_cc.actual_children, 0) = 0)::integer AS direct_users
     FROM user_affiliates ua
     JOIN users child_u ON child_u.id = ua.user_id
-    JOIN user_affiliates child_ua ON child_ua.user_id = ua.user_id
+    LEFT JOIN child_counts child_cc ON child_cc.user_id = ua.user_id
     WHERE ua.inviter_id IS NOT NULL
     GROUP BY ua.inviter_id
+),
+agents AS (
+    SELECT scope.user_id
+    FROM scope_users scope
+    JOIN users u ON u.id = scope.user_id
+    LEFT JOIN direct_counts dc ON dc.user_id = scope.user_id
+    WHERE u.role = 'admin' OR COALESCE(dc.direct_children_count, 0) > 0
 ),
 business AS (
     SELECT s.beneficiary_user_id AS user_id,
            s.settlement_day::text AS stat_date,
-           COALESCE(SUM(s.revenue_amount_usd), 0)::double precision AS business_usd,
-           COALESCE(SUM((s.usage_amount_usd * s.child_rate_multiplier) / %.1f), 0)::double precision AS business_rmb,
+           COALESCE(SUM(s.usage_amount_usd), 0)::double precision AS business_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f), 0)::double precision AS business_rmb,
            COALESCE(MAX(s.updated_at), MAX(s.created_at), NOW()) AS last_calculated_at
     FROM affiliate_distribution_usage_settlements s
-    JOIN scope_users scope ON scope.user_id = s.beneficiary_user_id
+    JOIN agents a ON a.user_id = s.beneficiary_user_id
     WHERE s.settlement_day = $%d
     GROUP BY s.beneficiary_user_id, s.settlement_day
+), direct_usage AS (
+    SELECT s.beneficiary_user_id AS user_id,
+           COALESCE(SUM(s.usage_amount_usd), 0)::double precision AS direct_total_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f), 0)::double precision AS direct_total_usage_rmb,
+           COALESCE(SUM(s.usage_amount_usd) FILTER (
+               WHERE COALESCE(child_u.role <> 'admin', true) AND COALESCE(child_cc.actual_children, 0) = 0
+           ), 0)::double precision AS direct_user_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f) FILTER (
+               WHERE COALESCE(child_u.role <> 'admin', true) AND COALESCE(child_cc.actual_children, 0) = 0
+           ), 0)::double precision AS direct_user_usage_rmb,
+           COALESCE(SUM(s.usage_amount_usd) FILTER (
+               WHERE COALESCE(child_u.role = 'admin', false) OR COALESCE(child_cc.actual_children, 0) > 0
+           ), 0)::double precision AS direct_agent_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f) FILTER (
+               WHERE COALESCE(child_u.role = 'admin', false) OR COALESCE(child_cc.actual_children, 0) > 0
+           ), 0)::double precision AS direct_agent_usage_rmb
+    FROM affiliate_distribution_usage_settlements s
+    JOIN agents a ON a.user_id = s.beneficiary_user_id
+    LEFT JOIN users child_u ON child_u.id = s.direct_child_user_id
+    LEFT JOIN child_counts child_cc ON child_cc.user_id = s.direct_child_user_id
+    WHERE s.settlement_day = $%d
+    GROUP BY s.beneficiary_user_id
 ),
 ranked AS (
-    SELECT b.user_id,
+    SELECT a.user_id,
            COALESCE(u.email, '') AS email,
            COALESCE(u.username, '') AS username,
-           b.stat_date,
-           b.business_usd,
-           b.business_rmb,
+           COALESCE(b.stat_date, $%d::date::text) AS stat_date,
+           COALESCE(b.business_usd, 0)::double precision AS business_usd,
+           COALESCE(b.business_rmb, 0)::double precision AS business_rmb,
            COALESCE(dc.direct_users, 0)::integer AS direct_users,
            COALESCE(dc.direct_agents, 0)::integer AS direct_agents,
-           b.last_calculated_at,
-           ROW_NUMBER() OVER (ORDER BY b.business_rmb DESC, b.user_id ASC) AS rank
-    FROM business b
-    JOIN users u ON u.id = b.user_id
-    LEFT JOIN direct_counts dc ON dc.user_id = b.user_id
+           COALESCE(du.direct_total_usage_usd, 0)::double precision AS direct_total_usage_usd,
+           COALESCE(du.direct_total_usage_rmb, 0)::double precision AS direct_total_usage_rmb,
+           COALESCE(du.direct_user_usage_usd, 0)::double precision AS direct_user_usage_usd,
+           COALESCE(du.direct_user_usage_rmb, 0)::double precision AS direct_user_usage_rmb,
+           COALESCE(du.direct_agent_usage_usd, 0)::double precision AS direct_agent_usage_usd,
+           COALESCE(du.direct_agent_usage_rmb, 0)::double precision AS direct_agent_usage_rmb,
+           COALESCE(b.last_calculated_at, NOW()) AS last_calculated_at,
+           ROW_NUMBER() OVER (ORDER BY COALESCE(b.business_rmb, 0) DESC, a.user_id ASC) AS rank
+    FROM agents a
+    JOIN users u ON u.id = a.user_id
+    LEFT JOIN business b ON b.user_id = a.user_id
+    LEFT JOIN direct_counts dc ON dc.user_id = a.user_id
+    LEFT JOIN direct_usage du ON du.user_id = a.user_id
     WHERE u.email ILIKE $%d OR u.username ILIKE $%d
 )
-SELECT rank, user_id, email, username, stat_date, business_usd, business_rmb, direct_users, direct_agents, last_calculated_at
+SELECT rank, user_id, email, username, stat_date, business_usd, business_rmb,
+       direct_users, direct_agents,
+       direct_total_usage_usd, direct_total_usage_rmb,
+       direct_user_usage_usd, direct_user_usage_rmb,
+       direct_agent_usage_usd, direct_agent_usage_rmb,
+       last_calculated_at
 FROM ranked
 ORDER BY rank
-LIMIT $%d OFFSET $%d`, scopeCTE, affiliateRateMultiplierFenPerUSD, statDateArgIndex, searchArgIndex, searchArgIndex, limitArgIndex, offsetArgIndex),
-		append(append([]any{}, scopeArgs...), statDate, search, pageSize, offset)...)
+LIMIT $%d OFFSET $%d`,
+		scopeCTE,
+		affiliateRateMultiplierFenPerUSD,
+		statDateArgIndex,
+		affiliateRateMultiplierFenPerUSD,
+		affiliateRateMultiplierFenPerUSD,
+		affiliateRateMultiplierFenPerUSD,
+		statDateArgIndex,
+		statDateArgIndex,
+		searchArgIndex,
+		searchArgIndex,
+		limitArgIndex,
+		offsetArgIndex),
+		append(append([]any{}, scopeArgs...), search, statDate, pageSize, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -414,7 +581,24 @@ LIMIT $%d OFFSET $%d`, scopeCTE, affiliateRateMultiplierFenPerUSD, statDateArgIn
 	items := make([]service.AgentDailyBusinessRankingItem, 0)
 	for rows.Next() {
 		var item service.AgentDailyBusinessRankingItem
-		if err := rows.Scan(&item.Rank, &item.UserID, &item.Email, &item.Username, &item.StatDate, &item.BusinessUSD, &item.BusinessRMB, &item.DirectUsers, &item.DirectAgents, &item.LastCalculatedAt); err != nil {
+		if err := rows.Scan(
+			&item.Rank,
+			&item.UserID,
+			&item.Email,
+			&item.Username,
+			&item.StatDate,
+			&item.BusinessUSD,
+			&item.BusinessRMB,
+			&item.DirectUsers,
+			&item.DirectAgents,
+			&item.DirectTotalUsageUSD,
+			&item.DirectTotalUsageRMB,
+			&item.DirectUserUsageUSD,
+			&item.DirectUserUsageRMB,
+			&item.DirectAgentUsageUSD,
+			&item.DirectAgentUsageRMB,
+			&item.LastCalculatedAt,
+		); err != nil {
 			return nil, 0, err
 		}
 		items = append(items, item)
@@ -425,8 +609,8 @@ LIMIT $%d OFFSET $%d`, scopeCTE, affiliateRateMultiplierFenPerUSD, statDateArgIn
 func (r *affiliateDistributionRepository) ListRebateBalanceRanking(ctx context.Context, filter service.AgentRankingFilter) ([]service.AgentRebateBalanceRankingItem, int64, error) {
 	_, pageSize, offset := normalizePage(filter.Page, filter.PageSize)
 	search := "%" + strings.TrimSpace(filter.Search) + "%"
-	today := truncateToUTCDate(time.Now())
-	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
+	today := truncateToShanghaiDate(time.Now())
+	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, today.Location())
 	scopeCTE, scopeArgs, nextArgIndex := buildAffiliateScopeCTE(filter.RootUserID, filter.OnlyDescendants, 1)
 	searchArgIndex := nextArgIndex
 	todayArgIndex := nextArgIndex + 1
@@ -434,11 +618,23 @@ func (r *affiliateDistributionRepository) ListRebateBalanceRanking(ctx context.C
 	limitArgIndex := nextArgIndex + 3
 	offsetArgIndex := nextArgIndex + 4
 	countSQL := fmt.Sprintf(`
-WITH %s
+WITH %s,
+child_counts AS (
+    SELECT inviter_id AS user_id, COUNT(*)::integer AS actual_children
+    FROM user_affiliates
+    WHERE inviter_id IS NOT NULL
+    GROUP BY inviter_id
+),
+agents AS (
+    SELECT scope.user_id
+    FROM scope_users scope
+    JOIN users u ON u.id = scope.user_id
+    LEFT JOIN child_counts cc ON cc.user_id = scope.user_id
+    WHERE u.role = 'admin' OR COALESCE(cc.actual_children, 0) > 0
+)
 SELECT COUNT(*)
-FROM affiliate_distribution_rebate_balances rb
-JOIN scope_users scope ON scope.user_id = rb.user_id
-JOIN users u ON u.id = rb.user_id
+FROM agents a
+JOIN users u ON u.id = a.user_id
 WHERE u.email ILIKE $%d OR u.username ILIKE $%d`, scopeCTE, searchArgIndex, searchArgIndex)
 	total, err := scanInt64(ctx, clientFromContext(ctx, r.client), countSQL, append(append([]any{}, scopeArgs...), search)...)
 	if err != nil {
@@ -446,55 +642,118 @@ WHERE u.email ILIKE $%d OR u.username ILIKE $%d`, scopeCTE, searchArgIndex, sear
 	}
 	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, fmt.Sprintf(`
 WITH %s,
+child_counts AS (
+    SELECT inviter_id AS user_id, COUNT(*)::integer AS actual_children
+    FROM user_affiliates
+    WHERE inviter_id IS NOT NULL
+    GROUP BY inviter_id
+),
 latest_note AS (
     SELECT DISTINCT ON (user_id) user_id, reason, created_at
     FROM affiliate_distribution_rebate_adjustments
     ORDER BY user_id, created_at DESC
 ), today_metrics AS (
-    SELECT user_id, COALESCE(SUM(rebate_amount), 0)::double precision AS today_rebate_rmb
-    FROM affiliate_distribution_daily_metrics
-    WHERE metric_date = $%d
-    GROUP BY user_id
+    SELECT s.beneficiary_user_id AS user_id,
+           COALESCE(SUM(s.rebate_amount), 0)::double precision AS today_rebate_rmb
+    FROM affiliate_distribution_usage_settlements s
+    JOIN scope_users scope ON scope.user_id = s.beneficiary_user_id
+    WHERE s.settlement_day = $%d
+    GROUP BY s.beneficiary_user_id
 ), monthly_metrics AS (
-    SELECT user_id, COALESCE(SUM(rebate_amount), 0)::double precision AS monthly_rebate_rmb
-    FROM affiliate_distribution_daily_metrics
-    WHERE metric_date >= $%d AND metric_date < ($%d::date + INTERVAL '1 month')
-    GROUP BY user_id
+    SELECT s.beneficiary_user_id AS user_id,
+           COALESCE(SUM(s.rebate_amount), 0)::double precision AS monthly_rebate_rmb
+    FROM affiliate_distribution_usage_settlements s
+    JOIN scope_users scope ON scope.user_id = s.beneficiary_user_id
+    WHERE s.settlement_day >= $%d AND s.settlement_day < ($%d::date + INTERVAL '1 month')
+    GROUP BY s.beneficiary_user_id
 ), direct_counts AS (
     SELECT ua.inviter_id AS user_id,
-           COUNT(*) FILTER (WHERE child_u.role = 'admin' OR COALESCE(child_ua.aff_count, 0) > 0)::integer AS direct_agents,
-           COUNT(*) FILTER (WHERE child_u.role <> 'admin' AND COALESCE(child_ua.aff_count, 0) = 0)::integer AS direct_users
+           COUNT(*)::integer AS direct_children_count,
+           COUNT(*) FILTER (WHERE child_u.role = 'admin' OR COALESCE(child_cc.actual_children, 0) > 0)::integer AS direct_agents,
+           COUNT(*) FILTER (WHERE child_u.role <> 'admin' AND COALESCE(child_cc.actual_children, 0) = 0)::integer AS direct_users
     FROM user_affiliates ua
     JOIN users child_u ON child_u.id = ua.user_id
-    JOIN user_affiliates child_ua ON child_ua.user_id = ua.user_id
+    LEFT JOIN child_counts child_cc ON child_cc.user_id = ua.user_id
     WHERE ua.inviter_id IS NOT NULL
     GROUP BY ua.inviter_id
+), agents AS (
+    SELECT scope.user_id
+    FROM scope_users scope
+    JOIN users u ON u.id = scope.user_id
+    LEFT JOIN direct_counts dc ON dc.user_id = scope.user_id
+    WHERE u.role = 'admin' OR COALESCE(dc.direct_children_count, 0) > 0
+), direct_usage AS (
+    SELECT s.beneficiary_user_id AS user_id,
+           COALESCE(SUM(s.usage_amount_usd), 0)::double precision AS direct_total_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f), 0)::double precision AS direct_total_usage_rmb,
+           COALESCE(SUM(s.usage_amount_usd) FILTER (
+               WHERE COALESCE(child_u.role <> 'admin', true) AND COALESCE(child_cc.actual_children, 0) = 0
+           ), 0)::double precision AS direct_user_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f) FILTER (
+               WHERE COALESCE(child_u.role <> 'admin', true) AND COALESCE(child_cc.actual_children, 0) = 0
+           ), 0)::double precision AS direct_user_usage_rmb,
+           COALESCE(SUM(s.usage_amount_usd) FILTER (
+               WHERE COALESCE(child_u.role = 'admin', false) OR COALESCE(child_cc.actual_children, 0) > 0
+           ), 0)::double precision AS direct_agent_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f) FILTER (
+               WHERE COALESCE(child_u.role = 'admin', false) OR COALESCE(child_cc.actual_children, 0) > 0
+           ), 0)::double precision AS direct_agent_usage_rmb
+    FROM affiliate_distribution_usage_settlements s
+    JOIN agents a ON a.user_id = s.beneficiary_user_id
+    LEFT JOIN users child_u ON child_u.id = s.direct_child_user_id
+    LEFT JOIN child_counts child_cc ON child_cc.user_id = s.direct_child_user_id
+    WHERE s.settlement_day = $%d
+    GROUP BY s.beneficiary_user_id
 ),
 ranked AS (
-    SELECT rb.user_id,
+    SELECT a.user_id,
            COALESCE(u.email, '') AS email,
            COALESCE(u.username, '') AS username,
-           rb.current_amount::double precision AS current_rebate_balance_rmb,
+           COALESCE(rb.current_amount, 0)::double precision AS current_rebate_balance_rmb,
            COALESCE(tm.today_rebate_rmb, 0)::double precision AS today_rebate_rmb,
            COALESCE(mm.monthly_rebate_rmb, 0)::double precision AS monthly_rebate_rmb,
            COALESCE(dc.direct_users, 0)::integer AS direct_users,
            COALESCE(dc.direct_agents, 0)::integer AS direct_agents,
-           COALESCE(ln.created_at, rb.updated_at) AS last_adjusted_at,
+           COALESCE(du.direct_total_usage_usd, 0)::double precision AS direct_total_usage_usd,
+           COALESCE(du.direct_total_usage_rmb, 0)::double precision AS direct_total_usage_rmb,
+           COALESCE(du.direct_user_usage_usd, 0)::double precision AS direct_user_usage_usd,
+           COALESCE(du.direct_user_usage_rmb, 0)::double precision AS direct_user_usage_rmb,
+           COALESCE(du.direct_agent_usage_usd, 0)::double precision AS direct_agent_usage_usd,
+           COALESCE(du.direct_agent_usage_rmb, 0)::double precision AS direct_agent_usage_rmb,
+           COALESCE(ln.created_at, rb.updated_at, NOW()) AS last_adjusted_at,
            COALESCE(ln.reason, '') AS last_adjustment_note,
-           ROW_NUMBER() OVER (ORDER BY rb.current_amount DESC, rb.updated_at DESC, rb.user_id ASC) AS rank
-    FROM affiliate_distribution_rebate_balances rb
-    JOIN scope_users scope ON scope.user_id = rb.user_id
-    JOIN users u ON u.id = rb.user_id
-    LEFT JOIN latest_note ln ON ln.user_id = rb.user_id
-    LEFT JOIN today_metrics tm ON tm.user_id = rb.user_id
-    LEFT JOIN monthly_metrics mm ON mm.user_id = rb.user_id
-    LEFT JOIN direct_counts dc ON dc.user_id = rb.user_id
+           ROW_NUMBER() OVER (ORDER BY COALESCE(rb.current_amount, 0) DESC, rb.updated_at DESC NULLS LAST, a.user_id ASC) AS rank
+    FROM agents a
+    JOIN users u ON u.id = a.user_id
+    LEFT JOIN affiliate_distribution_rebate_balances rb ON rb.user_id = a.user_id
+    LEFT JOIN latest_note ln ON ln.user_id = a.user_id
+    LEFT JOIN today_metrics tm ON tm.user_id = a.user_id
+    LEFT JOIN monthly_metrics mm ON mm.user_id = a.user_id
+    LEFT JOIN direct_counts dc ON dc.user_id = a.user_id
+    LEFT JOIN direct_usage du ON du.user_id = a.user_id
     WHERE u.email ILIKE $%d OR u.username ILIKE $%d
 )
-SELECT rank, user_id, email, username, current_rebate_balance_rmb, today_rebate_rmb, monthly_rebate_rmb, direct_users, direct_agents, last_adjusted_at, last_adjustment_note
+SELECT rank, user_id, email, username, current_rebate_balance_rmb,
+       today_rebate_rmb, monthly_rebate_rmb, direct_users, direct_agents,
+       direct_total_usage_usd, direct_total_usage_rmb,
+       direct_user_usage_usd, direct_user_usage_rmb,
+       direct_agent_usage_usd, direct_agent_usage_rmb,
+       last_adjusted_at, last_adjustment_note
 FROM ranked
 ORDER BY rank
-LIMIT $%d OFFSET $%d`, scopeCTE, todayArgIndex, monthStartArgIndex, monthStartArgIndex, searchArgIndex, searchArgIndex, limitArgIndex, offsetArgIndex),
+LIMIT $%d OFFSET $%d`,
+		scopeCTE,
+		todayArgIndex,
+		monthStartArgIndex,
+		monthStartArgIndex,
+		affiliateRateMultiplierFenPerUSD,
+		affiliateRateMultiplierFenPerUSD,
+		affiliateRateMultiplierFenPerUSD,
+		todayArgIndex,
+		searchArgIndex,
+		searchArgIndex,
+		limitArgIndex,
+		offsetArgIndex),
 		append(append([]any{}, scopeArgs...), search, today, monthStart, pageSize, offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -503,7 +762,25 @@ LIMIT $%d OFFSET $%d`, scopeCTE, todayArgIndex, monthStartArgIndex, monthStartAr
 	items := make([]service.AgentRebateBalanceRankingItem, 0)
 	for rows.Next() {
 		var item service.AgentRebateBalanceRankingItem
-		if err := rows.Scan(&item.Rank, &item.UserID, &item.Email, &item.Username, &item.CurrentRebateBalanceRMB, &item.TodayRebateRMB, &item.MonthlyRebateRMB, &item.DirectUsers, &item.DirectAgents, &item.LastAdjustedAt, &item.LastAdjustmentNote); err != nil {
+		if err := rows.Scan(
+			&item.Rank,
+			&item.UserID,
+			&item.Email,
+			&item.Username,
+			&item.CurrentRebateBalanceRMB,
+			&item.TodayRebateRMB,
+			&item.MonthlyRebateRMB,
+			&item.DirectUsers,
+			&item.DirectAgents,
+			&item.DirectTotalUsageUSD,
+			&item.DirectTotalUsageRMB,
+			&item.DirectUserUsageUSD,
+			&item.DirectUserUsageRMB,
+			&item.DirectAgentUsageUSD,
+			&item.DirectAgentUsageRMB,
+			&item.LastAdjustedAt,
+			&item.LastAdjustmentNote,
+		); err != nil {
 			return nil, 0, err
 		}
 		items = append(items, item)
@@ -627,6 +904,7 @@ func (r *affiliateDistributionRepository) GetDistributionTree(ctx context.Contex
 		args = append(args, *filter.RootUserID)
 		searchArgIndex = 2
 	}
+	todayArgIndex := searchArgIndex + 1
 	descendantClause := ""
 	if filter.OnlyDescendants {
 		descendantClause = "AND t.depth > 0"
@@ -640,6 +918,52 @@ WITH RECURSIVE tree AS (
     SELECT child.user_id, child.inviter_id, tree.depth + 1
     FROM user_affiliates child
     JOIN tree ON child.inviter_id = tree.user_id
+), child_counts AS (
+    SELECT inviter_id AS user_id, COUNT(*)::integer AS actual_children
+    FROM user_affiliates
+    WHERE inviter_id IS NOT NULL
+    GROUP BY inviter_id
+), today_metrics AS (
+    SELECT s.beneficiary_user_id AS user_id,
+           COALESCE(SUM(s.usage_amount_usd), 0)::double precision AS today_business_usd,
+           COALESCE(SUM(s.rebate_amount), 0)::double precision AS today_rebate_rmb
+    FROM affiliate_distribution_usage_settlements s
+    JOIN tree t ON t.user_id = s.beneficiary_user_id
+    WHERE s.settlement_day = $%d
+    GROUP BY s.beneficiary_user_id
+), direct_counts AS (
+    SELECT ua.inviter_id AS user_id,
+           COUNT(*)::integer AS direct_children_count,
+           COUNT(*) FILTER (WHERE child_u.role = 'admin' OR COALESCE(child_cc.actual_children, 0) > 0)::integer AS direct_agent_count,
+           COUNT(*) FILTER (WHERE child_u.role <> 'admin' AND COALESCE(child_cc.actual_children, 0) = 0)::integer AS direct_user_count
+    FROM user_affiliates ua
+    JOIN tree t ON t.user_id = ua.inviter_id
+    JOIN users child_u ON child_u.id = ua.user_id
+    LEFT JOIN child_counts child_cc ON child_cc.user_id = ua.user_id
+    WHERE ua.inviter_id IS NOT NULL
+    GROUP BY ua.inviter_id
+), direct_usage AS (
+    SELECT s.beneficiary_user_id AS user_id,
+           COALESCE(SUM(s.usage_amount_usd), 0)::double precision AS direct_total_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f), 0)::double precision AS direct_total_usage_rmb,
+           COALESCE(SUM(s.usage_amount_usd) FILTER (
+               WHERE COALESCE(child_u.role <> 'admin', true) AND COALESCE(child_cc.actual_children, 0) = 0
+           ), 0)::double precision AS direct_user_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f) FILTER (
+               WHERE COALESCE(child_u.role <> 'admin', true) AND COALESCE(child_cc.actual_children, 0) = 0
+           ), 0)::double precision AS direct_user_usage_rmb,
+           COALESCE(SUM(s.usage_amount_usd) FILTER (
+               WHERE COALESCE(child_u.role = 'admin', false) OR COALESCE(child_cc.actual_children, 0) > 0
+           ), 0)::double precision AS direct_agent_usage_usd,
+           COALESCE(SUM(s.usage_amount_usd / %.1f) FILTER (
+               WHERE COALESCE(child_u.role = 'admin', false) OR COALESCE(child_cc.actual_children, 0) > 0
+           ), 0)::double precision AS direct_agent_usage_rmb
+    FROM affiliate_distribution_usage_settlements s
+    JOIN tree t ON t.user_id = s.beneficiary_user_id
+    LEFT JOIN users child_u ON child_u.id = s.direct_child_user_id
+    LEFT JOIN child_counts child_cc ON child_cc.user_id = s.direct_child_user_id
+    WHERE s.settlement_day = $%d
+    GROUP BY s.beneficiary_user_id
 )
 SELECT t.user_id,
        t.inviter_id,
@@ -649,15 +973,40 @@ SELECT t.user_id,
        t.depth,
        (u.role = 'admin')::boolean,
        (u.id = (SELECT id FROM users WHERE role = 'admin' AND status = 'active' ORDER BY id ASC LIMIT 1))::boolean,
-       COALESCE(rb.current_amount, 0)::double precision
+       COALESCE(rb.current_amount, 0)::double precision,
+       COALESCE(tm.today_business_usd, 0)::double precision,
+       COALESCE(du.direct_total_usage_rmb, 0)::double precision,
+       COALESCE(tm.today_rebate_rmb, 0)::double precision,
+       COALESCE(dc.direct_children_count, 0)::integer,
+       COALESCE(dc.direct_user_count, 0)::integer,
+       COALESCE(dc.direct_agent_count, 0)::integer,
+       COALESCE(du.direct_total_usage_usd, 0)::double precision,
+       COALESCE(du.direct_total_usage_rmb, 0)::double precision,
+       COALESCE(du.direct_user_usage_usd, 0)::double precision,
+       COALESCE(du.direct_user_usage_rmb, 0)::double precision,
+       COALESCE(du.direct_agent_usage_usd, 0)::double precision,
+       COALESCE(du.direct_agent_usage_rmb, 0)::double precision
 FROM tree t
 JOIN users u ON u.id = t.user_id
 JOIN user_affiliates ua ON ua.user_id = t.user_id
 LEFT JOIN affiliate_distribution_rebate_balances rb ON rb.user_id = t.user_id
+LEFT JOIN today_metrics tm ON tm.user_id = t.user_id
+LEFT JOIN direct_counts dc ON dc.user_id = t.user_id
+LEFT JOIN direct_usage du ON du.user_id = t.user_id
 WHERE (u.email ILIKE $%d OR u.username ILIKE $%d OR ua.aff_code ILIKE $%d)
   %s
-ORDER BY t.depth ASC, t.user_id ASC`, rootPredicate, searchArgIndex, searchArgIndex, searchArgIndex, descendantClause)
-	args = append(args, search)
+ORDER BY t.depth ASC, t.user_id ASC`,
+		rootPredicate,
+		todayArgIndex,
+		affiliateRateMultiplierFenPerUSD,
+		affiliateRateMultiplierFenPerUSD,
+		affiliateRateMultiplierFenPerUSD,
+		todayArgIndex,
+		searchArgIndex,
+		searchArgIndex,
+		searchArgIndex,
+		descendantClause)
+	args = append(args, search, truncateToShanghaiDate(time.Now()))
 	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -667,7 +1016,29 @@ ORDER BY t.depth ASC, t.user_id ASC`, rootPredicate, searchArgIndex, searchArgIn
 	for rows.Next() {
 		var node service.AgentTreeNode
 		var inviterID sql.NullInt64
-		if err := rows.Scan(&node.UserID, &inviterID, &node.Email, &node.Username, &node.InviteCode, &node.Depth, &node.IsAdmin, &node.IsRootAdmin, &node.CurrentRebateBalanceRMB); err != nil {
+		if err := rows.Scan(
+			&node.UserID,
+			&inviterID,
+			&node.Email,
+			&node.Username,
+			&node.InviteCode,
+			&node.Depth,
+			&node.IsAdmin,
+			&node.IsRootAdmin,
+			&node.CurrentRebateBalanceRMB,
+			&node.TodayBusinessUSD,
+			&node.TodayBusinessRMB,
+			&node.TodayRebateRMB,
+			&node.DirectChildrenCount,
+			&node.DirectUserCount,
+			&node.DirectAgentCount,
+			&node.DirectTotalUsageUSD,
+			&node.DirectTotalUsageRMB,
+			&node.DirectUserUsageUSD,
+			&node.DirectUserUsageRMB,
+			&node.DirectAgentUsageUSD,
+			&node.DirectAgentUsageRMB,
+		); err != nil {
 			return nil, err
 		}
 		if inviterID.Valid {
@@ -1205,32 +1576,44 @@ func (r *affiliateDistributionRepository) SettleUsageDistribution(ctx context.Co
 	if model == "" {
 		return infraerrors.BadRequest("AFFILIATE_DISTRIBUTION_MODEL_REQUIRED", "model is required")
 	}
-	usageUSD := cmd.TotalCost
-	if usageUSD <= 0 {
-		usageUSD = cmd.ActualCost
-	}
-	if math.IsNaN(usageUSD) || math.IsInf(usageUSD, 0) {
+	rawUsageUSD, paidUsageUSD, consumerRate, hasConsumerRate := affiliateDistributionSettlementAmounts(cmd)
+	if math.IsNaN(rawUsageUSD) || math.IsInf(rawUsageUSD, 0) || math.IsNaN(paidUsageUSD) || math.IsInf(paidUsageUSD, 0) {
 		return infraerrors.BadRequest("AFFILIATE_DISTRIBUTION_USAGE_INVALID", "usage amount must be finite")
 	}
-	if usageUSD <= 0 {
+	if rawUsageUSD <= 0 || paidUsageUSD <= 0 {
 		return nil
 	}
 	return r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
-		eligibleUsageUSD, err := r.reservePaidUsageForSettlementWithTx(txCtx, txClient, cmd.UserID, cmd.UsageLogID, usageUSD, cmd.UsageCreatedAt)
+		eligiblePaidUsageUSD, err := r.reservePaidUsageForSettlementWithTx(txCtx, txClient, cmd.UserID, cmd.UsageLogID, paidUsageUSD, cmd.UsageCreatedAt)
 		if err != nil {
 			return err
 		}
+		eligibleUsageUSD := affiliateDistributionProratedRawUsage(rawUsageUSD, paidUsageUSD, eligiblePaidUsageUSD)
 		if eligibleUsageUSD <= 0 {
+			logger.LegacyPrintf(
+				"affiliate_distribution",
+				"Usage settlement skipped: no paid credit available usage_log_id=%d user_id=%d group_id=%d model=%s raw_usage_usd=%.8f paid_usage_usd=%.8f eligible_paid_usage_usd=%.8f usage_created_at=%s",
+				cmd.UsageLogID,
+				cmd.UserID,
+				cmd.GroupID,
+				model,
+				rawUsageUSD,
+				paidUsageUSD,
+				eligiblePaidUsageUSD,
+				cmd.UsageCreatedAt.UTC().Format(time.RFC3339),
+			)
 			return nil
 		}
 		result, err := r.recordUsageSettlementWithTx(txCtx, txClient, service.RecordAffiliateUsageSettlementInput{
-			UsageLogID:     cmd.UsageLogID,
-			ConsumerUserID: cmd.UserID,
-			GroupID:        cmd.GroupID,
-			ModelKey:       model,
-			UsageAmountUSD: eligibleUsageUSD,
-			SettlementAt:   cmd.UsageCreatedAt,
-			RootRate:       1.0,
+			UsageLogID:                cmd.UsageLogID,
+			ConsumerUserID:            cmd.UserID,
+			GroupID:                   cmd.GroupID,
+			ModelKey:                  model,
+			UsageAmountUSD:            eligibleUsageUSD,
+			SettlementAt:              cmd.UsageCreatedAt,
+			RootRate:                  0.0,
+			ConsumerRateMultiplier:    consumerRate,
+			HasConsumerRateMultiplier: hasConsumerRate,
 		})
 		if err != nil {
 			return err
@@ -1247,7 +1630,7 @@ func (r *affiliateDistributionRepository) recordUsageSettlementWithTx(ctx contex
 		UsageLogID:     input.UsageLogID,
 		ConsumerUserID: input.ConsumerUserID,
 		ModelKey:       input.ModelKey,
-		SettlementDay:  truncateToUTCDate(input.SettlementAt),
+		SettlementDay:  truncateToShanghaiDate(input.SettlementAt),
 	}
 	if _, err := ensureUserAffiliateWithClient(ctx, txClient, input.ConsumerUserID); err != nil {
 		return nil, err
@@ -1267,8 +1650,15 @@ func (r *affiliateDistributionRepository) recordUsageSettlementWithTx(ctx contex
 		if err != nil {
 			return nil, err
 		}
+		if depth == 1 && input.HasConsumerRateMultiplier {
+			childRate, err = r.resolveDirectConsumerChildRate(ctx, txClient, parent.UserID, child.UserID, input.GroupID, childRate, input.ConsumerRateMultiplier)
+			if err != nil {
+				return nil, err
+			}
+		}
+		revenueAmountUSD := affiliateDistributionBusinessAmountUSD(input.UsageAmountUSD, childRate)
 		rebateAmountRMB := affiliateDistributionRebateAmountRMB(input.UsageAmountUSD, parentRate, childRate)
-		applied, err := r.insertSettlementRow(ctx, txClient, input, parent.UserID, child.UserID, int64(depth), parentRate, childRate, rebateAmountRMB)
+		applied, err := r.insertSettlementRow(ctx, txClient, input, parent.UserID, child.UserID, int64(depth), parentRate, childRate, revenueAmountUSD, rebateAmountRMB)
 		if err != nil {
 			return nil, err
 		}
@@ -1279,7 +1669,7 @@ func (r *affiliateDistributionRepository) recordUsageSettlementWithTx(ctx contex
 				ConsumerUserID:       input.ConsumerUserID,
 				ModelKey:             input.ModelKey,
 				UsageAmountUSD:       input.UsageAmountUSD,
-				RevenueAmountUSD:     input.UsageAmountUSD,
+				RevenueAmountUSD:     revenueAmountUSD,
 				ParentRateMultiplier: parentRate,
 				ChildRateMultiplier:  childRate,
 				RebateAmountRMB:      rebateAmountRMB,
@@ -1328,12 +1718,34 @@ func (r *affiliateDistributionRepository) resolveGroupRateTx(ctx context.Context
 	return r.resolveGroupRateWithMemo(ctx, client, userID, groupID, rootRate, make(map[[2]int64]float64))
 }
 
-func (r *affiliateDistributionRepository) insertSettlementRow(ctx context.Context, client affiliateDistributionQueryExecer, input service.RecordAffiliateUsageSettlementInput, parentUserID, childUserID, depth int64, parentRate, childRate, rebateAmount float64) (bool, error) {
+func (r *affiliateDistributionRepository) resolveDirectConsumerChildRate(ctx context.Context, client affiliateDistributionQueryExecer, parentUserID, childUserID, groupID int64, resolvedChildRate, consumerRate float64) (float64, error) {
+	if rate, found, err := r.lookupExplicitUserGroupRate(ctx, client, childUserID, groupID); err != nil {
+		return 0, err
+	} else if found {
+		return rate, nil
+	}
+	if rate, found, err := r.lookupInviteGroupRate(ctx, client, parentUserID, groupID); err != nil {
+		return 0, err
+	} else if found {
+		return rate, nil
+	}
+	if rate, found, err := r.lookupDefaultUserGroupRate(ctx, client, groupID); err != nil {
+		return 0, err
+	} else if found {
+		return rate, nil
+	}
+	if affiliateDistributionFiniteNonNegative(consumerRate) && consumerRate > 0 {
+		return consumerRate, nil
+	}
+	return resolvedChildRate, nil
+}
+
+func (r *affiliateDistributionRepository) insertSettlementRow(ctx context.Context, client affiliateDistributionQueryExecer, input service.RecordAffiliateUsageSettlementInput, parentUserID, childUserID, depth int64, parentRate, childRate, revenueAmountUSD, rebateAmount float64) (bool, error) {
 	res, err := client.ExecContext(ctx, `
 INSERT INTO affiliate_distribution_usage_settlements (
     usage_log_id, settlement_key, beneficiary_user_id, direct_child_user_id, consumer_user_id, model_key,
     usage_amount_usd, revenue_amount_usd, parent_rate_multiplier, child_rate_multiplier, rebate_amount, settlement_day, depth, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
 ON CONFLICT (usage_log_id, beneficiary_user_id) DO NOTHING`,
 		input.UsageLogID,
 		fmt.Sprintf("%d:%d:%s", input.UsageLogID, parentUserID, input.ModelKey),
@@ -1342,10 +1754,11 @@ ON CONFLICT (usage_log_id, beneficiary_user_id) DO NOTHING`,
 		input.ConsumerUserID,
 		input.ModelKey,
 		input.UsageAmountUSD,
+		revenueAmountUSD,
 		parentRate,
 		childRate,
 		rebateAmount,
-		truncateToUTCDate(input.SettlementAt),
+		truncateToShanghaiDate(input.SettlementAt),
 		depth,
 	)
 	if err != nil {
@@ -1366,7 +1779,7 @@ DO UPDATE SET
     usage_count = affiliate_distribution_daily_metrics.usage_count + 1,
     last_usage_at = GREATEST(affiliate_distribution_daily_metrics.last_usage_at, EXCLUDED.last_usage_at),
     updated_at = NOW()`,
-		parentUserID, truncateToUTCDate(input.SettlementAt), input.UsageAmountUSD, rebateAmount, input.SettlementAt,
+		parentUserID, truncateToShanghaiDate(input.SettlementAt), revenueAmountUSD, rebateAmount, input.SettlementAt,
 	); err != nil {
 		return false, err
 	}
@@ -1696,10 +2109,10 @@ func (r *affiliateDistributionRepository) getDailyTotals(ctx context.Context, us
 	var revenue float64
 	var rebate float64
 	err := scanSingleRow(ctx, clientFromContext(ctx, r.client), `
-SELECT COALESCE(revenue_amount_usd, 0)::double precision, COALESCE(rebate_amount, 0)::double precision
-FROM affiliate_distribution_daily_metrics
-WHERE user_id = $1 AND metric_date = $2
-LIMIT 1`, []any{userID, day}, &revenue, &rebate)
+SELECT COALESCE(SUM(usage_amount_usd), 0)::double precision,
+       COALESCE(SUM(rebate_amount), 0)::double precision
+FROM affiliate_distribution_usage_settlements
+WHERE beneficiary_user_id = $1 AND settlement_day = $2`, []any{userID, day}, &revenue, &rebate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, nil
 	}
@@ -1861,7 +2274,7 @@ func (r *affiliateDistributionRepository) insertPaidUsageSettlementPlaceholder(c
 INSERT INTO affiliate_distribution_paid_usage_settlements (
     usage_log_id, user_id, usage_amount_usd, settlement_day, settled_at, created_at, updated_at
 ) VALUES ($1, $2, 0, $3, $4, NOW(), NOW())
-ON CONFLICT (usage_log_id) DO NOTHING`, usageLogID, userID, truncateToUTCDate(settlementAt), settlementAt)
+ON CONFLICT (usage_log_id) DO NOTHING`, usageLogID, userID, truncateToShanghaiDate(settlementAt), settlementAt)
 	if err != nil {
 		return false, 0, err
 	}
@@ -2027,6 +2440,27 @@ func (r *affiliateDistributionRepository) lookupDefaultUserGroupRate(ctx context
 SELECT rate_multiplier::double precision
 FROM affiliate_distribution_default_user_group_rates
 WHERE group_id = $1
+LIMIT 1`, []any{groupID}, &rate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if err := validateAffiliateDistributionRateMultiplierValue(rate); err != nil {
+		return 0, false, err
+	}
+	return rate, true, nil
+}
+
+func (r *affiliateDistributionRepository) lookupGroupDefaultRate(ctx context.Context, client affiliateDistributionQueryExecer, groupID int64) (float64, bool, error) {
+	var rate float64
+	err := scanSingleRow(ctx, client, `
+SELECT rate_multiplier::double precision
+FROM groups
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND status = 'active'
 LIMIT 1`, []any{groupID}, &rate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
@@ -2300,7 +2734,19 @@ func (r *affiliateDistributionRepository) resolveGroupRateWithMemo(ctx context.C
 		return 0, err
 	}
 	if summary.InviterID == nil {
-		if rootRate <= 0 {
+		if rate, found, err := r.lookupDefaultUserGroupRate(ctx, client, groupID); err != nil {
+			return 0, err
+		} else if found {
+			memo[key] = rate
+			return rate, nil
+		}
+		if rate, found, err := r.lookupGroupDefaultRate(ctx, client, groupID); err != nil {
+			return 0, err
+		} else if found {
+			memo[key] = rate
+			return rate, nil
+		}
+		if !affiliateDistributionFiniteNonNegative(rootRate) || rootRate <= 0 {
 			rootRate = 1
 		}
 		if err := validateAffiliateDistributionRateMultiplierValue(rootRate); err != nil {
@@ -2519,12 +2965,25 @@ func (r *affiliateDistributionRepository) withTx(ctx context.Context, fn func(tx
 	return tx.Commit()
 }
 
-func truncateToUTCDate(value time.Time) time.Time {
+func truncateToShanghaiDate(value time.Time) time.Time {
+	loc := shanghaiLocation()
 	if value.IsZero() {
-		value = time.Now().UTC()
+		value = time.Now().In(loc)
 	}
-	utc := value.UTC()
-	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	local := value.In(loc)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+}
+
+func truncateToUTCDate(value time.Time) time.Time {
+	return truncateToShanghaiDate(value)
+}
+
+func shanghaiLocation() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return time.FixedZone("Asia/Shanghai", 8*60*60)
+	}
+	return loc
 }
 
 func normalizePage(page, pageSize int) (int, int, int) {

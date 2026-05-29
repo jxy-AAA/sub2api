@@ -35,7 +35,26 @@ func (s *AuthService) LoginOrRegisterVerifiedEmailOAuthWithInvitation(
 	invitationCode string,
 	affiliateCode string,
 ) (*TokenPair, *User, error) {
-	return s.loginOrRegisterVerifiedEmailOAuth(ctx, input, invitationCode, affiliateCode)
+	user, err := s.ResolveVerifiedEmailOAuthUserWithInvitation(ctx, input, invitationCode, affiliateCode)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.RecordSuccessfulLogin(ctx, user.ID)
+
+	tokenPair, err := s.GenerateTokenPair(ctx, user, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate token pair: %w", err)
+	}
+	return tokenPair, user, nil
+}
+
+func (s *AuthService) ResolveVerifiedEmailOAuthUserWithInvitation(
+	ctx context.Context,
+	input EmailOAuthIdentityInput,
+	invitationCode string,
+	affiliateCode string,
+) (*User, error) {
+	return s.resolveVerifiedEmailOAuthUser(ctx, input, invitationCode, affiliateCode)
 }
 
 func (s *AuthService) loginOrRegisterVerifiedEmailOAuth(
@@ -44,13 +63,32 @@ func (s *AuthService) loginOrRegisterVerifiedEmailOAuth(
 	invitationCode string,
 	affiliateCode string,
 ) (*TokenPair, *User, error) {
+	user, err := s.resolveVerifiedEmailOAuthUser(ctx, input, invitationCode, affiliateCode)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.RecordSuccessfulLogin(ctx, user.ID)
+
+	tokenPair, err := s.GenerateTokenPair(ctx, user, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate token pair: %w", err)
+	}
+	return tokenPair, user, nil
+}
+
+func (s *AuthService) resolveVerifiedEmailOAuthUser(
+	ctx context.Context,
+	input EmailOAuthIdentityInput,
+	invitationCode string,
+	affiliateCode string,
+) (*User, error) {
 	if s == nil || s.userRepo == nil || s.entClient == nil {
-		return nil, nil, ErrServiceUnavailable
+		return nil, ErrServiceUnavailable
 	}
 
 	providerType := normalizeOAuthSignupSource(input.ProviderType)
 	if providerType != "github" && providerType != "google" {
-		return nil, nil, infraerrors.BadRequest("OAUTH_PROVIDER_INVALID", "oauth provider is invalid")
+		return nil, infraerrors.BadRequest("OAUTH_PROVIDER_INVALID", "oauth provider is invalid")
 	}
 	providerKey := strings.TrimSpace(input.ProviderKey)
 	if providerKey == "" {
@@ -58,32 +96,32 @@ func (s *AuthService) loginOrRegisterVerifiedEmailOAuth(
 	}
 	providerSubject := strings.TrimSpace(input.ProviderSubject)
 	if providerSubject == "" {
-		return nil, nil, infraerrors.BadRequest("OAUTH_SUBJECT_MISSING", "oauth subject is missing")
+		return nil, infraerrors.BadRequest("OAUTH_SUBJECT_MISSING", "oauth subject is missing")
 	}
 	if !input.EmailVerified {
-		return nil, nil, infraerrors.Forbidden("OAUTH_EMAIL_NOT_VERIFIED", "oauth email is not verified")
+		return nil, infraerrors.Forbidden("OAUTH_EMAIL_NOT_VERIFIED", "oauth email is not verified")
 	}
 
 	email := strings.TrimSpace(strings.ToLower(input.Email))
 	if email == "" || len(email) > 255 {
-		return nil, nil, infraerrors.BadRequest("INVALID_EMAIL", "invalid email")
+		return nil, infraerrors.BadRequest("INVALID_EMAIL", "invalid email")
 	}
 	if _, err := mail.ParseAddress(email); err != nil {
-		return nil, nil, infraerrors.BadRequest("INVALID_EMAIL", "invalid email")
+		return nil, infraerrors.BadRequest("INVALID_EMAIL", "invalid email")
 	}
 	if isReservedEmail(email) {
-		return nil, nil, ErrEmailReserved
+		return nil, ErrEmailReserved
 	}
 	if err := s.validateRegistrationEmailPolicy(ctx, email); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	identityUser, err := s.findEmailOAuthIdentityOwner(ctx, providerType, providerKey, providerSubject)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if identityUser != nil && !strings.EqualFold(strings.TrimSpace(identityUser.Email), email) {
-		return nil, nil, infraerrors.Conflict("AUTH_IDENTITY_EMAIL_MISMATCH", "oauth identity belongs to a different email")
+		return nil, infraerrors.Conflict("AUTH_IDENTITY_EMAIL_MISMATCH", "oauth identity belongs to a different email")
 	}
 
 	user := identityUser
@@ -94,18 +132,18 @@ func (s *AuthService) loginOrRegisterVerifiedEmailOAuth(
 			if errors.Is(err, ErrUserNotFound) {
 				user, err = s.createEmailOAuthUser(ctx, email, input.Username, providerType, invitationCode, affiliateCode)
 				if err != nil {
-					return nil, nil, err
+					return nil, err
 				}
 				created = true
 			} else {
 				logger.LegacyPrintf("service.auth", "[Auth] Database error during %s oauth login: %v", providerType, err)
-				return nil, nil, ErrServiceUnavailable
+				return nil, ErrServiceUnavailable
 			}
 		}
 	}
 
 	if !user.IsActive() {
-		return nil, nil, ErrUserNotActive
+		return nil, ErrUserNotActive
 	}
 	if err := s.ensureEmailOAuthIdentity(ctx, user.ID, EmailOAuthIdentityInput{
 		ProviderType:     providerType,
@@ -118,7 +156,7 @@ func (s *AuthService) loginOrRegisterVerifiedEmailOAuth(
 		AvatarURL:        input.AvatarURL,
 		UpstreamMetadata: input.UpstreamMetadata,
 	}); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	if user.Username == "" && strings.TrimSpace(input.Username) != "" {
@@ -132,13 +170,7 @@ func (s *AuthService) loginOrRegisterVerifiedEmailOAuth(
 			logger.LegacyPrintf("service.auth", "[Auth] Failed to apply %s first bind defaults: %v", providerType, err)
 		}
 	}
-	s.RecordSuccessfulLogin(ctx, user.ID)
-
-	tokenPair, err := s.GenerateTokenPair(ctx, user, "")
-	if err != nil {
-		return nil, nil, fmt.Errorf("generate token pair: %w", err)
-	}
-	return tokenPair, user, nil
+	return user, nil
 }
 
 func (s *AuthService) createEmailOAuthUser(ctx context.Context, email, username, providerType, invitationCode, affiliateCode string) (*User, error) {

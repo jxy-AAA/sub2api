@@ -10,6 +10,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -134,8 +135,9 @@ func TestGwRefundRejectsAlipayMerchantIdentitySnapshotMismatch(t *testing.T) {
 		SetProviderKey(payment.TypeAlipay).
 		SetName("alipay-refund-mismatch-instance").
 		SetConfig(encryptWebhookProviderConfig(t, map[string]string{
-			"appId":      "runtime-alipay-app",
-			"privateKey": "runtime-private-key",
+			"appId":           "runtime-alipay-app",
+			"privateKey":      "runtime-private-key",
+			"alipayPublicKey": "runtime-alipay-public-key",
 		})).
 		SetSupportedTypes("alipay").
 		SetEnabled(true).
@@ -189,36 +191,70 @@ func TestGwRefundRejectsAlipayMerchantIdentitySnapshotMismatch(t *testing.T) {
 
 type refundAffiliateRepoStub struct {
 	authRegisterAffiliateRepoStub
+	recordErr        error
+	recorded         bool
+	recordCalls      int
+	lastRecordUserID int64
+	lastRecordSource int64
+	lastRecordValue  float64
+	lastRecordAt     time.Time
+
 	reverseErr       error
 	reversed         bool
 	reverseCalls     int
 	lastUserID       int64
 	lastSourceOrder  int64
 	lastReverseValue float64
+	lastReverseAt    time.Time
 }
 
-func (s *refundAffiliateRepoStub) RecordPaidCredit(context.Context, int64, int64, float64, time.Time) (bool, error) {
-	return false, nil
+type refundDeductUserRepoStub struct {
+	*mockUserRepo
+	deductCalls        int
+	updateBalanceCalls int
 }
 
-func (s *refundAffiliateRepoStub) ReversePaidCredit(_ context.Context, userID, sourceOrderID int64, amountUSD float64, _ time.Time) (bool, error) {
+func (s *refundDeductUserRepoStub) DeductBalance(context.Context, int64, float64) error {
+	s.deductCalls++
+	return nil
+}
+
+func (s *refundDeductUserRepoStub) UpdateBalance(context.Context, int64, float64) error {
+	s.updateBalanceCalls++
+	return nil
+}
+
+func (s *refundAffiliateRepoStub) RecordPaidCredit(_ context.Context, userID, sourceOrderID int64, amountUSD float64, creditedAt time.Time) (bool, error) {
+	s.recordCalls++
+	s.lastRecordUserID = userID
+	s.lastRecordSource = sourceOrderID
+	s.lastRecordValue = amountUSD
+	s.lastRecordAt = creditedAt
+	if s.recordErr != nil {
+		return false, s.recordErr
+	}
+	return s.recorded, nil
+}
+
+func (s *refundAffiliateRepoStub) ReversePaidCredit(_ context.Context, userID, sourceOrderID int64, amountUSD float64, reversedAt time.Time) (bool, error) {
 	s.reverseCalls++
 	s.lastUserID = userID
 	s.lastSourceOrder = sourceOrderID
 	s.lastReverseValue = amountUSD
+	s.lastReverseAt = reversedAt
 	if s.reverseErr != nil {
 		return false, s.reverseErr
 	}
 	return s.reversed, nil
 }
 
-func createRefundMarkOrder(t *testing.T, ctx context.Context, client *dbent.Client, suffix string, status string) *dbent.PaymentOrder {
+func createRefundOrder(t *testing.T, ctx context.Context, client *dbent.Client, suffix string, orderType paymentorder.OrderType, amount float64, status string) *dbent.PaymentOrder {
 	t.Helper()
 
 	user, err := client.User.Create().
-		SetEmail("refund-mark-" + suffix + "@example.com").
+		SetEmail("refund-" + suffix + "@example.com").
 		SetPasswordHash("hash").
-		SetUsername("refund-mark-" + suffix).
+		SetUsername("refund-" + suffix).
 		Save(ctx)
 	require.NoError(t, err)
 
@@ -226,15 +262,15 @@ func createRefundMarkOrder(t *testing.T, ctx context.Context, client *dbent.Clie
 		SetUserID(user.ID).
 		SetUserEmail(user.Email).
 		SetUserName(user.Username).
-		SetAmount(88).
-		SetPayAmount(88).
+		SetAmount(amount).
+		SetPayAmount(amount).
 		SetFeeRate(0).
-		SetRechargeCode("REFUND-MARK-" + suffix).
-		SetOutTradeNo("sub2_refund_mark_" + suffix).
+		SetRechargeCode("REFUND-" + suffix).
+		SetOutTradeNo("sub2_refund_" + suffix).
 		SetPaymentType(payment.TypeAlipay).
-		SetPaymentTradeNo("trade-refund-mark-" + suffix).
-		SetOrderType(payment.OrderTypeBalance).
-		SetStatus(status).
+		SetPaymentTradeNo("trade-refund-" + suffix).
+		SetOrderType(orderType).
+		SetStatus(paymentorder.Status(status)).
 		SetExpiresAt(time.Now().Add(time.Hour)).
 		SetPaidAt(time.Now()).
 		SetClientIP("127.0.0.1").
@@ -242,6 +278,76 @@ func createRefundMarkOrder(t *testing.T, ctx context.Context, client *dbent.Clie
 		Save(ctx)
 	require.NoError(t, err)
 	return order
+}
+
+func createRefundMarkOrder(t *testing.T, ctx context.Context, client *dbent.Client, suffix string, status string) *dbent.PaymentOrder {
+	return createRefundOrder(t, ctx, client, "mark-"+suffix, paymentorder.OrderType(payment.OrderTypeBalance), 88, status)
+}
+
+func TestExecuteRefundSkipsDeductionWhenGatewayConfirmedAuditExists(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	order := createRefundMarkOrder(t, ctx, client, "gateway-confirmed-audit", OrderStatusRefundFailed)
+	userRepo := &refundDeductUserRepoStub{mockUserRepo: &mockUserRepo{}}
+	svc := &PaymentService{
+		entClient:        client,
+		userRepo:         userRepo,
+		affiliateService: &AffiliateService{repo: &refundAffiliateRepoStub{}},
+	}
+	svc.writeAuditLog(ctx, order.ID, "REFUND_GATEWAY_CONFIRMED", "system", map[string]any{
+		"refundAmount": order.Amount,
+	})
+
+	result, err := svc.ExecuteRefund(ctx, &RefundPlan{
+		OrderID:         order.ID,
+		Order:           order,
+		RefundAmount:    order.Amount,
+		GatewayAmount:   order.PayAmount,
+		Reason:          "retry after gateway confirmation persisted as audit",
+		DeductionType:   payment.DeductionTypeBalance,
+		BalanceToDeduct: order.Amount,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Success)
+	require.Zero(t, result.BalanceDeducted)
+	require.Equal(t, 0, userRepo.deductCalls)
+	require.Equal(t, 0, userRepo.updateBalanceCalls)
+	updated, err := client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, err)
+	require.Equal(t, paymentorder.Status(OrderStatusRefunded), updated.Status)
+}
+
+func TestMarkRefundOkReversesSubscriptionPaidCreditWithRefundAmount(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	order := createRefundOrder(t, ctx, client, "subscription-reversal", paymentorder.OrderType(payment.OrderTypeSubscription), 188, OrderStatusRefunding)
+	repo := &refundAffiliateRepoStub{reversed: true}
+	svc := &PaymentService{
+		entClient:        client,
+		affiliateService: &AffiliateService{repo: repo},
+	}
+
+	result, err := svc.markRefundOk(ctx, &RefundPlan{
+		OrderID:       order.ID,
+		Order:         order,
+		RefundAmount:  88,
+		GatewayAmount: 88,
+		Reason:        "subscription partial refund",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Success)
+	require.Equal(t, 1, repo.reverseCalls)
+	require.Equal(t, order.UserID, repo.lastUserID)
+	require.Equal(t, order.ID, repo.lastSourceOrder)
+	require.Equal(t, 88.0, repo.lastReverseValue)
+	updated, err := client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, err)
+	require.Equal(t, paymentorder.Status(OrderStatusPartiallyRefunded), updated.Status)
+	require.True(t, svc.hasAuditLog(ctx, order.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSED"))
 }
 
 func TestMarkRefundOkFailsRetryablyWhenPaidCreditReversalFails(t *testing.T) {
@@ -267,7 +373,7 @@ func TestMarkRefundOkFailsRetryablyWhenPaidCreditReversalFails(t *testing.T) {
 	require.Equal(t, 1, repo.reverseCalls)
 	updated, err := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, err)
-	require.Equal(t, OrderStatusRefundFailed, updated.Status)
+	require.Equal(t, paymentorder.Status(OrderStatusRefundFailed), updated.Status)
 	require.NotNil(t, updated.FailedReason)
 	require.Contains(t, *updated.FailedReason, "affiliate distribution paid credit reversal failed")
 	require.True(t, svc.hasAuditLog(ctx, order.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSAL_FAILED"))
@@ -301,7 +407,7 @@ func TestMarkRefundOkReversesPaidCreditBeforeFinalRefundStatus(t *testing.T) {
 	require.InDelta(t, order.Amount, repo.lastReverseValue, 1e-9)
 	updated, err := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, err)
-	require.Equal(t, OrderStatusRefunded, updated.Status)
+	require.Equal(t, paymentorder.Status(OrderStatusRefunded), updated.Status)
 	require.True(t, svc.hasAuditLog(ctx, order.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSED"))
 	require.True(t, svc.hasAuditLog(ctx, order.ID, "REFUND_SUCCESS"))
 }

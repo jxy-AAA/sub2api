@@ -1,22 +1,50 @@
 /**
  * Shared URL builder for iframe-embedded pages.
- * Used by PurchaseSubscriptionView and CustomPageView to build consistent URLs
- * with user_id, token, theme, lang, ui_mode, src_host, and src parameters.
+ * Keeps only non-sensitive context in outbound iframe/new-tab URLs.
  */
 
 const EMBEDDED_USER_ID_QUERY_KEY = 'user_id'
-const EMBEDDED_AUTH_TOKEN_QUERY_KEY = 'token'
 const EMBEDDED_THEME_QUERY_KEY = 'theme'
 const EMBEDDED_LANG_QUERY_KEY = 'lang'
 const EMBEDDED_UI_MODE_QUERY_KEY = 'ui_mode'
 const EMBEDDED_UI_MODE_VALUE = 'embedded'
 const EMBEDDED_SRC_HOST_QUERY_KEY = 'src_host'
 const EMBEDDED_SRC_QUERY_KEY = 'src_url'
+const SENSITIVE_SOURCE_QUERY_KEY_PARTS = [
+  'token',
+  'secret',
+  'session',
+  'jwt',
+  'signature',
+  'authorization',
+]
+const SENSITIVE_SOURCE_QUERY_KEYS = new Set(['code', 'state', 'sig'])
+
+function isSensitiveSourceQueryKey(key: string): boolean {
+  const normalized = key.trim().toLowerCase()
+  if (!normalized) return true
+  if (SENSITIVE_SOURCE_QUERY_KEYS.has(normalized)) return true
+  return SENSITIVE_SOURCE_QUERY_KEY_PARTS.some((part) => normalized.includes(part))
+}
+
+function sanitizeCurrentLocationHref(rawHref: string): string | null {
+  try {
+    const currentUrl = new URL(rawHref)
+    const sanitizedUrl = new URL(currentUrl.origin + currentUrl.pathname)
+    currentUrl.searchParams.forEach((value, key) => {
+      if (!isSensitiveSourceQueryKey(key)) {
+        sanitizedUrl.searchParams.append(key, value)
+      }
+    })
+    return sanitizedUrl.toString()
+  } catch {
+    return null
+  }
+}
 
 export function buildEmbeddedUrl(
   baseUrl: string,
   userId?: number,
-  authToken?: string | null,
   theme: 'light' | 'dark' = 'light',
   lang?: string,
 ): string {
@@ -26,9 +54,6 @@ export function buildEmbeddedUrl(
     if (userId) {
       url.searchParams.set(EMBEDDED_USER_ID_QUERY_KEY, String(userId))
     }
-    if (authToken) {
-      url.searchParams.set(EMBEDDED_AUTH_TOKEN_QUERY_KEY, authToken)
-    }
     url.searchParams.set(EMBEDDED_THEME_QUERY_KEY, theme)
     if (lang) {
       url.searchParams.set(EMBEDDED_LANG_QUERY_KEY, lang)
@@ -37,7 +62,10 @@ export function buildEmbeddedUrl(
     // Source tracking: let the embedded page know where it's being loaded from
     if (typeof window !== 'undefined') {
       url.searchParams.set(EMBEDDED_SRC_HOST_QUERY_KEY, window.location.origin)
-      url.searchParams.set(EMBEDDED_SRC_QUERY_KEY, window.location.href)
+      const sanitizedSourceUrl = sanitizeCurrentLocationHref(window.location.href)
+      if (sanitizedSourceUrl) {
+        url.searchParams.set(EMBEDDED_SRC_QUERY_KEY, sanitizedSourceUrl)
+      }
     }
     return url.toString()
   } catch {

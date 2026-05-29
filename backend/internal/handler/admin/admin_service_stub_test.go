@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -10,25 +11,26 @@ import (
 )
 
 type stubAdminService struct {
-	users                []service.User
-	apiKeys              []service.APIKey
-	groups               []service.Group
-	accounts             []service.Account
-	proxies              []service.Proxy
-	proxyCounts          []service.ProxyWithAccountCount
-	redeems              []service.RedeemCode
-	boundAuthIdentity    *service.AdminBindAuthIdentityInput
-	boundAuthIdentityFor int64
-	createdAccounts      []*service.CreateAccountInput
-	createdProxies       []*service.CreateProxyInput
-	updatedProxyIDs      []int64
-	updatedProxies       []*service.UpdateProxyInput
-	testedProxyIDs       []int64
-	createAccountErr     error
-	updateAccountErr     error
-	bulkUpdateAccountErr error
-	checkMixedErr        error
-	lastMixedCheck       struct {
+	users                  []service.User
+	apiKeys                []service.APIKey
+	groups                 []service.Group
+	accounts               []service.Account
+	modelInteractionTraces []*service.ModelInteractionTrace
+	proxies                []service.Proxy
+	proxyCounts            []service.ProxyWithAccountCount
+	redeems                []service.RedeemCode
+	boundAuthIdentity      *service.AdminBindAuthIdentityInput
+	boundAuthIdentityFor   int64
+	createdAccounts        []*service.CreateAccountInput
+	createdProxies         []*service.CreateProxyInput
+	updatedProxyIDs        []int64
+	updatedProxies         []*service.UpdateProxyInput
+	testedProxyIDs         []int64
+	createAccountErr       error
+	updateAccountErr       error
+	bulkUpdateAccountErr   error
+	checkMixedErr          error
+	lastMixedCheck         struct {
 		accountID int64
 		platform  string
 		groupIDs  []int64
@@ -43,6 +45,11 @@ type stubAdminService struct {
 		sortBy      string
 		sortOrder   string
 		calls       int
+	}
+	lastListModelInteractionTraces struct {
+		startTime *time.Time
+		endTime   *time.Time
+		calls     int
 	}
 	lastListUsers struct {
 		page      int
@@ -126,13 +133,14 @@ func newStubAdminService() *stubAdminService {
 		CreatedAt: now,
 	}
 	return &stubAdminService{
-		users:       []service.User{user},
-		apiKeys:     []service.APIKey{apiKey},
-		groups:      []service.Group{group},
-		accounts:    []service.Account{account},
-		proxies:     []service.Proxy{proxy},
-		proxyCounts: []service.ProxyWithAccountCount{{Proxy: proxy, AccountCount: 1}},
-		redeems:     []service.RedeemCode{redeem},
+		users:                  []service.User{user},
+		apiKeys:                []service.APIKey{apiKey},
+		groups:                 []service.Group{group},
+		accounts:               []service.Account{account},
+		modelInteractionTraces: []*service.ModelInteractionTrace{},
+		proxies:                []service.Proxy{proxy},
+		proxyCounts:            []service.ProxyWithAccountCount{{Proxy: proxy, AccountCount: 1}},
+		redeems:                []service.RedeemCode{redeem},
 	}
 }
 
@@ -310,6 +318,44 @@ func (s *stubAdminService) ListAccounts(ctx context.Context, page, pageSize int,
 	s.lastListAccounts.sortOrder = sortOrder
 	s.lastListAccounts.calls++
 	return s.accounts, int64(len(s.accounts)), nil
+}
+
+func (s *stubAdminService) ListModelInteractionTraces(ctx context.Context, startTime, endTime *time.Time) ([]*service.ModelInteractionTrace, error) {
+	s.lastListModelInteractionTraces.startTime = cloneTimePtr(startTime)
+	s.lastListModelInteractionTraces.endTime = cloneTimePtr(endTime)
+	s.lastListModelInteractionTraces.calls++
+
+	out := make([]*service.ModelInteractionTrace, 0, len(s.modelInteractionTraces))
+	for _, item := range s.modelInteractionTraces {
+		if item == nil {
+			continue
+		}
+		cloned := *item
+		cloned.Prompt = append(json.RawMessage(nil), item.Prompt...)
+		cloned.Candidates = append(json.RawMessage(nil), item.Candidates...)
+		cloned.Tools = append(json.RawMessage(nil), item.Tools...)
+		cloned.Signature = append(json.RawMessage(nil), item.Signature...)
+		cloned.Meta = append(json.RawMessage(nil), item.Meta...)
+		cloned.Scaffold = append(json.RawMessage(nil), item.Scaffold...)
+		if item.Model != nil {
+			v := *item.Model
+			cloned.Model = &v
+		}
+		if item.UserID != nil {
+			v := *item.UserID
+			cloned.UserID = &v
+		}
+		if item.APIKeyID != nil {
+			v := *item.APIKeyID
+			cloned.APIKeyID = &v
+		}
+		if item.RequestID != nil {
+			v := *item.RequestID
+			cloned.RequestID = &v
+		}
+		out = append(out, &cloned)
+	}
+	return out, nil
 }
 
 func (s *stubAdminService) GetAccount(ctx context.Context, id int64) (*service.Account, error) {
@@ -607,6 +653,14 @@ func (s *stubAdminService) ForceAntigravityPrivacy(ctx context.Context, account 
 
 func (s *stubAdminService) ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*service.ReplaceUserGroupResult, error) {
 	return &service.ReplaceUserGroupResult{MigratedKeys: 0}, nil
+}
+
+func cloneTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 // Ensure stub implements interface.

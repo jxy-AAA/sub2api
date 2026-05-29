@@ -59,6 +59,14 @@ import { useI18n } from 'vue-i18n'
 import type { AccountPlatform, AccountType } from '@/types'
 import PlatformIcon from './PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { platformBadgeLightClass } from '@/utils/platformColors'
+import {
+  getPlatformDisplayName,
+  getProtocolDisplayName,
+  isCompatiblePlatform,
+  isOpenAIProtocolPlatform,
+  resolvePlatformBadgeKey,
+} from '@/utils/platforms'
 
 const { t } = useI18n()
 
@@ -72,11 +80,17 @@ interface Props {
 
 const props = defineProps<Props>()
 
+const platformToneKey = computed(() => resolvePlatformBadgeKey(props.platform) ?? props.platform)
+
 const platformLabel = computed(() => {
-  if (props.platform === 'anthropic') return 'Anthropic'
-  if (props.platform === 'openai') return 'OpenAI'
-  if (props.platform === 'antigravity') return 'Antigravity'
-  return 'Gemini'
+  const key = `admin.accounts.platforms.${props.platform}`
+  const translated = t(key)
+  if (translated !== key) {
+    return translated
+  }
+  return isCompatiblePlatform(props.platform)
+    ? getProtocolDisplayName(props.platform)
+    : getPlatformDisplayName(props.platform)
 })
 
 const typeLabel = computed(() => {
@@ -91,6 +105,8 @@ const typeLabel = computed(() => {
       return 'AWS'
     case 'service_account':
       return 'Vertex'
+    case 'upstream':
+      return t('admin.accounts.types.upstream')
     default:
       return props.type
   }
@@ -117,29 +133,11 @@ const planLabel = computed(() => {
 })
 
 const platformClass = computed(() => {
-  if (props.platform === 'anthropic') {
-    return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
-  }
-  if (props.platform === 'openai') {
-    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-  }
-  if (props.platform === 'antigravity') {
-    return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-  }
-  return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+  return platformBadgeLightClass(platformToneKey.value)
 })
 
 const typeClass = computed(() => {
-  if (props.platform === 'anthropic') {
-    return 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400'
-  }
-  if (props.platform === 'openai') {
-    return 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
-  }
-  if (props.platform === 'antigravity') {
-    return 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
-  }
-  return 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
+  return platformBadgeLightClass(platformToneKey.value)
 })
 
 const planBadgeClass = computed(() => {
@@ -169,7 +167,7 @@ const expiresLabel = computed(() => {
 const privacyBadge = computed(() => {
   if (props.type !== 'oauth' || !props.privacyMode) return null
   // 支持 OpenAI 和 Antigravity 平台
-  if (props.platform !== 'openai' && props.platform !== 'antigravity') return null
+  if (!isOpenAIProtocolPlatform(props.platform) && props.platform !== 'antigravity') return null
 
   const shieldCheck = 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z'
   const shieldX = 'M12 9v3.75m0-10.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285zM12 18h.008v.008H12V18z'

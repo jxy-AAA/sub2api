@@ -651,12 +651,12 @@ func TestAPIContracts(t *testing.T) {
 						"totp_encryption_key_configured": false,
 						"login_agreement_enabled": false,
 						"login_agreement_mode": "modal",
-						"login_agreement_updated_at": "2026-03-31",
+						"login_agreement_updated_at": "2026-05-27",
 						"login_agreement_documents": [
 							{"id": "terms", "title": "服务条款", "content_md": ""},
 							{"id": "usage-policy", "title": "使用政策", "content_md": ""},
 							{"id": "supported-regions", "title": "支持的国家和地区", "content_md": ""},
-							{"id": "service-specific-terms", "title": "服务特定条款", "content_md": ""}
+							{"id": "service-specific-terms", "title": "服务特定条款", "content_md": "为完成请求转发、风控审计、故障排查与合规留存，平台会按最小必要原则记录账号标识、请求时间、模型或渠道、请求与响应元数据及导出所需的相关上下文。经用户同意本协议后，root 管理员可在审计、申诉处理、监管配合或安全调查场景下，将上述留存数据导出为 JSON 文件；导出操作仅限授权管理员执行，并应遵守适用法律法规与最小必要访问原则。"}
 						],
 						"smtp_host": "smtp.example.com",
 						"smtp_port": 587,
@@ -747,10 +747,6 @@ func TestAPIContracts(t *testing.T) {
 					"force_email_on_third_party_signup": false,
 					"default_concurrency": 5,
 					"default_balance": 1.25,
-					"affiliate_rebate_rate": 20,
-					"affiliate_rebate_freeze_hours": 0,
-					"affiliate_rebate_duration_days": 0,
-					"affiliate_rebate_per_invitee_cap": 0,
 					"default_user_rpm_limit": 0,
 					"default_subscriptions": [],
 					"enable_model_fallback": false,
@@ -894,12 +890,12 @@ func TestAPIContracts(t *testing.T) {
 						"totp_encryption_key_configured": false,
 						"login_agreement_enabled": false,
 						"login_agreement_mode": "modal",
-						"login_agreement_updated_at": "2026-03-31",
+						"login_agreement_updated_at": "2026-05-27",
 						"login_agreement_documents": [
 							{"id": "terms", "title": "服务条款", "content_md": ""},
 							{"id": "usage-policy", "title": "使用政策", "content_md": ""},
 							{"id": "supported-regions", "title": "支持的国家和地区", "content_md": ""},
-							{"id": "service-specific-terms", "title": "服务特定条款", "content_md": ""}
+							{"id": "service-specific-terms", "title": "服务特定条款", "content_md": "为完成请求转发、风控审计、故障排查与合规留存，平台会按最小必要原则记录账号标识、请求时间、模型或渠道、请求与响应元数据及导出所需的相关上下文。经用户同意本协议后，root 管理员可在审计、申诉处理、监管配合或安全调查场景下，将上述留存数据导出为 JSON 文件；导出操作仅限授权管理员执行，并应遵守适用法律法规与最小必要访问原则。"}
 						],
 						"smtp_host": "",
 						"smtp_port": 587,
@@ -963,10 +959,6 @@ func TestAPIContracts(t *testing.T) {
 					"custom_endpoints": [],
 					"default_concurrency": 0,
 					"default_balance": 0,
-					"affiliate_rebate_rate": 20,
-					"affiliate_rebate_freeze_hours": 0,
-					"affiliate_rebate_duration_days": 0,
-					"affiliate_rebate_per_invitee_cap": 0,
 					"default_user_rpm_limit": 0,
 					"default_subscriptions": [],
 					"enable_model_fallback": false,
@@ -1189,7 +1181,7 @@ func newContractDeps(t *testing.T) *contractDeps {
 	settingRepo := newStubSettingRepo()
 	settingService := service.NewSettingService(settingRepo, cfg)
 
-	adminService := service.NewAdminService(userRepo, groupRepo, &accountRepo, proxyRepo, apiKeyRepo, redeemRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	adminService := service.NewAdminService(userRepo, groupRepo, &accountRepo, proxyRepo, apiKeyRepo, redeemRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	authHandler := handler.NewAuthHandler(cfg, nil, userService, settingService, nil, redeemService, nil)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageHandler := handler.NewUsageHandler(usageService, apiKeyService)

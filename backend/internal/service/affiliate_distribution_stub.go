@@ -57,7 +57,14 @@ type AgentDirectMember struct {
 	IsAgent                 bool             `json:"is_agent"`
 	CreatedAt               *time.Time       `json:"created_at,omitempty"`
 	TodayBusinessUSD        float64          `json:"today_business_usd"`
+	TodayBusinessRMB        float64          `json:"today_business_rmb"`
 	TodayRebateRMB          float64          `json:"today_rebate_rmb"`
+	DirectTotalUsageUSD     float64          `json:"direct_total_usage_usd"`
+	DirectTotalUsageRMB     float64          `json:"direct_total_usage_rmb"`
+	DirectUserUsageUSD      float64          `json:"direct_user_usage_usd"`
+	DirectUserUsageRMB      float64          `json:"direct_user_usage_rmb"`
+	DirectAgentUsageUSD     float64          `json:"direct_agent_usage_usd"`
+	DirectAgentUsageRMB     float64          `json:"direct_agent_usage_rmb"`
 	CurrentRebateBalanceRMB float64          `json:"current_rebate_balance_rmb"`
 	CurrentGroupRates       []AgentGroupRate `json:"current_group_rates"`
 	ParentCanEditRates      bool             `json:"parent_can_edit_rates"`
@@ -91,16 +98,22 @@ type AgentRankingFilter struct {
 }
 
 type AgentDailyBusinessRankingItem struct {
-	Rank             int       `json:"rank"`
-	UserID           int64     `json:"user_id"`
-	Email            string    `json:"email"`
-	Username         string    `json:"username"`
-	StatDate         string    `json:"stat_date"`
-	BusinessUSD      float64   `json:"business_usd"`
-	BusinessRMB      float64   `json:"business_rmb"`
-	DirectUsers      int       `json:"direct_users"`
-	DirectAgents     int       `json:"direct_agents"`
-	LastCalculatedAt time.Time `json:"last_calculated_at"`
+	Rank                int       `json:"rank"`
+	UserID              int64     `json:"user_id"`
+	Email               string    `json:"email"`
+	Username            string    `json:"username"`
+	StatDate            string    `json:"stat_date"`
+	BusinessUSD         float64   `json:"business_usd"`
+	BusinessRMB         float64   `json:"business_rmb"`
+	DirectUsers         int       `json:"direct_users"`
+	DirectAgents        int       `json:"direct_agents"`
+	DirectTotalUsageUSD float64   `json:"direct_total_usage_usd"`
+	DirectTotalUsageRMB float64   `json:"direct_total_usage_rmb"`
+	DirectUserUsageUSD  float64   `json:"direct_user_usage_usd"`
+	DirectUserUsageRMB  float64   `json:"direct_user_usage_rmb"`
+	DirectAgentUsageUSD float64   `json:"direct_agent_usage_usd"`
+	DirectAgentUsageRMB float64   `json:"direct_agent_usage_rmb"`
+	LastCalculatedAt    time.Time `json:"last_calculated_at"`
 }
 
 type AgentRebateBalanceRankingItem struct {
@@ -113,6 +126,12 @@ type AgentRebateBalanceRankingItem struct {
 	MonthlyRebateRMB        float64   `json:"monthly_rebate_rmb"`
 	DirectUsers             int       `json:"direct_users"`
 	DirectAgents            int       `json:"direct_agents"`
+	DirectTotalUsageUSD     float64   `json:"direct_total_usage_usd"`
+	DirectTotalUsageRMB     float64   `json:"direct_total_usage_rmb"`
+	DirectUserUsageUSD      float64   `json:"direct_user_usage_usd"`
+	DirectUserUsageRMB      float64   `json:"direct_user_usage_rmb"`
+	DirectAgentUsageUSD     float64   `json:"direct_agent_usage_usd"`
+	DirectAgentUsageRMB     float64   `json:"direct_agent_usage_rmb"`
 	LastAdjustedAt          time.Time `json:"last_adjusted_at"`
 	LastAdjustmentNote      string    `json:"last_adjustment_note,omitempty"`
 }
@@ -158,6 +177,18 @@ type AgentTreeNode struct {
 	IsAdmin                 bool             `json:"is_admin"`
 	IsRootAdmin             bool             `json:"is_root_admin"`
 	CurrentRebateBalanceRMB float64          `json:"current_rebate_balance_rmb"`
+	TodayBusinessUSD        float64          `json:"today_business_usd"`
+	TodayBusinessRMB        float64          `json:"today_business_rmb"`
+	TodayRebateRMB          float64          `json:"today_rebate_rmb"`
+	DirectChildrenCount     int              `json:"direct_children_count"`
+	DirectUserCount         int              `json:"direct_user_count"`
+	DirectAgentCount        int              `json:"direct_agent_count"`
+	DirectTotalUsageUSD     float64          `json:"direct_total_usage_usd"`
+	DirectTotalUsageRMB     float64          `json:"direct_total_usage_rmb"`
+	DirectUserUsageUSD      float64          `json:"direct_user_usage_usd"`
+	DirectUserUsageRMB      float64          `json:"direct_user_usage_rmb"`
+	DirectAgentUsageUSD     float64          `json:"direct_agent_usage_usd"`
+	DirectAgentUsageRMB     float64          `json:"direct_agent_usage_rmb"`
 	InviteGroupRates        []AgentGroupRate `json:"invite_group_rates,omitempty"`
 	CurrentGroupRates       []AgentGroupRate `json:"current_group_rates,omitempty"`
 }

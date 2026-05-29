@@ -129,7 +129,7 @@ func (s *OpsService) UpdateRuntimeLogConfig(ctx context.Context, req *OpsRuntime
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if operatorID <= 0 {
+	if operatorID < 0 {
 		return nil, errors.New("invalid operator id")
 	}
 
@@ -176,7 +176,7 @@ func (s *OpsService) ResetRuntimeLogConfig(ctx context.Context, operatorID int64
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if operatorID <= 0 {
+	if operatorID < 0 {
 		return nil, errors.New("invalid operator id")
 	}
 

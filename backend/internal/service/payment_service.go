@@ -2,8 +2,8 @@ package service
 
 import (
 	"bytes"
-	"crypto/rand"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -246,7 +246,7 @@ func (s *PaymentService) loadProviders(ctx context.Context) {
 
 // --- Helpers ---
 
-func psIsRefundStatus(s string) bool {
+func psIsRefundStatus[S ~string](s S) bool {
 	switch s {
 	case OrderStatusRefundRequested, OrderStatusRefunding, OrderStatusPartiallyRefunded, OrderStatusRefunded, OrderStatusRefundFailed:
 		return true
@@ -322,9 +322,9 @@ func parsePaymentResumeSigningKey(raw string) []byte {
 	return []byte(raw)
 }
 
-func psSliceContains(sl []string, s string) bool {
+func psSliceContains[T ~string, U ~string](sl []T, s U) bool {
 	for _, v := range sl {
-		if v == s {
+		if string(v) == string(s) {
 			return true
 		}
 	}

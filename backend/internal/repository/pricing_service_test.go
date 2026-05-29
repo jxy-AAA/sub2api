@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -138,6 +140,38 @@ func (s *PricingServiceSuite) TestFetchPricingJSON_ContextCancel() {
 
 	err := <-done
 	require.Error(s.T(), err)
+}
+
+func (s *PricingServiceSuite) TestFetchPricingJSON_EnforcesMaximumSize_ContentLength() {
+	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payloadSize := serviceMaxRemotePricingDownloadBytes() + 1
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", payloadSize))
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	_, err := s.client.FetchPricingJSON(s.ctx, s.srv.URL+"/oversized")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "pricing payload too large")
+}
+
+func (s *PricingServiceSuite) TestFetchPricingJSON_EnforcesMaximumSize_Streaming() {
+	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		chunk := strings.Repeat("a", 1024)
+		remaining := serviceMaxRemotePricingDownloadBytes() + 1
+		for remaining > 0 {
+			part := int64(len(chunk))
+			if part > remaining {
+				part = remaining
+			}
+			_, _ = w.Write([]byte(chunk[:part]))
+			remaining -= part
+		}
+	}))
+
+	_, err := s.client.FetchPricingJSON(s.ctx, s.srv.URL+"/oversized-stream")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "pricing payload exceeded maximum size")
 }
 
 func TestNewPricingRemoteClient_InvalidProxy_NoFallback(t *testing.T) {

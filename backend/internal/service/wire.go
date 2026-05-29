@@ -344,6 +344,40 @@ func ProvideScheduledTestService(
 	return NewScheduledTestService(planRepo, resultRepo)
 }
 
+func ProvideModelInteractionTraceService(
+	repo ModelInteractionTraceRepository,
+	captureRepo ModelTraceCaptureRepository,
+	ruleRepo ModelTraceCaptureRuleRepository,
+) *ModelInteractionTraceService {
+	return NewModelInteractionTraceService(repo, captureRepo, ruleRepo)
+}
+
+func ProvideTraceExportTaskService(
+	repo TraceExportTaskRepository,
+) *TraceExportTaskService {
+	return NewTraceExportTaskService(repo)
+}
+
+func ProvideTraceExportTaskExecutor(
+	repo TraceExportTaskRepository,
+	traceSvc *ModelTraceCaptureService,
+	cfg *config.Config,
+) *TraceExportTaskExecutor {
+	opts := DefaultTraceExportTaskExecutorOptions()
+	if cfg != nil {
+		opts.Enabled = cfg.TraceExport.Enabled
+		opts.ExportDir = cfg.TraceExport.ExportDir
+		opts.PollInterval = time.Duration(cfg.TraceExport.PollIntervalSeconds) * time.Second
+		opts.BatchSize = cfg.TraceExport.BatchSize
+		opts.TaskTimeout = time.Duration(cfg.TraceExport.TaskTimeoutSeconds) * time.Second
+		opts.CleanupBatchSize = cfg.TraceExport.CleanupBatchSize
+		opts.MaxRecords = cfg.TraceExport.MaxRecordsPerTask
+	}
+	svc := NewTraceExportTaskExecutor(repo, traceSvc, opts)
+	svc.Start()
+	return svc
+}
+
 // ProvideScheduledTestRunnerService creates and starts ScheduledTestRunnerService.
 func ProvideScheduledTestRunnerService(
 	planRepo ScheduledTestPlanRepository,
@@ -411,6 +445,30 @@ func ProvideBillingCacheService(
 	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg)
 }
 
+func ProvideAffiliateDistributionUsageSettlementStore(repo AffiliateRepository) (AffiliateDistributionUsageSettlementStore, error) {
+	if store, ok := repo.(AffiliateDistributionUsageSettlementStore); ok {
+		return store, nil
+	}
+	return nil, ErrAffiliateDistributionUnavailable
+}
+
+func ProvideAffiliateDistributionUsageSettlementProcessor(repo AffiliateRepository) (AffiliateDistributionUsageSettlementProcessor, error) {
+	if processor, ok := repo.(AffiliateDistributionUsageSettlementProcessor); ok {
+		return processor, nil
+	}
+	return nil, ErrAffiliateDistributionUnavailable
+}
+
+func ProvideAffiliateDistributionSettlementService(
+	store AffiliateDistributionUsageSettlementStore,
+	processor AffiliateDistributionUsageSettlementProcessor,
+) (AffiliateDistributionUsageSettlementService, error) {
+	if store == nil || processor == nil {
+		return nil, ErrAffiliateDistributionUnavailable
+	}
+	return NewAffiliateDistributionSettlementService(store, processor), nil
+}
+
 // ProvideAPIKeyService wires APIKeyService and connects rate-limit cache invalidation.
 func ProvideAPIKeyService(
 	apiKeyRepo APIKeyRepository,
@@ -424,6 +482,116 @@ func ProvideAPIKeyService(
 ) *APIKeyService {
 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
 	svc.SetRateLimitCacheInvalidator(billingCacheService)
+	return svc
+}
+
+func ProvideGatewayService(
+	accountRepo AccountRepository,
+	groupRepo GroupRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	identityService *IdentityService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	claudeTokenProvider *ClaudeTokenProvider,
+	sessionLimitCache SessionLimitCache,
+	rpmCache RPMCache,
+	digestStore *DigestSessionStore,
+	settingService *SettingService,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	channelService *ChannelService,
+	resolver *ModelPricingResolver,
+	balanceNotifyService *BalanceNotifyService,
+	settlementService AffiliateDistributionUsageSettlementService,
+) *GatewayService {
+	svc := NewGatewayService(
+		accountRepo,
+		groupRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		identityService,
+		httpUpstream,
+		deferredService,
+		claudeTokenProvider,
+		sessionLimitCache,
+		rpmCache,
+		digestStore,
+		settingService,
+		tlsFPProfileService,
+		channelService,
+		resolver,
+		balanceNotifyService,
+	)
+	svc.SetAffiliateDistributionUsageSettlementService(settlementService)
+	return svc
+}
+
+func ProvideOpenAIGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	settlementService AffiliateDistributionUsageSettlementService,
+) *OpenAIGatewayService {
+	svc := NewOpenAIGatewayService(
+		accountRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		httpUpstream,
+		deferredService,
+		openAITokenProvider,
+		resolver,
+		channelService,
+		balanceNotifyService,
+		settingService,
+	)
+	svc.SetAffiliateDistributionUsageSettlementService(settlementService)
 	return svc
 }
 
@@ -446,8 +614,8 @@ var ProviderSet = wire.NewSet(
 	ProvideBillingCacheService,
 	NewAnnouncementService,
 	NewAdminService,
-	NewGatewayService,
-	NewOpenAIGatewayService,
+	ProvideGatewayService,
+	ProvideOpenAIGatewayService,
 	NewOAuthService,
 	NewOpenAIOAuthService,
 	NewGeminiOAuthService,
@@ -509,8 +677,18 @@ var ProviderSet = wire.NewSet(
 	NewGroupCapacityService,
 	NewChannelService,
 	NewModelPricingResolver,
+	NewModelMarketService,
+	ProvideModelInteractionTraceService,
+	NewModelTraceCaptureService,
+	NewModelTraceCaptureRuleService,
+	ProvideTraceExportTaskService,
+	ProvideTraceExportTaskExecutor,
 	NewContentModerationService,
 	NewAffiliateService,
+	ProvideAffiliateDistributionUsageSettlementStore,
+	ProvideAffiliateDistributionUsageSettlementProcessor,
+	ProvideAffiliateDistributionSettlementService,
+	ProvideAffiliateDistributionMonthlyResetService,
 	ProvidePaymentConfigService,
 	NewPaymentService,
 	ProvidePaymentOrderExpiryService,
@@ -518,6 +696,8 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
 	NewChannelMonitorRequestTemplateService,
+	wire.Bind(new(modelMarketChannelProvider), new(*ChannelService)),
+	wire.Bind(new(modelMarketGroupProvider), new(*APIKeyService)),
 )
 
 // ProvidePaymentConfigService wraps NewPaymentConfigService to accept the named

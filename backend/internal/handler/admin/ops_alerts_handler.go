@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -487,11 +486,12 @@ func (h *OpsHandler) CreateAlertSilence(c *gin.Context) {
 		return
 	}
 
-	createdBy := (*int64)(nil)
-	if subject, ok := middleware.GetAuthSubjectFromContext(c); ok {
-		uid := subject.UserID
-		createdBy = &uid
+	subject, ok := requireAdminSubject(c)
+	if !ok {
+		return
 	}
+	operatorID := adminActorUserID(subject)
+	createdBy := &operatorID
 
 	silence := &service.OpsAlertSilence{
 		RuleID:    payload.RuleID,

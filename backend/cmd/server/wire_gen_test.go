@@ -77,7 +77,7 @@ func TestProvideCleanup_WithAggregatedDependencies_NoPanic(t *testing.T) {
 	cleanup := provideCleanup(cleanupInfra, cleanupSvcSet)
 
 	require.NotPanics(t, func() {
-		cleanup()
+		cleanup(context.Background())
 	})
 }
 

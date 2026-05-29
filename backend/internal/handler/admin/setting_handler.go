@@ -60,10 +60,15 @@ type SettingHandler struct {
 	opsService           *service.OpsService
 	paymentConfigService *service.PaymentConfigService
 	paymentService       *service.PaymentService
+	firstAdminLookup     firstAdminLookup
 }
 
 // NewSettingHandler 创建系统设置处理器
-func NewSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService) *SettingHandler {
+func NewSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService, rootAdminLookups ...firstAdminLookup) *SettingHandler {
+	var rootAdminLookup firstAdminLookup
+	if len(rootAdminLookups) > 0 {
+		rootAdminLookup = rootAdminLookups[0]
+	}
 	return &SettingHandler{
 		settingService:       settingService,
 		emailService:         emailService,
@@ -71,7 +76,17 @@ func NewSettingHandler(settingService *service.SettingService, emailService *ser
 		opsService:           opsService,
 		paymentConfigService: paymentConfigService,
 		paymentService:       paymentService,
+		firstAdminLookup:     rootAdminLookup,
 	}
+}
+
+// ProvideSettingFirstAdminLookups supplies the root-admin lookup dependency
+// in a Wire-friendly non-variadic form.
+func ProvideSettingFirstAdminLookups(userService *service.UserService) []firstAdminLookup {
+	if userService == nil {
+		return nil
+	}
+	return []firstAdminLookup{userService}
 }
 
 // GetSettings 获取所有系统设置
@@ -258,11 +273,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
 
-		AffiliateEnabled:             settings.AffiliateEnabled,
-		AffiliateRebateRate:          settings.AffiliateRebateRate,
-		AffiliateRebateFreezeHours:   settings.AffiliateRebateFreezeHours,
-		AffiliateRebateDurationDays:  settings.AffiliateRebateDurationDays,
-		AffiliateRebatePerInviteeCap: settings.AffiliateRebatePerInviteeCap,
+		AffiliateEnabled: settings.AffiliateEnabled,
 	}
 
 	// OpenAI fast policy (stored under a dedicated setting key)
@@ -1734,11 +1745,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
 
-		AffiliateEnabled:             updatedSettings.AffiliateEnabled,
-		AffiliateRebateRate:          updatedSettings.AffiliateRebateRate,
-		AffiliateRebateFreezeHours:   updatedSettings.AffiliateRebateFreezeHours,
-		AffiliateRebateDurationDays:  updatedSettings.AffiliateRebateDurationDays,
-		AffiliateRebatePerInviteeCap: updatedSettings.AffiliateRebatePerInviteeCap,
+		AffiliateEnabled: updatedSettings.AffiliateEnabled,
 
 		RiskControlEnabled: updatedSettings.RiskControlEnabled,
 	}
@@ -2525,41 +2532,77 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 // GetAdminAPIKey 获取管理员 API Key 状态
 // GET /api/v1/admin/settings/admin-api-key
 func (h *SettingHandler) GetAdminAPIKey(c *gin.Context) {
-	maskedKey, exists, err := h.settingService.GetAdminAPIKeyStatus(c.Request.Context())
+	if !h.requireRootAdminJWT(c) {
+		return
+	}
+	detail, err := h.settingService.GetAdminAPIKeyStatusDetail(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, gin.H{
-		"exists":     exists,
-		"masked_key": maskedKey,
-	})
+	response.Success(c, detail)
 }
 
-// RegenerateAdminAPIKey 生成/重新生成管理员 API Key
+// RegenerateAdminAPIKey ???/???????????API Key
 // POST /api/v1/admin/settings/admin-api-key/regenerate
 func (h *SettingHandler) RegenerateAdminAPIKey(c *gin.Context) {
+	if !h.requireRootAdminJWT(c) {
+		return
+	}
 	key, err := h.settingService.GenerateAdminAPIKey(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
+	principal := service.DeriveAdminAPIKeyPrincipal(key)
 	response.Success(c, gin.H{
-		"key": key, // 完整 key 只在生成时返回一次
+		"key":            key,
+		"principal_id":   principal.PrincipalID,
+		"principal_type": principal.PrincipalType,
+		"name":           principal.Name,
+		"scopes":         principal.Scopes,
 	})
 }
 
 // DeleteAdminAPIKey 删除管理员 API Key
 // DELETE /api/v1/admin/settings/admin-api-key
 func (h *SettingHandler) DeleteAdminAPIKey(c *gin.Context) {
+	if !h.requireRootAdminJWT(c) {
+		return
+	}
 	if err := h.settingService.DeleteAdminAPIKey(c.Request.Context()); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
 	response.Success(c, gin.H{"message": "Admin API key deleted"})
+}
+
+func (h *SettingHandler) requireRootAdminJWT(c *gin.Context) bool {
+	if c.GetString("auth_method") != "jwt" {
+		response.Forbidden(c, "root admin JWT required")
+		return false
+	}
+	subject, ok := requireHumanAdminSubject(c, "root admin JWT required")
+	if !ok {
+		return false
+	}
+	if h == nil || h.firstAdminLookup == nil {
+		response.InternalError(c, "root admin resolver is not configured")
+		return false
+	}
+	firstAdmin, err := h.firstAdminLookup.GetFirstAdmin(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return false
+	}
+	if firstAdmin == nil || firstAdmin.ID != subject.UserID {
+		response.Forbidden(c, "root admin access required")
+		return false
+	}
+	return true
 }
 
 // GetOverloadCooldownSettings 获取529过载冷却配置

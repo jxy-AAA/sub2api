@@ -221,11 +221,27 @@ func (r *groupRepository) List(ctx context.Context, params pagination.Pagination
 	return r.ListWithFilters(ctx, params, "", "", "", nil)
 }
 
+func applyGroupPlatformFilter(q *dbent.GroupQuery, platform string) *dbent.GroupQuery {
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		return q
+	}
+
+	switch {
+	case service.IsOpenAIProtocolPlatform(platform):
+		return q.Where(group.PlatformIn(service.PlatformOpenAI, service.PlatformOpenAICompatible))
+	case service.IsAnthropicProtocolPlatform(platform):
+		return q.Where(group.PlatformIn(service.PlatformAnthropic, service.PlatformAnthropicCompatible))
+	default:
+		return q.Where(group.PlatformEQ(platform))
+	}
+}
+
 func (r *groupRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, status, search string, isExclusive *bool) ([]service.Group, *pagination.PaginationResult, error) {
 	q := r.client.Group.Query()
 
 	if platform != "" {
-		q = q.Where(group.PlatformEQ(platform))
+		q = applyGroupPlatformFilter(q, platform)
 	}
 	if status != "" {
 		q = q.Where(group.StatusEQ(status))
@@ -411,10 +427,16 @@ func (r *groupRepository) ListActive(ctx context.Context) ([]service.Group, erro
 }
 
 func (r *groupRepository) ListActiveByPlatform(ctx context.Context, platform string) ([]service.Group, error) {
-	groups, err := r.client.Group.Query().
-		Where(group.StatusEQ(service.StatusActive), group.PlatformEQ(platform)).
-		Order(dbent.Asc(group.FieldSortOrder), dbent.Asc(group.FieldID)).
-		All(ctx)
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		return []service.Group{}, nil
+	}
+
+	q := applyGroupPlatformFilter(r.client.Group.Query(), platform).
+		Where(group.StatusEQ(service.StatusActive)).
+		Order(dbent.Asc(group.FieldSortOrder), dbent.Asc(group.FieldID))
+
+	groups, err := q.All(ctx)
 	if err != nil {
 		return nil, err
 	}

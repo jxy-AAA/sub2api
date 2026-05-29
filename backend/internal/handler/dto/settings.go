@@ -213,11 +213,7 @@ type SystemSettings struct {
 	RiskControlEnabled bool `json:"risk_control_enabled"`
 
 	// Affiliate (邀请返利) feature switch
-	AffiliateEnabled             bool    `json:"affiliate_enabled"`
-	AffiliateRebateRate          float64 `json:"affiliate_rebate_rate"`
-	AffiliateRebateFreezeHours   int     `json:"affiliate_rebate_freeze_hours"`
-	AffiliateRebateDurationDays  int     `json:"affiliate_rebate_duration_days"`
-	AffiliateRebatePerInviteeCap float64 `json:"affiliate_rebate_per_invitee_cap"`
+	AffiliateEnabled bool `json:"affiliate_enabled"`
 
 	// OpenAI fast/flex policy
 	OpenAIFastPolicySettings *OpenAIFastPolicySettings `json:"openai_fast_policy_settings,omitempty"`

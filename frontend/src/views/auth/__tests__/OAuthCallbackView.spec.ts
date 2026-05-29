@@ -9,7 +9,6 @@ const {
   showErrorMock,
   showSuccessMock,
   setTokenMock,
-  copyToClipboardMock,
   exchangePendingOAuthCompletionMock,
   apiPostMock,
 } = vi.hoisted(() => ({
@@ -27,7 +26,6 @@ const {
   showErrorMock: vi.fn(),
   showSuccessMock: vi.fn(),
   setTokenMock: vi.fn(),
-  copyToClipboardMock: vi.fn(),
   exchangePendingOAuthCompletionMock: vi.fn(),
   apiPostMock: vi.fn(),
 }))
@@ -70,12 +68,6 @@ vi.mock('@/api/auth', async () => {
   }
 })
 
-vi.mock('@/composables/useClipboard', () => ({
-  useClipboard: () => ({
-    copyToClipboard: (...args: any[]) => copyToClipboardMock(...args),
-  }),
-}))
-
 describe('OAuthCallbackView', () => {
   beforeEach(() => {
     routeState.path = '/auth/callback'
@@ -92,25 +84,24 @@ describe('OAuthCallbackView', () => {
     showErrorMock.mockReset()
     showSuccessMock.mockReset()
     setTokenMock.mockReset()
-    copyToClipboardMock.mockReset()
     exchangePendingOAuthCompletionMock.mockReset()
     apiPostMock.mockReset()
     window.sessionStorage.clear()
   })
 
-  it('renders localized callback copy actions', () => {
+  it('shows invalid callback state for direct visits without pending session', async () => {
     routeState.query = {
       code: 'oauth-code',
       state: 'oauth-state',
     }
+    exchangePendingOAuthCompletionMock.mockRejectedValue(new Error('pending session not found'))
 
     const wrapper = mount(OAuthCallbackView)
+    await vi.dynamicImportSettled()
 
-    expect(wrapper.text()).toContain('auth.oauth.callbackTitle')
-    expect(wrapper.text()).toContain('auth.oauth.callbackHint')
-    expect(wrapper.text()).toContain('common.copy')
-    expect(wrapper.find('input[value="oauth-code"]').exists()).toBe(true)
-    expect(wrapper.find('input[value="oauth-state"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('auth.oauth.invalidCallbackTitle')
+    expect(wrapper.text()).toContain('auth.oauth.invalidCallbackHint')
+    expect(wrapper.find('input[readonly]').exists()).toBe(false)
   })
 
   it('sends callback errors to toast instead of rendering inline red text', () => {
@@ -153,6 +144,22 @@ describe('OAuthCallbackView', () => {
       '/api/v1/auth/oauth/google/callback?code=provider-code&state=provider-state'
     )
     expect(exchangePendingOAuthCompletionMock).not.toHaveBeenCalled()
+  })
+
+  it('shows provider error from query without hash parsing', async () => {
+    routeState.path = '/auth/oauth/callback'
+    routeState.query = {
+      error: 'provider_error',
+      error_description: 'denied',
+      oauth_source: 'backend',
+    }
+
+    const wrapper = mount(OAuthCallbackView)
+    await vi.dynamicImportSettled()
+
+    expect(showErrorMock).toHaveBeenCalledWith('denied')
+    expect(exchangePendingOAuthCompletionMock).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('auth.oauth.invalidCallbackTitle')
   })
 
   it('submits stored affiliate code when completing invited email oauth registration', async () => {

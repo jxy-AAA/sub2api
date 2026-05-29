@@ -33,12 +33,22 @@
 
             <div class="space-y-2">
               <p class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ tt('affiliate.inviteLink', '邀请链接') }}</p>
-              <div class="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-dark-700 dark:bg-dark-900">
-                <code class="flex-1 truncate text-sm text-gray-700 dark:text-gray-300">{{ inviteLink }}</code>
-                <button class="btn btn-secondary btn-sm" @click="copyInviteLink">
-                  <Icon name="copy" size="sm" />
-                  <span>{{ tt('affiliate.copyLink', '复制链接') }}</span>
+              <div class="space-y-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-dark-700 dark:bg-dark-900">
+                <button
+                  class="btn btn-secondary btn-sm"
+                  data-testid="generate-invite-link"
+                  @click="generateInviteLink"
+                >
+                  <Icon name="link" size="sm" />
+                  <span>{{ tt('affiliate.generateInviteLink', '生成邀请链接') }}</span>
                 </button>
+                <code
+                  v-if="generatedInviteLink"
+                  class="block truncate text-sm text-gray-700 dark:text-gray-300"
+                  data-testid="generated-invite-link"
+                >
+                  {{ generatedInviteLink }}
+                </code>
               </div>
             </div>
           </div>
@@ -188,6 +198,7 @@ const inviteLink = computed(() => {
   if (typeof window === 'undefined') return `/register?aff=${encodeURIComponent(detail.value.aff_code)}`
   return `${window.location.origin}/register?aff=${encodeURIComponent(detail.value.aff_code)}`
 })
+const generatedInviteLink = ref('')
 
 const directChildrenEmptyText = computed(() => tt('affiliate.children.empty', '暂无直属下级'))
 
@@ -246,8 +257,9 @@ async function copyCode(): Promise<void> {
   await copyToClipboard(detail.value.aff_code, tt('affiliate.codeCopied', '邀请码已复制'))
 }
 
-async function copyInviteLink(): Promise<void> {
+async function generateInviteLink(): Promise<void> {
   if (!inviteLink.value) return
+  generatedInviteLink.value = inviteLink.value
   await copyToClipboard(inviteLink.value, tt('affiliate.linkCopied', '邀请链接已复制'))
 }
 

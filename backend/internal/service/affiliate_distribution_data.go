@@ -3,13 +3,15 @@ package service
 import "time"
 
 type RecordAffiliateUsageSettlementInput struct {
-	UsageLogID     int64
-	ConsumerUserID int64
-	GroupID        int64
-	ModelKey       string
-	UsageAmountUSD float64
-	SettlementAt   time.Time
-	RootRate       float64
+	UsageLogID                int64
+	ConsumerUserID            int64
+	GroupID                   int64
+	ModelKey                  string
+	UsageAmountUSD            float64
+	SettlementAt              time.Time
+	RootRate                  float64
+	ConsumerRateMultiplier    float64
+	HasConsumerRateMultiplier bool
 }
 
 type AffiliateDistributionSettlementEntry struct {

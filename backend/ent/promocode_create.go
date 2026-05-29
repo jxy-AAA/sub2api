@@ -23,6 +23,34 @@ type PromoCodeCreate struct {
 	conflict []sql.ConflictOption
 }
 
+// SetCreatedAt sets the "created_at" field.
+func (_c *PromoCodeCreate) SetCreatedAt(v time.Time) *PromoCodeCreate {
+	_c.mutation.SetCreatedAt(v)
+	return _c
+}
+
+// SetNillableCreatedAt sets the "created_at" field if the given value is not nil.
+func (_c *PromoCodeCreate) SetNillableCreatedAt(v *time.Time) *PromoCodeCreate {
+	if v != nil {
+		_c.SetCreatedAt(*v)
+	}
+	return _c
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (_c *PromoCodeCreate) SetUpdatedAt(v time.Time) *PromoCodeCreate {
+	_c.mutation.SetUpdatedAt(v)
+	return _c
+}
+
+// SetNillableUpdatedAt sets the "updated_at" field if the given value is not nil.
+func (_c *PromoCodeCreate) SetNillableUpdatedAt(v *time.Time) *PromoCodeCreate {
+	if v != nil {
+		_c.SetUpdatedAt(*v)
+	}
+	return _c
+}
+
 // SetCode sets the "code" field.
 func (_c *PromoCodeCreate) SetCode(v string) *PromoCodeCreate {
 	_c.mutation.SetCode(v)
@@ -113,34 +141,6 @@ func (_c *PromoCodeCreate) SetNillableNotes(v *string) *PromoCodeCreate {
 	return _c
 }
 
-// SetCreatedAt sets the "created_at" field.
-func (_c *PromoCodeCreate) SetCreatedAt(v time.Time) *PromoCodeCreate {
-	_c.mutation.SetCreatedAt(v)
-	return _c
-}
-
-// SetNillableCreatedAt sets the "created_at" field if the given value is not nil.
-func (_c *PromoCodeCreate) SetNillableCreatedAt(v *time.Time) *PromoCodeCreate {
-	if v != nil {
-		_c.SetCreatedAt(*v)
-	}
-	return _c
-}
-
-// SetUpdatedAt sets the "updated_at" field.
-func (_c *PromoCodeCreate) SetUpdatedAt(v time.Time) *PromoCodeCreate {
-	_c.mutation.SetUpdatedAt(v)
-	return _c
-}
-
-// SetNillableUpdatedAt sets the "updated_at" field if the given value is not nil.
-func (_c *PromoCodeCreate) SetNillableUpdatedAt(v *time.Time) *PromoCodeCreate {
-	if v != nil {
-		_c.SetUpdatedAt(*v)
-	}
-	return _c
-}
-
 // AddUsageRecordIDs adds the "usage_records" edge to the PromoCodeUsage entity by IDs.
 func (_c *PromoCodeCreate) AddUsageRecordIDs(ids ...int64) *PromoCodeCreate {
 	_c.mutation.AddUsageRecordIDs(ids...)
@@ -191,6 +191,14 @@ func (_c *PromoCodeCreate) ExecX(ctx context.Context) {
 
 // defaults sets the default values of the builder before save.
 func (_c *PromoCodeCreate) defaults() {
+	if _, ok := _c.mutation.CreatedAt(); !ok {
+		v := promocode.DefaultCreatedAt()
+		_c.mutation.SetCreatedAt(v)
+	}
+	if _, ok := _c.mutation.UpdatedAt(); !ok {
+		v := promocode.DefaultUpdatedAt()
+		_c.mutation.SetUpdatedAt(v)
+	}
 	if _, ok := _c.mutation.BonusAmount(); !ok {
 		v := promocode.DefaultBonusAmount
 		_c.mutation.SetBonusAmount(v)
@@ -207,18 +215,16 @@ func (_c *PromoCodeCreate) defaults() {
 		v := promocode.DefaultStatus
 		_c.mutation.SetStatus(v)
 	}
-	if _, ok := _c.mutation.CreatedAt(); !ok {
-		v := promocode.DefaultCreatedAt()
-		_c.mutation.SetCreatedAt(v)
-	}
-	if _, ok := _c.mutation.UpdatedAt(); !ok {
-		v := promocode.DefaultUpdatedAt()
-		_c.mutation.SetUpdatedAt(v)
-	}
 }
 
 // check runs all checks and user-defined validators on the builder.
 func (_c *PromoCodeCreate) check() error {
+	if _, ok := _c.mutation.CreatedAt(); !ok {
+		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "PromoCode.created_at"`)}
+	}
+	if _, ok := _c.mutation.UpdatedAt(); !ok {
+		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "PromoCode.updated_at"`)}
+	}
 	if _, ok := _c.mutation.Code(); !ok {
 		return &ValidationError{Name: "code", err: errors.New(`ent: missing required field "PromoCode.code"`)}
 	}
@@ -243,12 +249,6 @@ func (_c *PromoCodeCreate) check() error {
 		if err := promocode.StatusValidator(v); err != nil {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "PromoCode.status": %w`, err)}
 		}
-	}
-	if _, ok := _c.mutation.CreatedAt(); !ok {
-		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "PromoCode.created_at"`)}
-	}
-	if _, ok := _c.mutation.UpdatedAt(); !ok {
-		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "PromoCode.updated_at"`)}
 	}
 	return nil
 }
@@ -277,6 +277,14 @@ func (_c *PromoCodeCreate) createSpec() (*PromoCode, *sqlgraph.CreateSpec) {
 		_spec = sqlgraph.NewCreateSpec(promocode.Table, sqlgraph.NewFieldSpec(promocode.FieldID, field.TypeInt64))
 	)
 	_spec.OnConflict = _c.conflict
+	if value, ok := _c.mutation.CreatedAt(); ok {
+		_spec.SetField(promocode.FieldCreatedAt, field.TypeTime, value)
+		_node.CreatedAt = value
+	}
+	if value, ok := _c.mutation.UpdatedAt(); ok {
+		_spec.SetField(promocode.FieldUpdatedAt, field.TypeTime, value)
+		_node.UpdatedAt = value
+	}
 	if value, ok := _c.mutation.Code(); ok {
 		_spec.SetField(promocode.FieldCode, field.TypeString, value)
 		_node.Code = value
@@ -305,14 +313,6 @@ func (_c *PromoCodeCreate) createSpec() (*PromoCode, *sqlgraph.CreateSpec) {
 		_spec.SetField(promocode.FieldNotes, field.TypeString, value)
 		_node.Notes = &value
 	}
-	if value, ok := _c.mutation.CreatedAt(); ok {
-		_spec.SetField(promocode.FieldCreatedAt, field.TypeTime, value)
-		_node.CreatedAt = value
-	}
-	if value, ok := _c.mutation.UpdatedAt(); ok {
-		_spec.SetField(promocode.FieldUpdatedAt, field.TypeTime, value)
-		_node.UpdatedAt = value
-	}
 	if nodes := _c.mutation.UsageRecordsIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.O2M,
@@ -336,7 +336,7 @@ func (_c *PromoCodeCreate) createSpec() (*PromoCode, *sqlgraph.CreateSpec) {
 // of the `INSERT` statement. For example:
 //
 //	client.PromoCode.Create().
-//		SetCode(v).
+//		SetCreatedAt(v).
 //		OnConflict(
 //			// Update the row with the new values
 //			// the was proposed for insertion.
@@ -345,7 +345,7 @@ func (_c *PromoCodeCreate) createSpec() (*PromoCode, *sqlgraph.CreateSpec) {
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.PromoCodeUpsert) {
-//			SetCode(v+v).
+//			SetCreatedAt(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *PromoCodeCreate) OnConflict(opts ...sql.ConflictOption) *PromoCodeUpsertOne {
@@ -380,6 +380,18 @@ type (
 		*sql.UpdateSet
 	}
 )
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *PromoCodeUpsert) SetUpdatedAt(v time.Time) *PromoCodeUpsert {
+	u.Set(promocode.FieldUpdatedAt, v)
+	return u
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *PromoCodeUpsert) UpdateUpdatedAt() *PromoCodeUpsert {
+	u.SetExcluded(promocode.FieldUpdatedAt)
+	return u
+}
 
 // SetCode sets the "code" field.
 func (u *PromoCodeUpsert) SetCode(v string) *PromoCodeUpsert {
@@ -495,18 +507,6 @@ func (u *PromoCodeUpsert) ClearNotes() *PromoCodeUpsert {
 	return u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (u *PromoCodeUpsert) SetUpdatedAt(v time.Time) *PromoCodeUpsert {
-	u.Set(promocode.FieldUpdatedAt, v)
-	return u
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *PromoCodeUpsert) UpdateUpdatedAt() *PromoCodeUpsert {
-	u.SetExcluded(promocode.FieldUpdatedAt)
-	return u
-}
-
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -550,6 +550,20 @@ func (u *PromoCodeUpsertOne) Update(set func(*PromoCodeUpsert)) *PromoCodeUpsert
 		set(&PromoCodeUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *PromoCodeUpsertOne) SetUpdatedAt(v time.Time) *PromoCodeUpsertOne {
+	return u.Update(func(s *PromoCodeUpsert) {
+		s.SetUpdatedAt(v)
+	})
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *PromoCodeUpsertOne) UpdateUpdatedAt() *PromoCodeUpsertOne {
+	return u.Update(func(s *PromoCodeUpsert) {
+		s.UpdateUpdatedAt()
+	})
 }
 
 // SetCode sets the "code" field.
@@ -682,20 +696,6 @@ func (u *PromoCodeUpsertOne) UpdateNotes() *PromoCodeUpsertOne {
 func (u *PromoCodeUpsertOne) ClearNotes() *PromoCodeUpsertOne {
 	return u.Update(func(s *PromoCodeUpsert) {
 		s.ClearNotes()
-	})
-}
-
-// SetUpdatedAt sets the "updated_at" field.
-func (u *PromoCodeUpsertOne) SetUpdatedAt(v time.Time) *PromoCodeUpsertOne {
-	return u.Update(func(s *PromoCodeUpsert) {
-		s.SetUpdatedAt(v)
-	})
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *PromoCodeUpsertOne) UpdateUpdatedAt() *PromoCodeUpsertOne {
-	return u.Update(func(s *PromoCodeUpsert) {
-		s.UpdateUpdatedAt()
 	})
 }
 
@@ -834,7 +834,7 @@ func (_c *PromoCodeCreateBulk) ExecX(ctx context.Context) {
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.PromoCodeUpsert) {
-//			SetCode(v+v).
+//			SetCreatedAt(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *PromoCodeCreateBulk) OnConflict(opts ...sql.ConflictOption) *PromoCodeUpsertBulk {
@@ -908,6 +908,20 @@ func (u *PromoCodeUpsertBulk) Update(set func(*PromoCodeUpsert)) *PromoCodeUpser
 		set(&PromoCodeUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *PromoCodeUpsertBulk) SetUpdatedAt(v time.Time) *PromoCodeUpsertBulk {
+	return u.Update(func(s *PromoCodeUpsert) {
+		s.SetUpdatedAt(v)
+	})
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *PromoCodeUpsertBulk) UpdateUpdatedAt() *PromoCodeUpsertBulk {
+	return u.Update(func(s *PromoCodeUpsert) {
+		s.UpdateUpdatedAt()
+	})
 }
 
 // SetCode sets the "code" field.
@@ -1040,20 +1054,6 @@ func (u *PromoCodeUpsertBulk) UpdateNotes() *PromoCodeUpsertBulk {
 func (u *PromoCodeUpsertBulk) ClearNotes() *PromoCodeUpsertBulk {
 	return u.Update(func(s *PromoCodeUpsert) {
 		s.ClearNotes()
-	})
-}
-
-// SetUpdatedAt sets the "updated_at" field.
-func (u *PromoCodeUpsertBulk) SetUpdatedAt(v time.Time) *PromoCodeUpsertBulk {
-	return u.Update(func(s *PromoCodeUpsert) {
-		s.SetUpdatedAt(v)
-	})
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *PromoCodeUpsertBulk) UpdateUpdatedAt() *PromoCodeUpsertBulk {
-	return u.Update(func(s *PromoCodeUpsert) {
-		s.UpdateUpdatedAt()
 	})
 }
 

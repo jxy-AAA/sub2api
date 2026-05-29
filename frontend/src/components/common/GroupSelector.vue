@@ -62,6 +62,7 @@ import { useI18n } from 'vue-i18n'
 import GroupBadge from './GroupBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import type { AdminGroup, GroupPlatform } from '@/types'
+import { getProtocolCompatibleGroupPlatforms } from '@/utils/platforms'
 
 const { t } = useI18n()
 
@@ -97,8 +98,8 @@ const filteredGroups = computed(() => {
         (g) => g.platform === 'antigravity' || g.platform === 'anthropic' || g.platform === 'gemini'
       )
     } else {
-      // 默认：只能选择同 platform 的分组
-      result = result.filter((g) => g.platform === props.platform)
+      const compatiblePlatforms = getProtocolCompatibleGroupPlatforms(props.platform)
+      result = result.filter((g) => compatiblePlatforms.includes(g.platform))
     }
   }
   if (isSearchable.value && searchText.value) {

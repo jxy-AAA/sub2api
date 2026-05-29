@@ -325,7 +325,7 @@
             </div>
 
             <!-- Web Search Emulation (Anthropic only, hidden when global disabled) -->
-            <div v-if="section.platform === 'anthropic' && webSearchGlobalEnabled" class="border-t border-gray-200 pt-3 dark:border-dark-600">
+            <div v-if="isAnthropicProtocolPlatform(section.platform) && webSearchGlobalEnabled" class="border-t border-gray-200 pt-3 dark:border-dark-600">
               <div class="flex items-center justify-between">
                 <div>
                   <label class="text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -340,7 +340,7 @@
             </div>
 
             <!-- Codex Image Generation Bridge (OpenAI only) -->
-            <div v-if="section.platform === 'openai'" class="border-t border-gray-200 pt-3 dark:border-dark-600">
+            <div v-if="isOpenAIProtocolPlatform(section.platform)" class="border-t border-gray-200 pt-3 dark:border-dark-600">
               <div class="flex items-center justify-between gap-4">
                 <div>
                   <label class="text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -611,6 +611,7 @@ import { mTokToPerToken, perTokenToMTok, apiIntervalsToForm, formIntervalsToAPI,
 import type { AdminGroup, GroupPlatform } from '@/types'
 import type { Column } from '@/components/common/types'
 import { platformTextClass, platformBadgeLightClass } from '@/utils/platformColors'
+import { isAnthropicProtocolPlatform, isOpenAIProtocolPlatform } from '@/utils/platforms'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
@@ -734,7 +735,7 @@ const form = reactive({
 let abortController: AbortController | null = null
 
 // ── Platform config ──
-const platformOrder: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity']
+const platformOrder: GroupPlatform[] = ['anthropic', 'anthropic_compatible', 'openai', 'openai_compatible', 'gemini', 'antigravity']
 
 // ── Helpers ──
 function formatDate(value: string): string {
@@ -1054,7 +1055,7 @@ function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[
   const wsEmulation: Record<string, boolean> = {}
   for (const section of form.platforms) {
     if (!section.enabled) continue
-    if (section.platform === 'anthropic') {
+    if (isAnthropicProtocolPlatform(section.platform)) {
       wsEmulation[section.platform] = !!section.web_search_emulation
     }
   }
@@ -1067,7 +1068,7 @@ function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[
   const codexImageGenerationBridge: Record<string, boolean> = {}
   for (const section of form.platforms) {
     if (!section.enabled) continue
-    if (section.platform === 'openai') {
+    if (isOpenAIProtocolPlatform(section.platform)) {
       codexImageGenerationBridge[section.platform] = !!section.codex_image_generation_bridge
     }
   }

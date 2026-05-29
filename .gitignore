@@ -138,6 +138,7 @@ docs/*
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
 !docs/README.md
 !docs/CHANNEL_MONITORING.md
+!docs/COMPLIANCE_DATA_EXPORT_CN.md
 !docs/RISK_AND_CONTENT_AUDIT.md
 !docs/SUBSCRIPTIONS.md
 !docs/AUTH_PROVIDERS.md
@@ -150,6 +151,12 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+
+# Local analysis/cache artifacts
+.tmp_pdf_pages/
+_req_pdf_pages/
+__pycache__/
+*.py[cod]
 
 # Local runtime state
 .runtime/**

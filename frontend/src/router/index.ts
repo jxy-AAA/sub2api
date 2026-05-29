@@ -257,6 +257,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/model-market',
+    name: 'UserModelMarket',
+    component: () => import('@/views/user/ModelMarketView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Model Market',
+      titleKey: 'modelMarket.title',
+      descriptionKey: 'modelMarket.description'
+    }
+  },
+  {
     path: '/profile',
     name: 'Profile',
     component: () => import('@/views/user/ProfileView.vue'),
@@ -443,6 +455,30 @@ const routes: RouteRecordRaw[] = [
       title: 'Channel Monitor',
       titleKey: 'admin.channelMonitor.title',
       descriptionKey: 'admin.channelMonitor.description'
+    }
+  },
+  {
+    path: '/admin/model-market',
+    name: 'AdminModelMarket',
+    component: () => import('@/views/admin/ModelMarketView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Model Market',
+      titleKey: 'admin.modelMarket.title',
+      descriptionKey: 'admin.modelMarket.description'
+    }
+  },
+  {
+    path: '/admin/traces',
+    name: 'AdminTraces',
+    component: () => import('@/views/admin/TracesView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Trace Management',
+      titleKey: 'admin.traces.title',
+      descriptionKey: 'admin.traces.description'
     }
   },
   {

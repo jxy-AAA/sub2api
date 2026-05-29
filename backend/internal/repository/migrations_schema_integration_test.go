@@ -90,6 +90,56 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 
 	// user_allowed_groups: created_at should be timestamptz
 	requireColumn(t, tx, "user_allowed_groups", "created_at", "timestamp with time zone", 0, false)
+
+	// model_catalog_items: model market persistence
+	requireTableExists(t, tx, "model_catalog_items")
+	requireColumn(t, tx, "model_catalog_items", "model_id", "character varying", 200, false)
+	requireColumn(t, tx, "model_catalog_items", "display_name", "character varying", 200, false)
+	requireColumn(t, tx, "model_catalog_items", "provider_key", "character varying", 50, false)
+	requireColumn(t, tx, "model_catalog_items", "protocol", "character varying", 50, false)
+	requireColumn(t, tx, "model_catalog_items", "context_window", "integer", 0, true)
+	requireColumn(t, tx, "model_catalog_items", "description", "text", 0, true)
+	requireColumn(t, tx, "model_catalog_items", "status", "character varying", 20, false)
+	requireColumn(t, tx, "model_catalog_items", "deleted_at", "timestamp with time zone", 0, true)
+	requireIndex(t, tx, "model_catalog_items", "idx_model_catalog_items_model_id")
+	requireIndex(t, tx, "model_catalog_items", "idx_model_catalog_items_provider_key")
+	requireIndex(t, tx, "model_catalog_items", "idx_model_catalog_items_protocol")
+	requireIndex(t, tx, "model_catalog_items", "idx_model_catalog_items_status")
+	requireIndex(t, tx, "model_catalog_items", "idx_model_catalog_items_sort_order")
+	requireIndex(t, tx, "model_catalog_items", "idx_model_catalog_items_deleted_at")
+	requirePartialUniqueIndexDefinition(
+		t,
+		tx,
+		"model_catalog_items",
+		"model_catalog_items_provider_model_unique_active",
+		"provider_key",
+		"model_id",
+		"WHERE",
+	)
+
+	// model_interaction_traces: raw model trace export storage
+	requireTableExists(t, tx, "model_interaction_traces")
+	requireColumn(t, tx, "model_interaction_traces", "task_id", "text", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "prompt", "json", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "candidates", "json", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "tools", "json", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "signature", "json", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "meta", "json", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "scaffold", "json", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "scaffold_version", "text", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "model", "text", 0, true)
+	requireColumn(t, tx, "model_interaction_traces", "user_id", "bigint", 0, true)
+	requireColumn(t, tx, "model_interaction_traces", "api_key_id", "bigint", 0, true)
+	requireColumn(t, tx, "model_interaction_traces", "request_id", "text", 0, true)
+	requireColumn(t, tx, "model_interaction_traces", "dedupe_hash", "text", 0, false)
+	requireColumn(t, tx, "model_interaction_traces", "created_at", "timestamp with time zone", 0, false)
+	requireIndex(t, tx, "model_interaction_traces", "idx_model_interaction_traces_task_id")
+	requireIndex(t, tx, "model_interaction_traces", "model_interaction_traces_dedupe_hash_unique")
+	requireIndex(t, tx, "model_interaction_traces", "idx_model_interaction_traces_created_at_id")
+	requireIndex(t, tx, "model_interaction_traces", "idx_model_interaction_traces_request_id")
+	requireIndex(t, tx, "model_interaction_traces", "idx_model_interaction_traces_model")
+	requireIndex(t, tx, "model_interaction_traces", "idx_model_interaction_traces_user_id")
+	requireIndex(t, tx, "model_interaction_traces", "idx_model_interaction_traces_api_key_id")
 }
 
 func TestMigrationsRunner_AuthIdentityAndPaymentSchemaStayAligned(t *testing.T) {

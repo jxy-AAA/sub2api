@@ -67,87 +67,73 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
-      <!-- Platform Selection - Segmented Control Style -->
       <div>
         <label class="input-label">{{ t('admin.accounts.platform') }}</label>
-        <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-tour="account-form-platform">
-          <button
-            type="button"
-            @click="form.platform = 'anthropic'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'anthropic'
-                ? 'bg-white text-orange-600 shadow-sm dark:bg-dark-600 dark:text-orange-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
+        <div class="mt-2 space-y-3" data-tour="account-form-platform">
+          <div
+            v-for="section in accountEntrySections"
+            :key="section.key"
+            class="rounded-xl border border-gray-200 bg-white p-3 dark:border-dark-600 dark:bg-dark-700/30"
           >
-            <Icon name="sparkles" size="sm" />
-            Anthropic
-          </button>
-          <button
-            type="button"
-            @click="form.platform = 'openai'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'openai'
-                ? 'bg-white text-green-600 shadow-sm dark:bg-dark-600 dark:text-green-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
-          >
-            <svg
-              class="h-4 w-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"
-              />
-            </svg>
-            OpenAI
-          </button>
-          <button
-            type="button"
-            @click="form.platform = 'gemini'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'gemini'
-                ? 'bg-white text-blue-600 shadow-sm dark:bg-dark-600 dark:text-blue-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
-          >
-            <svg
-              class="h-4 w-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M12 2l1.5 6.5L20 10l-6.5 1.5L12 18l-1.5-6.5L4 10l6.5-1.5L12 2z"
-              />
-            </svg>
-            Gemini
-          </button>
-          <button
-            type="button"
-            @click="form.platform = 'antigravity'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'antigravity'
-                ? 'bg-white text-purple-600 shadow-sm dark:bg-dark-600 dark:text-purple-400'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
-          >
-            <Icon name="cloud" size="sm" />
-            Antigravity
-          </button>
+            <div class="mb-3">
+              <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ section.title }}</p>
+              <p v-if="section.description" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ section.description }}
+              </p>
+            </div>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <button
+                v-for="entry in section.options"
+                :key="entry.key"
+                type="button"
+                @click="selectAccountEntry(entry)"
+                :class="[
+                  'flex w-full items-start justify-between gap-3 rounded-lg border px-4 py-3 text-left transition-all',
+                  isAccountEntrySelected(entry.key)
+                    ? 'border-primary-500 bg-primary-50 shadow-sm dark:border-primary-400 dark:bg-primary-900/20'
+                    : 'border-gray-200 bg-gray-50 hover:border-gray-300 hover:bg-gray-100 dark:border-dark-600 dark:bg-dark-700 dark:hover:border-dark-500 dark:hover:bg-dark-600'
+                ]"
+              >
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm font-medium text-gray-900 dark:text-white">
+                      {{ entry.title }}
+                    </span>
+                    <span
+                      v-if="entry.badge"
+                      class="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-medium text-gray-600 ring-1 ring-inset ring-gray-200 dark:bg-dark-800 dark:text-gray-300 dark:ring-dark-500"
+                    >
+                      {{ entry.badge }}
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ entry.description }}
+                  </p>
+                </div>
+                <span
+                  :class="[
+                    'mt-1 h-2.5 w-2.5 rounded-full',
+                    isAccountEntrySelected(entry.key)
+                      ? 'bg-primary-500 dark:bg-primary-400'
+                      : 'bg-gray-300 dark:bg-dark-500'
+                  ]"
+                />
+              </button>
+            </div>
+          </div>
         </div>
+      </div>
+
+      <div
+        v-if="isCompatibleProviderPlatform"
+        class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-sm text-teal-800 dark:border-teal-900/40 dark:bg-teal-900/20 dark:text-teal-200"
+      >
+        <p class="font-medium">{{ compatiblePlatformLabel }}</p>
+        <p class="mt-1 text-xs text-teal-700 dark:text-teal-200">
+          {{ form.platform === 'openai_compatible'
+            ? t('admin.accounts.compatibleProviders.openaiDescription')
+            : t('admin.accounts.compatibleProviders.anthropicDescription') }}
+        </p>
       </div>
 
       <!-- Account Type Selection (Anthropic) -->
@@ -775,7 +761,7 @@
       </div>
 
       <!-- Upstream config (only for Antigravity upstream type) -->
-      <div v-if="form.platform === 'antigravity' && antigravityAccountType === 'upstream'" class="space-y-4">
+      <div v-if="showUpstreamConfig" class="space-y-4">
         <div>
           <label class="input-label">{{ t('admin.accounts.upstream.baseUrl') }}</label>
           <input
@@ -783,9 +769,9 @@
             type="text"
             required
             class="input"
-            placeholder="https://cloudcode-pa.googleapis.com"
+            :placeholder="upstreamBaseUrlPlaceholder"
           />
-          <p class="input-hint">{{ t('admin.accounts.upstream.baseUrlHint') }}</p>
+          <p class="input-hint">{{ upstreamBaseUrlHint }}</p>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.upstream.apiKey') }}</label>
@@ -794,9 +780,135 @@
             type="password"
             required
             class="input font-mono"
-            placeholder="sk-..."
+            :placeholder="upstreamApiKeyPlaceholder"
           />
           <p class="input-hint">{{ t('admin.accounts.upstream.apiKeyHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.upstream.headers') }}</label>
+          <textarea
+            v-model="upstreamHeadersText"
+            rows="4"
+            class="input font-mono"
+            :placeholder="t('admin.accounts.upstream.headersPlaceholder')"
+          ></textarea>
+          <p class="input-hint">{{ t('admin.accounts.upstream.headersHint') }}</p>
+        </div>
+        <div v-if="isCompatibleProviderPlatform" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+          <div class="mb-4 flex gap-2">
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'whitelist'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'whitelist'
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              {{ t('admin.accounts.modelWhitelist') }}
+            </button>
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'mapping'"
+              :class="[
+                'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                modelRestrictionMode === 'mapping'
+                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+              ]"
+            >
+              {{ t('admin.accounts.modelMapping') }}
+            </button>
+          </div>
+
+          <div v-if="modelRestrictionMode === 'whitelist'">
+            <ModelWhitelistSelector v-model="allowedModels" :platform="form.platform" />
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
+              <span v-if="allowedModels.length === 0">{{
+                t('admin.accounts.supportsAllModels')
+              }}</span>
+            </p>
+          </div>
+
+          <div v-else>
+            <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
+              <p class="text-xs text-purple-700 dark:text-purple-400">
+                {{ t('admin.accounts.mapRequestModels') }}
+              </p>
+            </div>
+
+            <div v-if="modelMappings.length > 0" class="mb-3 space-y-2">
+              <div
+                v-for="(mapping, index) in modelMappings"
+                :key="'compatible-' + getModelMappingKey(mapping)"
+                class="flex items-center gap-2"
+              >
+                <input
+                  v-model="mapping.from"
+                  type="text"
+                  class="input flex-1"
+                  :placeholder="t('admin.accounts.requestModel')"
+                />
+                <svg
+                  class="h-4 w-4 flex-shrink-0 text-gray-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M14 5l7 7m0 0l-7 7m7-7H3"
+                  />
+                </svg>
+                <input
+                  v-model="mapping.to"
+                  type="text"
+                  class="input flex-1"
+                  :placeholder="t('admin.accounts.actualModel')"
+                />
+                <button
+                  type="button"
+                  @click="removeModelMapping(index)"
+                  class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
+                >
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              @click="addModelMapping"
+              class="mb-3 w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-dark-500 dark:text-gray-400 dark:hover:border-dark-400 dark:hover:text-gray-300"
+            >
+              + {{ t('admin.accounts.addMapping') }}
+            </button>
+
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="preset in presetMappings"
+                :key="'compatible-' + preset.label"
+                type="button"
+                @click="addPresetMapping(preset.from, preset.to)"
+                :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+              >
+                + {{ preset.label }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3107,6 +3219,17 @@ import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
 import {
+  getCompatiblePlatformDisplayName,
+  getCreateAccountEntrySections,
+  getPlatformApiKeyPlaceholder,
+  getPlatformBaseUrlPlaceholder,
+  getPlatformDefaultBaseUrl,
+  getPlatformModelPresetPlatform,
+  isCompatiblePlatform,
+  resolveCreateAccountEntryKey,
+  type CreateAccountEntryOption
+} from '@/utils/platforms'
+import {
   useAccountOAuth,
   type AddMethod,
   type AuthInputMethod
@@ -3307,6 +3430,7 @@ const allowOverages = ref(false) // For antigravity accounts: enable AI Credits 
 const antigravityAccountType = ref<'oauth' | 'upstream'>('oauth') // For antigravity: oauth or upstream
 const upstreamBaseUrl = ref('') // For upstream type: base URL
 const upstreamApiKey = ref('') // For upstream type: API key
+const upstreamHeadersText = ref('')
 const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMapping[]>([])
@@ -3367,6 +3491,44 @@ const windowCostLimit = ref<number | null>(null)
 const windowCostStickyReserve = ref<number | null>(null)
 const sessionLimitEnabled = ref(false)
 const maxSessions = ref<number | null>(null)
+
+const isCompatibleProviderPlatform = computed(() => isCompatiblePlatform(form.platform))
+const showUpstreamConfig = computed(() =>
+  isCompatiblePlatform(form.platform) ||
+  (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream')
+)
+const upstreamBaseUrlHint = computed(() => {
+  if (form.platform === 'openai_compatible') {
+    return t('admin.accounts.compatibleProviders.openaiDescription')
+  }
+  if (form.platform === 'anthropic_compatible') {
+    return t('admin.accounts.compatibleProviders.anthropicDescription')
+  }
+  return t('admin.accounts.upstream.baseUrlHint')
+})
+const upstreamBaseUrlPlaceholder = computed(() => getPlatformBaseUrlPlaceholder(form.platform))
+const upstreamApiKeyPlaceholder = computed(() => getPlatformApiKeyPlaceholder(form.platform))
+const modelPresetPlatform = computed(() => getPlatformModelPresetPlatform(form.platform))
+
+function parseUpstreamHeaders(): Record<string, string> | null {
+  if (!upstreamHeadersText.value.trim()) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(upstreamHeadersText.value)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('invalid headers')
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed).map(([key, value]) => [key, String(value)])
+    )
+  } catch {
+    appStore.showError(t('admin.accounts.upstream.invalidHeaders'))
+    return null
+  }
+}
 const sessionIdleTimeout = ref<number | null>(null)
 const rpmLimitEnabled = ref(false)
 const baseRpm = ref<number | null>(null)
@@ -3458,7 +3620,7 @@ const geminiHelpLinks = {
 }
 
 // Computed: current preset mappings based on platform
-const presetMappings = computed(() => getPresetMappingsByPlatform(form.platform))
+const presetMappings = computed(() => getPresetMappingsByPlatform(modelPresetPlatform.value))
 const tempUnschedPresets = computed(() => [
   {
     label: t('admin.accounts.tempUnschedulable.presets.overloadLabel'),
@@ -3504,8 +3666,62 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+const accountEntrySections = getCreateAccountEntrySections()
+const selectedAccountEntryKey = computed(() =>
+  resolveCreateAccountEntryKey(form.platform, accountCategory.value)
+)
+const compatiblePlatformLabel = computed(() =>
+  getCompatiblePlatformDisplayName(form.platform)
+)
+
+const isAccountEntrySelected = (key: CreateAccountEntryOption['key']) =>
+  selectedAccountEntryKey.value === key
+
+const resetCompatibleProviderState = (platform: AccountPlatform) => {
+  step.value = 1
+  form.type = 'upstream'
+  form.credentials = {}
+  accountCategory.value = 'apikey'
+  addMethod.value = 'oauth'
+  antigravityAccountType.value = 'oauth'
+  apiKeyBaseUrl.value = getPlatformDefaultBaseUrl(platform)
+  upstreamBaseUrl.value = ''
+  upstreamApiKey.value = ''
+  upstreamHeadersText.value = ''
+  allowedModels.value = []
+  modelMappings.value = []
+  openAICompactModelMappings.value = []
+  openaiPassthroughEnabled.value = false
+  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+  codexCLIOnlyEnabled.value = false
+  anthropicPassthroughEnabled.value = false
+  webSearchEmulationMode.value = 'default'
+  interceptWarmupRequests.value = false
+  allowOverages.value = false
+  oauth.resetState()
+  openaiOAuth.resetState()
+  geminiOAuth.resetState()
+  antigravityOAuth.resetState()
+  oauthFlowRef.value?.reset()
+}
+
+const selectAccountEntry = (entry: CreateAccountEntryOption) => {
+  form.platform = entry.platform
+  if (isCompatiblePlatform(entry.platform)) {
+    resetCompatibleProviderState(entry.platform)
+    return
+  }
+  if (entry.defaultCategory) {
+    accountCategory.value = entry.defaultCategory
+  }
+}
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
+  if (isCompatiblePlatform(form.platform)) {
+    return false
+  }
   // Antigravity upstream 类型不需要 OAuth 流程
   if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
     return false
@@ -3575,6 +3791,10 @@ watch(
 watch(
   [accountCategory, addMethod, antigravityAccountType, () => form.platform],
   ([category, method, agType]) => {
+    if (isCompatiblePlatform(form.platform)) {
+      form.type = 'upstream'
+      return
+    }
     // Antigravity upstream 类型（实际创建为 apikey）
     if (form.platform === 'antigravity' && agType === 'upstream') {
       form.type = 'apikey'
@@ -3602,11 +3822,16 @@ watch(
   (newPlatform) => {
     // Reset base URL based on platform
     apiKeyBaseUrl.value =
-      (newPlatform === 'openai')
-        ? 'https://api.openai.com'
-        : newPlatform === 'gemini'
-          ? 'https://generativelanguage.googleapis.com'
-          : 'https://api.anthropic.com'
+      newPlatform === 'gemini'
+        ? 'https://generativelanguage.googleapis.com'
+        : getPlatformDefaultBaseUrl(newPlatform)
+    if (isCompatiblePlatform(newPlatform)) {
+      resetCompatibleProviderState(newPlatform)
+    } else if (newPlatform !== 'antigravity') {
+      upstreamBaseUrl.value = ''
+      upstreamApiKey.value = ''
+      upstreamHeadersText.value = ''
+    }
     // Clear model-related settings
     allowedModels.value = []
     modelMappings.value = []
@@ -4002,6 +4227,9 @@ const resetForm = () => {
   fetchAntigravityDefaultMappings().then(mappings => {
     antigravityModelMappings.value = [...mappings]
   })
+  upstreamBaseUrl.value = ''
+  upstreamApiKey.value = ''
+  upstreamHeadersText.value = ''
   poolModeEnabled.value = false
   poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
   customErrorCodesEnabled.value = false
@@ -4307,6 +4535,13 @@ const handleSubmit = async () => {
       base_url: upstreamBaseUrl.value.trim(),
       api_key: upstreamApiKey.value.trim()
     }
+    const headers = parseUpstreamHeaders()
+    if (headers === null) {
+      return
+    }
+    if (Object.keys(headers).length > 0) {
+      credentials.headers = headers
+    }
 
     // Antigravity 只使用映射模式
     const antigravityModelMapping = buildModelMappingObject(
@@ -4322,6 +4557,48 @@ const handleSubmit = async () => {
 
     const extra = buildAntigravityExtra()
     await createAccountAndFinish(form.platform, 'apikey', credentials, extra)
+    return
+  }
+
+  if (isCompatiblePlatform(form.platform)) {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!upstreamBaseUrl.value.trim()) {
+      appStore.showError(t('admin.accounts.upstream.pleaseEnterBaseUrl'))
+      return
+    }
+    if (!upstreamApiKey.value.trim()) {
+      appStore.showError(t('admin.accounts.upstream.pleaseEnterApiKey'))
+      return
+    }
+
+    const headers = parseUpstreamHeaders()
+    if (headers === null) {
+      return
+    }
+
+    const credentials: Record<string, unknown> = {
+      base_url: upstreamBaseUrl.value.trim(),
+      api_key: upstreamApiKey.value.trim()
+    }
+    if (Object.keys(headers).length > 0) {
+      credentials.headers = headers
+    }
+
+    const modelMapping = buildModelMappingObject(
+      modelRestrictionMode.value,
+      allowedModels.value,
+      modelMappings.value
+    )
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+
+    applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+
+    await createAccountAndFinish(form.platform, 'upstream', credentials)
     return
   }
 

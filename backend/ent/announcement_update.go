@@ -30,6 +30,12 @@ func (_u *AnnouncementUpdate) Where(ps ...predicate.Announcement) *AnnouncementU
 	return _u
 }
 
+// SetUpdatedAt sets the "updated_at" field.
+func (_u *AnnouncementUpdate) SetUpdatedAt(v time.Time) *AnnouncementUpdate {
+	_u.mutation.SetUpdatedAt(v)
+	return _u
+}
+
 // SetTitle sets the "title" field.
 func (_u *AnnouncementUpdate) SetTitle(v string) *AnnouncementUpdate {
 	_u.mutation.SetTitle(v)
@@ -200,12 +206,6 @@ func (_u *AnnouncementUpdate) ClearUpdatedBy() *AnnouncementUpdate {
 	return _u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (_u *AnnouncementUpdate) SetUpdatedAt(v time.Time) *AnnouncementUpdate {
-	_u.mutation.SetUpdatedAt(v)
-	return _u
-}
-
 // AddReadIDs adds the "reads" edge to the AnnouncementRead entity by IDs.
 func (_u *AnnouncementUpdate) AddReadIDs(ids ...int64) *AnnouncementUpdate {
 	_u.mutation.AddReadIDs(ids...)
@@ -320,6 +320,9 @@ func (_u *AnnouncementUpdate) sqlSave(ctx context.Context) (_node int, err error
 			}
 		}
 	}
+	if value, ok := _u.mutation.UpdatedAt(); ok {
+		_spec.SetField(announcement.FieldUpdatedAt, field.TypeTime, value)
+	}
 	if value, ok := _u.mutation.Title(); ok {
 		_spec.SetField(announcement.FieldTitle, field.TypeString, value)
 	}
@@ -367,9 +370,6 @@ func (_u *AnnouncementUpdate) sqlSave(ctx context.Context) (_node int, err error
 	}
 	if _u.mutation.UpdatedByCleared() {
 		_spec.ClearField(announcement.FieldUpdatedBy, field.TypeInt64)
-	}
-	if value, ok := _u.mutation.UpdatedAt(); ok {
-		_spec.SetField(announcement.FieldUpdatedAt, field.TypeTime, value)
 	}
 	if _u.mutation.ReadsCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -434,6 +434,12 @@ type AnnouncementUpdateOne struct {
 	fields   []string
 	hooks    []Hook
 	mutation *AnnouncementMutation
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (_u *AnnouncementUpdateOne) SetUpdatedAt(v time.Time) *AnnouncementUpdateOne {
+	_u.mutation.SetUpdatedAt(v)
+	return _u
 }
 
 // SetTitle sets the "title" field.
@@ -606,12 +612,6 @@ func (_u *AnnouncementUpdateOne) ClearUpdatedBy() *AnnouncementUpdateOne {
 	return _u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (_u *AnnouncementUpdateOne) SetUpdatedAt(v time.Time) *AnnouncementUpdateOne {
-	_u.mutation.SetUpdatedAt(v)
-	return _u
-}
-
 // AddReadIDs adds the "reads" edge to the AnnouncementRead entity by IDs.
 func (_u *AnnouncementUpdateOne) AddReadIDs(ids ...int64) *AnnouncementUpdateOne {
 	_u.mutation.AddReadIDs(ids...)
@@ -756,6 +756,9 @@ func (_u *AnnouncementUpdateOne) sqlSave(ctx context.Context) (_node *Announceme
 			}
 		}
 	}
+	if value, ok := _u.mutation.UpdatedAt(); ok {
+		_spec.SetField(announcement.FieldUpdatedAt, field.TypeTime, value)
+	}
 	if value, ok := _u.mutation.Title(); ok {
 		_spec.SetField(announcement.FieldTitle, field.TypeString, value)
 	}
@@ -803,9 +806,6 @@ func (_u *AnnouncementUpdateOne) sqlSave(ctx context.Context) (_node *Announceme
 	}
 	if _u.mutation.UpdatedByCleared() {
 		_spec.ClearField(announcement.FieldUpdatedBy, field.TypeInt64)
-	}
-	if value, ok := _u.mutation.UpdatedAt(); ok {
-		_spec.SetField(announcement.FieldUpdatedAt, field.TypeTime, value)
 	}
 	if _u.mutation.ReadsCleared() {
 		edge := &sqlgraph.EdgeSpec{

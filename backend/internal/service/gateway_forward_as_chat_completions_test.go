@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -106,4 +107,62 @@ func TestHandleCCStreamingFromAnthropic_PreservesMessageStartCacheUsageAndReason
 	require.NotNil(t, result.ReasoningEffort)
 	require.Equal(t, "medium", *result.ReasoningEffort)
 	require.Contains(t, rec.Body.String(), `[DONE]`)
+}
+
+func TestForwardAsChatCompletions_CapturesAnthropicUpstreamRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"claude-3-haiku-20240307","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"text/event-stream"},
+				"x-request-id": []string{"rid_cc_capture"},
+			},
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: message_start`,
+				`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-haiku-20240307","stop_reason":"","usage":{"input_tokens":5}}}`,
+				``,
+				`event: content_block_start`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
+				``,
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+				``,
+			}, "\n"))),
+		},
+	}
+	svc := &GatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          21,
+		Name:        "anthropic-key",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "upstream-anthropic-key"},
+	}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, &ParsedRequest{Body: body, Model: "claude-3-haiku-20240307"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	captures := GetGatewayTraceCaptures(c)
+	var upstreamRequest *GatewayTraceCaptureEntry
+	for i := range captures {
+		if captures[i].Stage == GatewayTraceStageUpstreamRequest {
+			upstreamRequest = &captures[i]
+			break
+		}
+	}
+	require.NotNil(t, upstreamRequest)
+	require.Equal(t, "anthropic.chat_completions", upstreamRequest.Protocol)
+	require.Equal(t, string(upstream.lastBody), upstreamRequest.Body)
+	require.Equal(t, "claude-3-haiku-20240307", upstreamRequest.Meta["original_model"])
+	require.Equal(t, "claude-3-haiku-20240307", upstreamRequest.Meta["upstream_model"])
 }

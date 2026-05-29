@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -85,6 +86,7 @@ type Config struct {
 	Dashboard               DashboardCacheConfig          `mapstructure:"dashboard_cache"`
 	DashboardAgg            DashboardAggregationConfig    `mapstructure:"dashboard_aggregation"`
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
+	TraceExport             TraceExportConfig             `mapstructure:"trace_export"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
@@ -127,8 +129,9 @@ type LogSamplingConfig struct {
 }
 
 type GeminiConfig struct {
-	OAuth GeminiOAuthConfig `mapstructure:"oauth"`
-	Quota GeminiQuotaConfig `mapstructure:"quota"`
+	OAuth                  GeminiOAuthConfig `mapstructure:"oauth"`
+	Quota                  GeminiQuotaConfig `mapstructure:"quota"`
+	AllowNativeQueryAPIKey bool              `mapstructure:"allow_native_query_api_key"`
 }
 
 type GeminiOAuthConfig struct {
@@ -510,6 +513,7 @@ type ServerConfig struct {
 	Mode               string    `mapstructure:"mode"`                  // debug/release
 	FrontendURL        string    `mapstructure:"frontend_url"`          // 前端基础 URL，用于生成邮件中的外部链接
 	ReadHeaderTimeout  int       `mapstructure:"read_header_timeout"`   // 读取请求头超时（秒）
+	ReadBodyTimeout    int       `mapstructure:"read_body_timeout"`     // 读取请求体超时（秒）
 	IdleTimeout        int       `mapstructure:"idle_timeout"`          // 空闲连接超时（秒）
 	ShutdownTimeout    int       `mapstructure:"shutdown_timeout"`      // 优雅关闭超时（秒）
 	TrustedProxies     []string  `mapstructure:"trusted_proxies"`       // 可信代理列表（CIDR/IP）
@@ -1220,6 +1224,17 @@ type UsageCleanupConfig struct {
 	TaskTimeoutSeconds int `mapstructure:"task_timeout_seconds"`
 }
 
+// TraceExportConfig controls background execution of root-admin trace export tasks.
+type TraceExportConfig struct {
+	Enabled             bool   `mapstructure:"enabled"`
+	ExportDir           string `mapstructure:"export_dir"`
+	PollIntervalSeconds int    `mapstructure:"poll_interval_seconds"`
+	BatchSize           int    `mapstructure:"batch_size"`
+	TaskTimeoutSeconds  int    `mapstructure:"task_timeout_seconds"`
+	CleanupBatchSize    int    `mapstructure:"cleanup_batch_size"`
+	MaxRecordsPerTask   int64  `mapstructure:"max_records_per_task"`
+}
+
 func NormalizeRunMode(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
@@ -1293,6 +1308,10 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Database.DBName = strings.TrimSpace(cfg.Database.DBName)
 	cfg.Database.SSLMode = strings.ToLower(strings.TrimSpace(cfg.Database.SSLMode))
 	cfg.Redis.Host = strings.TrimSpace(cfg.Redis.Host)
+	cfg.Redis.Password = strings.TrimSpace(cfg.Redis.Password)
+	cfg.JWT.Secret = strings.TrimSpace(os.ExpandEnv(cfg.JWT.Secret))
+	cfg.Database.Password = strings.TrimSpace(os.ExpandEnv(cfg.Database.Password))
+	cfg.Redis.Password = strings.TrimSpace(os.ExpandEnv(cfg.Redis.Password))
 	cfg.RateLimit.RedisFailureMode = normalizeRateLimitRedisFailureMode(cfg.RateLimit.RedisFailureMode)
 	cfg.LinuxDo.ClientID = strings.TrimSpace(cfg.LinuxDo.ClientID)
 	cfg.LinuxDo.ClientSecret = strings.TrimSpace(cfg.LinuxDo.ClientSecret)
@@ -1424,6 +1443,7 @@ func setDefaults() {
 	viper.SetDefault("server.mode", "release")
 	viper.SetDefault("server.frontend_url", "")
 	viper.SetDefault("server.read_header_timeout", 30) // 30秒读取请求头
+	viper.SetDefault("server.read_body_timeout", 30)   // 30秒读取请求体
 	viper.SetDefault("server.idle_timeout", 120)       // 120秒空闲超时
 	viper.SetDefault("server.shutdown_timeout", 30)    // 30秒优雅关闭超时
 	viper.SetDefault("server.trusted_proxies", []string{})
@@ -1667,6 +1687,15 @@ func setDefaults() {
 	viper.SetDefault("usage_cleanup.worker_interval_seconds", 10)
 	viper.SetDefault("usage_cleanup.task_timeout_seconds", 1800)
 
+	// Root-admin trace export task executor
+	viper.SetDefault("trace_export.enabled", true)
+	viper.SetDefault("trace_export.export_dir", "./data/trace-exports")
+	viper.SetDefault("trace_export.poll_interval_seconds", 15)
+	viper.SetDefault("trace_export.batch_size", 200)
+	viper.SetDefault("trace_export.task_timeout_seconds", 3600)
+	viper.SetDefault("trace_export.cleanup_batch_size", 50)
+	viper.SetDefault("trace_export.max_records_per_task", int64(100000))
+
 	// Idempotency
 	viper.SetDefault("idempotency.observe_only", true)
 	viper.SetDefault("idempotency.default_ttl_seconds", 86400)
@@ -1819,6 +1848,7 @@ func setDefaults() {
 	viper.SetDefault("gemini.oauth.client_secret", "")
 	viper.SetDefault("gemini.oauth.scopes", "")
 	viper.SetDefault("gemini.quota.policy", "")
+	viper.SetDefault("gemini.allow_native_query_api_key", false)
 
 	// Subscription Maintenance (bounded queue + worker pool)
 	viper.SetDefault("subscription_maintenance.worker_count", 2)
@@ -1918,6 +1948,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.ReadHeaderTimeout <= 0 {
 		return fmt.Errorf("server.read_header_timeout must be positive")
+	}
+	if c.Server.ReadBodyTimeout <= 0 {
+		return fmt.Errorf("server.read_body_timeout must be positive")
 	}
 	if c.Server.IdleTimeout <= 0 {
 		return fmt.Errorf("server.idle_timeout must be positive")
@@ -2305,6 +2338,43 @@ func (c *Config) Validate() error {
 		}
 		if c.UsageCleanup.TaskTimeoutSeconds < 0 {
 			return fmt.Errorf("usage_cleanup.task_timeout_seconds must be non-negative")
+		}
+	}
+	c.TraceExport.ExportDir = filepath.Clean(strings.TrimSpace(c.TraceExport.ExportDir))
+	if c.TraceExport.Enabled {
+		if strings.TrimSpace(c.TraceExport.ExportDir) == "" || c.TraceExport.ExportDir == "." {
+			return fmt.Errorf("trace_export.export_dir is required when trace_export.enabled=true")
+		}
+		if c.TraceExport.PollIntervalSeconds <= 0 {
+			return fmt.Errorf("trace_export.poll_interval_seconds must be positive")
+		}
+		if c.TraceExport.BatchSize <= 0 {
+			return fmt.Errorf("trace_export.batch_size must be positive")
+		}
+		if c.TraceExport.TaskTimeoutSeconds <= 0 {
+			return fmt.Errorf("trace_export.task_timeout_seconds must be positive")
+		}
+		if c.TraceExport.CleanupBatchSize <= 0 {
+			return fmt.Errorf("trace_export.cleanup_batch_size must be positive")
+		}
+		if c.TraceExport.MaxRecordsPerTask <= 0 {
+			return fmt.Errorf("trace_export.max_records_per_task must be positive")
+		}
+	} else {
+		if c.TraceExport.PollIntervalSeconds < 0 {
+			return fmt.Errorf("trace_export.poll_interval_seconds must be non-negative")
+		}
+		if c.TraceExport.BatchSize < 0 {
+			return fmt.Errorf("trace_export.batch_size must be non-negative")
+		}
+		if c.TraceExport.TaskTimeoutSeconds < 0 {
+			return fmt.Errorf("trace_export.task_timeout_seconds must be non-negative")
+		}
+		if c.TraceExport.CleanupBatchSize < 0 {
+			return fmt.Errorf("trace_export.cleanup_batch_size must be non-negative")
+		}
+		if c.TraceExport.MaxRecordsPerTask < 0 {
+			return fmt.Errorf("trace_export.max_records_per_task must be non-negative")
 		}
 	}
 	if c.Idempotency.DefaultTTLSeconds <= 0 {

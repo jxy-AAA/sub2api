@@ -78,10 +78,12 @@ func newAccountRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor, schedul
 }
 
 var validAccountPlatforms = map[string]struct{}{
-	service.PlatformAnthropic:   {},
-	service.PlatformOpenAI:      {},
-	service.PlatformGemini:      {},
-	service.PlatformAntigravity: {},
+	service.PlatformAnthropic:           {},
+	service.PlatformOpenAI:              {},
+	service.PlatformGemini:              {},
+	service.PlatformAntigravity:         {},
+	service.PlatformOpenAICompatible:    {},
+	service.PlatformAnthropicCompatible: {},
 }
 
 var validAccountTypes = map[string]struct{}{
@@ -104,6 +106,28 @@ func validateStringMembership(value string, allowed map[string]struct{}, err err
 		return nil
 	}
 	return fmt.Errorf("%w: %s", err, value)
+}
+
+func toDBAccountPlatform(platform string) dbaccount.Platform {
+	return dbaccount.Platform(strings.TrimSpace(platform))
+}
+
+func toDBAccountPlatforms(platforms []string) []dbaccount.Platform {
+	out := make([]dbaccount.Platform, 0, len(platforms))
+	for _, platform := range platforms {
+		if platform = strings.TrimSpace(platform); platform != "" {
+			out = append(out, dbaccount.Platform(platform))
+		}
+	}
+	return out
+}
+
+func toDBAccountType(accountType string) dbaccount.Type {
+	return dbaccount.Type(strings.TrimSpace(accountType))
+}
+
+func toDBAccountStatus(status string) dbaccount.Status {
+	return dbaccount.Status(strings.TrimSpace(status))
 }
 
 func extractTLSFingerprintProfileReference(extra map[string]any) (int64, bool, error) {
@@ -245,13 +269,13 @@ func (r *accountRepository) Create(ctx context.Context, account *service.Account
 	builder := client.Account.Create().
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
-		SetPlatform(account.Platform).
-		SetType(account.Type).
+		SetPlatform(toDBAccountPlatform(account.Platform)).
+		SetType(toDBAccountType(account.Type)).
 		SetCredentials(normalizeJSONMap(account.Credentials)).
 		SetExtra(normalizeJSONMap(account.Extra)).
 		SetConcurrency(account.Concurrency).
 		SetPriority(account.Priority).
-		SetStatus(account.Status).
+		SetStatus(toDBAccountStatus(account.Status)).
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(account.Schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
@@ -486,13 +510,13 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 	builder := client.Account.UpdateOneID(account.ID).
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
-		SetPlatform(account.Platform).
-		SetType(account.Type).
+		SetPlatform(toDBAccountPlatform(account.Platform)).
+		SetType(toDBAccountType(account.Type)).
 		SetCredentials(normalizeJSONMap(account.Credentials)).
 		SetExtra(normalizeJSONMap(account.Extra)).
 		SetConcurrency(account.Concurrency).
 		SetPriority(account.Priority).
-		SetStatus(account.Status).
+		SetStatus(toDBAccountStatus(account.Status)).
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(account.Schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
@@ -633,16 +657,16 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 	q := r.client.Account.Query()
 
 	if platform != "" {
-		q = q.Where(dbaccount.PlatformEQ(platform))
+		q = q.Where(dbaccount.PlatformEQ(toDBAccountPlatform(platform)))
 	}
 	if accountType != "" {
-		q = q.Where(dbaccount.TypeEQ(accountType))
+		q = q.Where(dbaccount.TypeEQ(toDBAccountType(accountType)))
 	}
 	if status != "" {
 		switch status {
 		case service.StatusActive:
 			q = q.Where(
-				dbaccount.StatusEQ(status),
+				dbaccount.StatusEQ(toDBAccountStatus(status)),
 				dbaccount.SchedulableEQ(true),
 				dbaccount.Or(
 					dbaccount.RateLimitResetAtIsNil(),
@@ -658,7 +682,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			)
 		case "rate_limited":
 			q = q.Where(
-				dbaccount.StatusEQ(service.StatusActive),
+				dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 				dbaccount.RateLimitResetAtGT(time.Now()),
 				dbpredicate.Account(func(s *entsql.Selector) {
 					col := s.C("temp_unschedulable_until")
@@ -670,7 +694,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			)
 		case "temp_unschedulable":
 			q = q.Where(
-				dbaccount.StatusEQ(service.StatusActive),
+				dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 				dbpredicate.Account(func(s *entsql.Selector) {
 					col := s.C("temp_unschedulable_until")
 					s.Where(entsql.And(
@@ -681,7 +705,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			)
 		case "unschedulable":
 			q = q.Where(
-				dbaccount.StatusEQ(service.StatusActive),
+				dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 				dbaccount.SchedulableEQ(false),
 				dbaccount.Or(
 					dbaccount.RateLimitResetAtIsNil(),
@@ -696,7 +720,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 				}),
 			)
 		default:
-			q = q.Where(dbaccount.StatusEQ(status))
+			q = q.Where(dbaccount.StatusEQ(toDBAccountStatus(status)))
 		}
 	}
 	if search != "" {
@@ -802,7 +826,7 @@ func (r *accountRepository) ListByGroup(ctx context.Context, groupID int64) ([]s
 
 func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, error) {
 	accounts, err := r.client.Account.Query().
-		Where(dbaccount.StatusEQ(service.StatusActive)).
+		Where(dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive))).
 		Order(dbent.Asc(dbaccount.FieldPriority)).
 		All(ctx)
 	if err != nil {
@@ -814,8 +838,8 @@ func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, 
 func (r *accountRepository) ListByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.PlatformEQ(platform),
-			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.PlatformEQ(toDBAccountPlatform(platform)),
+			dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 		).
 		Order(dbent.Asc(dbaccount.FieldPriority)).
 		All(ctx)
@@ -883,7 +907,7 @@ func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map
 func (r *accountRepository) SetError(ctx context.Context, id int64, errorMsg string) error {
 	_, err := r.client.Account.Update().
 		Where(dbaccount.IDEQ(id)).
-		SetStatus(service.StatusError).
+		SetStatus(toDBAccountStatus(service.StatusError)).
 		SetErrorMessage(errorMsg).
 		Save(ctx)
 	if err != nil {
@@ -958,7 +982,7 @@ func (r *accountRepository) syncSchedulerAccountSnapshots(ctx context.Context, a
 func (r *accountRepository) ClearError(ctx context.Context, id int64) error {
 	_, err := r.client.Account.Update().
 		Where(dbaccount.IDEQ(id)).
-		SetStatus(service.StatusActive).
+		SetStatus(toDBAccountStatus(service.StatusActive)).
 		SetErrorMessage("").
 		Save(ctx)
 	if err != nil {
@@ -1113,7 +1137,7 @@ func (r *accountRepository) ListSchedulable(ctx context.Context) ([]service.Acco
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 			dbaccount.SchedulableEQ(true),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
@@ -1139,8 +1163,8 @@ func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platf
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.PlatformEQ(platform),
-			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.PlatformEQ(toDBAccountPlatform(platform)),
+			dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 			dbaccount.SchedulableEQ(true),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
@@ -1173,8 +1197,8 @@ func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, plat
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.PlatformIn(platforms...),
-			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.PlatformIn(toDBAccountPlatforms(platforms)...),
+			dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 			dbaccount.SchedulableEQ(true),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
@@ -1193,8 +1217,8 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Conte
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.PlatformEQ(platform),
-			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.PlatformEQ(toDBAccountPlatform(platform)),
+			dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 			dbaccount.SchedulableEQ(true),
 			dbaccount.Not(dbaccount.HasAccountGroups()),
 			tempUnschedulablePredicate(),
@@ -1217,8 +1241,8 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Cont
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.PlatformIn(platforms...),
-			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.PlatformIn(toDBAccountPlatforms(platforms)...),
+			dbaccount.StatusEQ(toDBAccountStatus(service.StatusActive)),
 			dbaccount.SchedulableEQ(true),
 			dbaccount.Not(dbaccount.HasAccountGroups()),
 			tempUnschedulablePredicate(),
@@ -1698,10 +1722,10 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 	preds := make([]dbpredicate.Account, 0, 6)
 	preds = append(preds, dbaccount.DeletedAtIsNil())
 	if opts.status != "" {
-		preds = append(preds, dbaccount.StatusEQ(opts.status))
+		preds = append(preds, dbaccount.StatusEQ(toDBAccountStatus(opts.status)))
 	}
 	if len(opts.platforms) > 0 {
-		preds = append(preds, dbaccount.PlatformIn(opts.platforms...))
+		preds = append(preds, dbaccount.PlatformIn(toDBAccountPlatforms(opts.platforms)...))
 	}
 	if opts.schedulable {
 		now := time.Now()
@@ -1933,8 +1957,8 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		ID:                      m.ID,
 		Name:                    m.Name,
 		Notes:                   m.Notes,
-		Platform:                m.Platform,
-		Type:                    m.Type,
+		Platform:                string(m.Platform),
+		Type:                    string(m.Type),
 		Credentials:             copyJSONMap(m.Credentials),
 		Extra:                   copyJSONMap(m.Extra),
 		ProxyID:                 m.ProxyID,
@@ -1942,7 +1966,7 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		Priority:                m.Priority,
 		RateMultiplier:          &rateMultiplier,
 		LoadFactor:              m.LoadFactor,
-		Status:                  m.Status,
+		Status:                  string(m.Status),
 		ErrorMessage:            derefString(m.ErrorMessage),
 		LastUsedAt:              m.LastUsedAt,
 		ExpiresAt:               m.ExpiresAt,

@@ -1,21 +1,7 @@
-// Package httpclient 提供共享 HTTP 客户端池
-//
-// 性能优化说明：
-// 原实现在多个服务中重复创建 http.Client：
-// 1. proxy_probe_service.go: 每次探测创建新客户端
-// 2. pricing_service.go: 每次请求创建新客户端
-// 3. turnstile_service.go: 每次验证创建新客户端
-// 4. github_release_service.go: 每次请求创建新客户端
-// 5. claude_usage_service.go: 每次请求创建新客户端
-//
-// 新实现使用统一的客户端池：
-// 1. 相同配置复用同一 http.Client 实例
-// 2. 复用 Transport 连接池，减少 TCP/TLS 握手开销
-// 3. 支持 HTTP/HTTPS/SOCKS5/SOCKS5H 代理
-// 4. 代理配置失败时直接返回错误，不会回退到直连（避免 IP 关联风险）
 package httpclient
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"net"
@@ -28,48 +14,204 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 )
 
-// Transport 连接池默认配置
 const (
-	defaultMaxIdleConns        = 100              // 最大空闲连接数
-	defaultMaxIdleConnsPerHost = 10               // 每个主机最大空闲连接数
-	defaultIdleConnTimeout     = 90 * time.Second // 空闲连接超时时间（建议小于上游 LB 超时）
-	defaultDialTimeout         = 5 * time.Second  // TCP 连接超时（含代理握手），代理不通时快速失败
-	defaultTLSHandshakeTimeout = 5 * time.Second  // TLS 握手超时
+	defaultMaxIdleConns              = 100
+	defaultMaxIdleConnsPerHost       = 10
+	defaultIdleConnTimeout           = 90 * time.Second
+	defaultDialTimeout               = 5 * time.Second
+	defaultTLSHandshakeTimeout       = 5 * time.Second
+	defaultSharedClientCacheTTL      = 15 * time.Minute
+	defaultSharedClientCacheCapacity = 64
 )
 
-// Options 定义共享 HTTP 客户端的构建参数
 type Options struct {
-	ProxyURL              string        // 代理 URL（支持 http/https/socks5/socks5h）
-	Timeout               time.Duration // 请求总超时时间
-	ResponseHeaderTimeout time.Duration // 等待响应头超时时间
-	InsecureSkipVerify    bool          // 是否跳过 TLS 证书验证（已禁用，不允许设置为 true）
-	ValidateResolvedIP    bool          // 是否校验解析后的 IP（防止 DNS Rebinding）
-	AllowPrivateHosts     bool          // 允许私有地址解析（与 ValidateResolvedIP 一起使用）
+	ProxyURL              string
+	Timeout               time.Duration
+	ResponseHeaderTimeout time.Duration
+	InsecureSkipVerify    bool
+	ValidateResolvedIP    bool
+	AllowPrivateHosts     bool
 
-	// 可选的连接池参数（不设置则使用默认值）
-	MaxIdleConns        int // 最大空闲连接总数（默认 100）
-	MaxIdleConnsPerHost int // 每主机最大空闲连接（默认 10）
-	MaxConnsPerHost     int // 每主机最大连接数（默认 0 无限制）
+	MaxIdleConns        int
+	MaxIdleConnsPerHost int
+	MaxConnsPerHost     int
 }
-
-// sharedClients 存储按配置参数缓存的 http.Client 实例
-var sharedClients sync.Map
 
 type lookupIPFunc func(ctx context.Context, network, host string) ([]net.IP, error)
 type dialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
-// 允许测试替换 DNS 解析逻辑。
 var resolveIPs lookupIPFunc = net.DefaultResolver.LookupIP
 
-// GetClient 返回共享的 HTTP 客户端实例
-// 性能优化：相同配置复用同一客户端，避免重复创建 Transport
-// 安全说明：代理配置失败时直接返回错误，不会回退到直连，避免 IP 关联风险
+type idleConnectionCloser interface {
+	CloseIdleConnections()
+}
+
+type sharedClientCacheEntry struct {
+	key      string
+	client   *http.Client
+	lastUsed time.Time
+}
+
+type sharedClientCache struct {
+	mu       sync.Mutex
+	entries  map[string]*list.Element
+	lru      *list.List
+	capacity int
+	ttl      time.Duration
+	now      func() time.Time
+}
+
+func newSharedClientCache(capacity int, ttl time.Duration, now func() time.Time) *sharedClientCache {
+	if capacity <= 0 {
+		capacity = defaultSharedClientCacheCapacity
+	}
+	if ttl <= 0 {
+		ttl = defaultSharedClientCacheTTL
+	}
+	if now == nil {
+		now = time.Now
+	}
+
+	return &sharedClientCache{
+		entries:  make(map[string]*list.Element, capacity),
+		lru:      list.New(),
+		capacity: capacity,
+		ttl:      ttl,
+		now:      now,
+	}
+}
+
+func (c *sharedClientCache) get(key string) (*http.Client, bool) {
+	if c == nil {
+		return nil, false
+	}
+
+	now := c.now()
+	var stale *http.Client
+
+	c.mu.Lock()
+	if elem := c.entries[key]; elem != nil {
+		entry := elem.Value.(*sharedClientCacheEntry)
+		if !c.isExpired(entry, now) {
+			entry.lastUsed = now
+			c.lru.MoveToFront(elem)
+			client := entry.client
+			c.mu.Unlock()
+			return client, true
+		}
+		stale = c.removeElementLocked(elem)
+	}
+	c.mu.Unlock()
+
+	closeIdleHTTPClient(stale)
+	return nil, false
+}
+
+func (c *sharedClientCache) store(key string, client *http.Client) (*http.Client, bool, []*http.Client) {
+	if c == nil {
+		return client, true, nil
+	}
+
+	now := c.now()
+	var evicted []*http.Client
+
+	c.mu.Lock()
+	if elem := c.entries[key]; elem != nil {
+		entry := elem.Value.(*sharedClientCacheEntry)
+		if !c.isExpired(entry, now) {
+			entry.lastUsed = now
+			c.lru.MoveToFront(elem)
+			actual := entry.client
+			c.mu.Unlock()
+			return actual, false, nil
+		}
+		evicted = append(evicted, c.removeElementLocked(elem))
+	}
+
+	evicted = append(evicted, c.removeExpiredLocked(now)...)
+	entry := &sharedClientCacheEntry{
+		key:      key,
+		client:   client,
+		lastUsed: now,
+	}
+	c.entries[key] = c.lru.PushFront(entry)
+
+	for len(c.entries) > c.capacity {
+		evicted = append(evicted, c.removeOldestLocked())
+	}
+
+	c.mu.Unlock()
+	return client, true, evicted
+}
+
+func (c *sharedClientCache) closeAll() []*http.Client {
+	if c == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	clients := make([]*http.Client, 0, len(c.entries))
+	for _, elem := range c.entries {
+		entry := elem.Value.(*sharedClientCacheEntry)
+		clients = append(clients, entry.client)
+	}
+	c.entries = make(map[string]*list.Element, c.capacity)
+	c.lru.Init()
+	c.mu.Unlock()
+
+	return clients
+}
+
+func (c *sharedClientCache) len() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+func (c *sharedClientCache) removeExpiredLocked(now time.Time) []*http.Client {
+	var evicted []*http.Client
+	for key, elem := range c.entries {
+		entry := elem.Value.(*sharedClientCacheEntry)
+		if c.isExpired(entry, now) {
+			evicted = append(evicted, entry.client)
+			delete(c.entries, key)
+			c.lru.Remove(elem)
+		}
+	}
+	return evicted
+}
+
+func (c *sharedClientCache) removeOldestLocked() *http.Client {
+	elem := c.lru.Back()
+	if elem == nil {
+		return nil
+	}
+	return c.removeElementLocked(elem)
+}
+
+func (c *sharedClientCache) removeElementLocked(elem *list.Element) *http.Client {
+	if elem == nil {
+		return nil
+	}
+	entry := elem.Value.(*sharedClientCacheEntry)
+	delete(c.entries, entry.key)
+	c.lru.Remove(elem)
+	return entry.client
+}
+
+func (c *sharedClientCache) isExpired(entry *sharedClientCacheEntry, now time.Time) bool {
+	return c.ttl > 0 && now.Sub(entry.lastUsed) >= c.ttl
+}
+
+var sharedClients = newSharedClientCache(defaultSharedClientCacheCapacity, defaultSharedClientCacheTTL, time.Now)
+
 func GetClient(opts Options) (*http.Client, error) {
 	key := buildClientKey(opts)
-	if cached, ok := sharedClients.Load(key); ok {
-		if client, ok := cached.(*http.Client); ok {
-			return client, nil
-		}
+	if cached, ok := sharedClients.get(key); ok {
+		return cached, nil
 	}
 
 	client, err := buildClient(opts)
@@ -77,11 +219,12 @@ func GetClient(opts Options) (*http.Client, error) {
 		return nil, err
 	}
 
-	actual, _ := sharedClients.LoadOrStore(key, client)
-	if c, ok := actual.(*http.Client); ok {
-		return c, nil
+	actual, inserted, evicted := sharedClients.store(key, client)
+	if !inserted && actual != client {
+		evicted = append(evicted, client)
 	}
-	return client, nil
+	closeIdleHTTPClients(evicted)
+	return actual, nil
 }
 
 func buildClient(opts Options) (*http.Client, error) {
@@ -96,19 +239,17 @@ func buildClient(opts Options) (*http.Client, error) {
 }
 
 func buildTransport(opts Options) (*http.Transport, error) {
-	// 使用自定义值或默认值
 	maxIdleConns := opts.MaxIdleConns
 	if maxIdleConns <= 0 {
 		maxIdleConns = defaultMaxIdleConns
 	}
+
 	maxIdleConnsPerHost := opts.MaxIdleConnsPerHost
 	if maxIdleConnsPerHost <= 0 {
 		maxIdleConnsPerHost = defaultMaxIdleConnsPerHost
 	}
 
-	baseDialer := &net.Dialer{
-		Timeout: defaultDialTimeout,
-	}
+	baseDialer := &net.Dialer{Timeout: defaultDialTimeout}
 	dialContext := baseDialer.DialContext
 	if opts.ValidateResolvedIP && !opts.AllowPrivateHosts {
 		dialContext = buildValidatedDialContext(baseDialer.DialContext, resolveIPs)
@@ -119,13 +260,12 @@ func buildTransport(opts Options) (*http.Transport, error) {
 		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
 		MaxIdleConns:          maxIdleConns,
 		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
-		MaxConnsPerHost:       opts.MaxConnsPerHost, // 0 表示无限制
+		MaxConnsPerHost:       opts.MaxConnsPerHost,
 		IdleConnTimeout:       defaultIdleConnTimeout,
 		ResponseHeaderTimeout: opts.ResponseHeaderTimeout,
 	}
 
 	if opts.InsecureSkipVerify {
-		// 安全要求：禁止跳过证书验证，避免中间人攻击。
 		return nil, fmt.Errorf("insecure_skip_verify is not allowed; install a trusted certificate instead")
 	}
 
@@ -156,6 +296,33 @@ func buildClientKey(opts Options) string {
 		opts.MaxIdleConnsPerHost,
 		opts.MaxConnsPerHost,
 	)
+}
+
+func CloseSharedClients() {
+	closeIdleHTTPClients(sharedClients.closeAll())
+}
+
+func closeIdleHTTPClients(clients []*http.Client) {
+	for _, client := range clients {
+		closeIdleHTTPClient(client)
+	}
+}
+
+func closeIdleHTTPClient(client *http.Client) {
+	if client == nil {
+		return
+	}
+
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	closer, ok := transport.(idleConnectionCloser)
+	if !ok {
+		return
+	}
+	closer.CloseIdleConnections()
 }
 
 func buildValidatedDialContext(dialFn dialContextFunc, resolver lookupIPFunc) func(ctx context.Context, network, address string) (net.Conn, error) {

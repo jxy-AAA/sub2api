@@ -162,6 +162,18 @@ describe('AffiliateView', () => {
     expect(showSuccessMock).toHaveBeenCalled()
   })
 
+  it('generates and copies a fixed referral registration link', async () => {
+    const wrapper = mountAffiliateView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="generate-invite-link"]').trigger('click')
+    await flushPromises()
+
+    const expectedLink = `${window.location.origin}/register?aff=ALICE888`
+    expect(copyToClipboardMock).toHaveBeenCalledWith(expectedLink, '邀请链接已复制')
+    expect(wrapper.get('[data-testid="generated-invite-link"]').text()).toBe(expectedLink)
+  })
+
   it('renders direct children provided by the wrapper response', async () => {
     getAvailableGroupsMock.mockResolvedValueOnce([
       { id: 2, name: 'Fallback', platform: 'anthropic', rate_multiplier: 1.2 },

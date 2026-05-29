@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
@@ -297,4 +298,44 @@ func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
 	require.Zero(t, repo.rateLimitedID)
 	require.Zero(t, repo.clearedErrorID)
 	require.Nil(t, account.RateLimitResetAt)
+}
+
+func TestAccountTestService_OpenAICompatibleStaticKeyUsesRawChatCompletions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	resp := newJSONResponse(http.StatusOK, "")
+	resp.Body = io.NopCloser(strings.NewReader(`data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: [DONE]
+
+`))
+
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          &config.Config{},
+	}
+	account := &Account{
+		ID:          91,
+		Platform:    PlatformOpenAICompatible,
+		Type:        AccountTypeUpstream,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-compat",
+			"base_url": "https://compat.example",
+			"headers": map[string]any{
+				"x-provider": "demo",
+			},
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "deepseek-chat", "hello", "")
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "https://compat.example/v1/chat/completions", upstream.requests[0].URL.String())
+	require.Equal(t, "Bearer sk-compat", upstream.requests[0].Header.Get("Authorization"))
+	require.Equal(t, "demo", upstream.requests[0].Header.Get("x-provider"))
+	require.Contains(t, recorder.Body.String(), `"type":"content","text":"hi"`)
+	require.Contains(t, recorder.Body.String(), `"type":"test_complete","success":true`)
 }

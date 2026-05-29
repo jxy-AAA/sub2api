@@ -11,7 +11,7 @@ import (
 
 func TestTokenIssuerGenerateToken(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.JWT.Secret = "12345678901234567890123456789012"
+	cfg.JWT.Secret = "12345678901234567890123456789012" // pragma: allowlist secret - fixed test-only JWT signing key.
 	cfg.JWT.AccessTokenExpireMinutes = 15
 
 	issuer := NewTokenIssuer(cfg)
@@ -41,7 +41,7 @@ func TestTokenIssuerGenerateToken(t *testing.T) {
 
 func TestTokenIssuerGetAccessTokenExpiresInFallsBackToHours(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.JWT.Secret = "12345678901234567890123456789012"
+	cfg.JWT.Secret = "12345678901234567890123456789012" // pragma: allowlist secret - fixed test-only JWT signing key.
 	cfg.JWT.ExpireHour = 2
 
 	issuer := NewTokenIssuer(cfg)

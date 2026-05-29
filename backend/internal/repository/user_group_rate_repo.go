@@ -13,6 +13,11 @@ type userGroupRateRepository struct {
 	sql sqlExecutor
 }
 
+type affiliateDistributionBillingRateResolution struct {
+	rate     *float64
+	resolved bool
+}
+
 // NewUserGroupRateRepository 创建用户专属分组倍率/RPM 仓储
 func NewUserGroupRateRepository(sqlDB *sql.DB) service.UserGroupRateRepository {
 	return &userGroupRateRepository{sql: sqlDB}
@@ -138,17 +143,156 @@ func (r *userGroupRateRepository) GetByUserAndGroup(ctx context.Context, userID,
 	query := `SELECT rate_multiplier FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`
 	var rate sql.NullFloat64
 	err := scanSingleRow(ctx, r.sql, query, []any{userID, groupID}, &rate)
-	if err == sql.ErrNoRows {
+	if err != nil {
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	} else if rate.Valid {
+		v := rate.Float64
+		return &v, nil
+	}
+
+	return r.resolveAffiliateDistributionBillingRate(ctx, userID, groupID,
+		make(map[int64]affiliateDistributionBillingRateResolution),
+		make(map[int64]bool),
+	)
+}
+
+func (r *userGroupRateRepository) resolveAffiliateDistributionBillingRate(ctx context.Context, userID, groupID int64, memo map[int64]affiliateDistributionBillingRateResolution, visiting map[int64]bool) (*float64, error) {
+	if userID <= 0 || groupID <= 0 {
 		return nil, nil
 	}
+	if cached, ok := memo[userID]; ok && cached.resolved {
+		return cached.rate, nil
+	}
+	if visiting[userID] {
+		return nil, nil
+	}
+	visiting[userID] = true
+	defer delete(visiting, userID)
+
+	if rate, found, err := r.lookupAffiliateDistributionExplicitBillingRate(ctx, userID, groupID); err != nil {
+		return nil, err
+	} else if found {
+		memo[userID] = affiliateDistributionBillingRateResolution{rate: &rate, resolved: true}
+		return &rate, nil
+	}
+
+	inviterID, hasInviter, exists, err := r.lookupAffiliateInviter(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if !rate.Valid {
+	if !exists {
+		memo[userID] = affiliateDistributionBillingRateResolution{resolved: true}
 		return nil, nil
 	}
-	v := rate.Float64
-	return &v, nil
+
+	if hasInviter {
+		if rate, found, err := r.lookupAffiliateDistributionInviteBillingRate(ctx, inviterID, groupID); err != nil {
+			return nil, err
+		} else if found {
+			memo[userID] = affiliateDistributionBillingRateResolution{rate: &rate, resolved: true}
+			return &rate, nil
+		}
+	}
+
+	if rate, found, err := r.lookupAffiliateDistributionDefaultBillingRate(ctx, groupID); err != nil {
+		return nil, err
+	} else if found {
+		memo[userID] = affiliateDistributionBillingRateResolution{rate: &rate, resolved: true}
+		return &rate, nil
+	}
+
+	if hasInviter {
+		rate, err := r.resolveAffiliateDistributionBillingRate(ctx, inviterID, groupID, memo, visiting)
+		if err != nil {
+			return nil, err
+		}
+		memo[userID] = affiliateDistributionBillingRateResolution{rate: rate, resolved: true}
+		return rate, nil
+	}
+
+	memo[userID] = affiliateDistributionBillingRateResolution{resolved: true}
+	return nil, nil
+}
+
+func (r *userGroupRateRepository) lookupAffiliateDistributionExplicitBillingRate(ctx context.Context, userID, groupID int64) (float64, bool, error) {
+	var rate float64
+	err := scanSingleRow(ctx, r.sql, `
+SELECT rate_multiplier::double precision
+FROM affiliate_distribution_user_group_rates
+WHERE user_id = $1
+  AND group_id = $2
+  AND source_type IN ('admin_override', 'upstream_override')
+LIMIT 1`, []any{userID, groupID}, &rate)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if err := validateAffiliateDistributionRateMultiplierValue(rate); err != nil {
+		return 0, false, err
+	}
+	return rate, true, nil
+}
+
+func (r *userGroupRateRepository) lookupAffiliateInviter(ctx context.Context, userID int64) (int64, bool, bool, error) {
+	var inviterID sql.NullInt64
+	err := scanSingleRow(ctx, r.sql, `
+SELECT inviter_id
+FROM user_affiliates
+WHERE user_id = $1
+LIMIT 1`, []any{userID}, &inviterID)
+	if err == sql.ErrNoRows {
+		return 0, false, false, nil
+	}
+	if err != nil {
+		return 0, false, false, err
+	}
+	if !inviterID.Valid {
+		return 0, false, true, nil
+	}
+	return inviterID.Int64, true, true, nil
+}
+
+func (r *userGroupRateRepository) lookupAffiliateDistributionInviteBillingRate(ctx context.Context, inviterUserID, groupID int64) (float64, bool, error) {
+	var rate float64
+	err := scanSingleRow(ctx, r.sql, `
+SELECT rate_multiplier::double precision
+FROM affiliate_distribution_invite_group_rates
+WHERE inviter_user_id = $1
+  AND group_id = $2
+LIMIT 1`, []any{inviterUserID, groupID}, &rate)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if err := validateAffiliateDistributionRateMultiplierValue(rate); err != nil {
+		return 0, false, err
+	}
+	return rate, true, nil
+}
+
+func (r *userGroupRateRepository) lookupAffiliateDistributionDefaultBillingRate(ctx context.Context, groupID int64) (float64, bool, error) {
+	var rate float64
+	err := scanSingleRow(ctx, r.sql, `
+SELECT rate_multiplier::double precision
+FROM affiliate_distribution_default_user_group_rates
+WHERE group_id = $1
+LIMIT 1`, []any{groupID}, &rate)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if err := validateAffiliateDistributionRateMultiplierValue(rate); err != nil {
+		return 0, false, err
+	}
+	return rate, true, nil
 }
 
 // GetRPMOverrideByUserAndGroup 获取用户在特定分组的 rpm_override（NULL 返回 nil）

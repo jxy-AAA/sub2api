@@ -69,11 +69,20 @@ func (s *testSettingRepo) Delete(ctx context.Context, key string) error {
 }
 
 func newOpsRuntimeRouter(handler *OpsHandler, withUser bool) *gin.Engine {
+	var subject *middleware.AuthSubject
+	if withUser {
+		subject = &middleware.AuthSubject{UserID: 7}
+	}
+	return newOpsRuntimeRouterWithSubject(handler, subject)
+}
+
+func newOpsRuntimeRouterWithSubject(handler *OpsHandler, subject *middleware.AuthSubject) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	if withUser {
+	if subject != nil {
+		authSubject := *subject
 		r.Use(func(c *gin.Context) {
-			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+			c.Set(string(middleware.ContextKeyUser), authSubject)
 			c.Next()
 		})
 	}
@@ -169,5 +178,24 @@ func TestOpsRuntimeLoggingHandler_UpdateAndResetSuccess(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reset status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestOpsRuntimeLoggingHandler_SystemPrincipalAllowed(t *testing.T) {
+	h := NewOpsHandler(newRuntimeOpsService(t))
+	r := newOpsRuntimeRouterWithSubject(h, &middleware.AuthSubject{
+		UserID:        0,
+		PrincipalID:   "admin-key:test",
+		PrincipalType: "admin_api_key",
+		IsSystem:      true,
+	})
+
+	body := `{"level":"debug","enable_sampling":false,"sampling_initial":100,"sampling_thereafter":100,"caller":true,"stacktrace_level":"error","retention_days":30}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/runtime/logging", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
 	}
 }

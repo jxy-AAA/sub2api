@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -122,7 +123,7 @@ func TestToPaidRechecksDailyLimitBeforeTransition(t *testing.T) {
 
 	reloaded, reloadErr := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, reloadErr)
-	require.Equal(t, OrderStatusPending, reloaded.Status)
+	require.Equal(t, paymentorder.Status(OrderStatusPending), reloaded.Status)
 	require.Empty(t, reloaded.PaymentTradeNo)
 	require.Nil(t, reloaded.PaidAt)
 }

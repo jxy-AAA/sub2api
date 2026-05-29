@@ -36,6 +36,11 @@ func (s *GatewayService) ForwardAsResponses(
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
 	startTime := time.Now()
+	captureGatewayClientRequest(c, inferGatewayTraceProtocol(c, "anthropic"), body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"stream":       gjson.GetBytes(body, "stream").Bool(),
+	})
 
 	// 1. Parse Responses request
 	var responsesReq apicompat.ResponsesRequest
@@ -58,7 +63,7 @@ func (s *GatewayService) ForwardAsResponses(
 	// 4. Model mapping
 	mappedModel := originalModel
 	reasoningEffort := ExtractResponsesReasoningEffortFromBody(body)
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+	if account.IsStaticKeyAccount() || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(originalModel)
 	}
 	if mappedModel == originalModel && account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
@@ -66,7 +71,7 @@ func (s *GatewayService) ForwardAsResponses(
 		if normalized != originalModel {
 			mappedModel = normalized
 		}
-	} else if mappedModel == originalModel && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+	} else if mappedModel == originalModel && account.Platform == PlatformAnthropic && !account.IsStaticKeyAccount() {
 		normalized := claude.NormalizeModelID(originalModel)
 		if normalized != originalModel {
 			mappedModel = normalized
@@ -121,6 +126,11 @@ func (s *GatewayService) ForwardAsResponses(
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
+	captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "anthropic"), upstreamReq, anthropicBody, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         reqStream,
+	})
 
 	// 11. Send request
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
@@ -239,6 +249,13 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "anthropic"), resp, traceBuf, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         true,
+		"format":         "sse",
+	})
 
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
@@ -246,6 +263,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		traceBuf.WriteLine(line)
 		if !strings.HasPrefix(line, "event: ") {
 			continue
 		}
@@ -256,6 +274,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			break
 		}
 		dataLine := scanner.Text()
+		traceBuf.WriteLine(dataLine)
 		if !strings.HasPrefix(dataLine, "data: ") {
 			continue
 		}
@@ -388,6 +407,13 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "anthropic"), resp, traceBuf, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": mappedModel,
+		"stream":         true,
+		"format":         "sse",
+	})
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
@@ -462,6 +488,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	// Read Anthropic SSE events
 	for scanner.Scan() {
 		line := scanner.Text()
+		traceBuf.WriteLine(line)
 		if !strings.HasPrefix(line, "event: ") {
 			continue
 		}
@@ -472,6 +499,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			break
 		}
 		dataLine := scanner.Text()
+		traceBuf.WriteLine(dataLine)
 		if !strings.HasPrefix(dataLine, "data: ") {
 			continue
 		}

@@ -229,7 +229,7 @@ func (s *PaymentService) currentPaymentDailyLimit(ctx context.Context) (float64,
 	return cfg.DailyLimit, nil
 }
 
-func paymentOrderCanTransitionToPaid(status string, updatedAt time.Time, graceBoundary time.Time) bool {
+func paymentOrderCanTransitionToPaid[S ~string](status S, updatedAt time.Time, graceBoundary time.Time) bool {
 	switch status {
 	case OrderStatusPending, OrderStatusCancelled:
 		return true
@@ -295,7 +295,7 @@ func (s *PaymentService) ExecuteBalanceFulfillment(ctx context.Context, oid int6
 		return infraerrors.BadRequest("INVALID_STATUS", "refund-related order cannot fulfill")
 	}
 	if o.Status != OrderStatusPaid && o.Status != OrderStatusFailed {
-		return infraerrors.BadRequest("INVALID_STATUS", "order cannot fulfill in status "+o.Status)
+		return infraerrors.BadRequest("INVALID_STATUS", "order cannot fulfill in status "+string(o.Status))
 	}
 	c, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(oid), paymentorder.StatusIn(OrderStatusPaid, OrderStatusFailed)).SetStatus(OrderStatusRecharging).Save(ctx)
 	if err != nil {
@@ -371,19 +371,28 @@ func (s *PaymentService) doBalance(ctx context.Context, o *dbent.PaymentOrder) e
 }
 
 func (s *PaymentService) recordDistributionPaidCreditForOrder(ctx context.Context, o *dbent.PaymentOrder) error {
-	if s == nil || o == nil || o.OrderType != payment.OrderTypeBalance || o.Amount <= 0 {
+	if s == nil || o == nil {
 		return nil
 	}
+	amount, ok := distributionPaidCreditAmountForOrder(o)
+	if !ok {
+		return nil
+	}
+	orderType := string(o.OrderType)
 	if o.UserID <= 0 || o.ID <= 0 {
 		s.writeAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_FAILED", "system", map[string]any{
-			"error": "invalid order identity for affiliate distribution paid credit",
+			"error":      "invalid order identity for affiliate distribution paid credit",
+			"amount":     amount,
+			"order_type": orderType,
 		})
 		slog.Warn("[PaymentService] affiliate distribution paid credit skipped due to invalid order identity", "orderID", o.ID, "userID", o.UserID)
 		return nil
 	}
 	if s.affiliateService == nil {
 		s.writeAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_FAILED", "system", map[string]any{
-			"error": "affiliate distribution service unavailable",
+			"error":      "affiliate distribution service unavailable",
+			"amount":     amount,
+			"order_type": orderType,
 		})
 		slog.Warn("[PaymentService] affiliate distribution paid credit service unavailable", "orderID", o.ID, "userID", o.UserID)
 		return nil
@@ -392,20 +401,22 @@ func (s *PaymentService) recordDistributionPaidCreditForOrder(ctx context.Contex
 	if o.PaidAt != nil && !o.PaidAt.IsZero() {
 		creditedAt = o.PaidAt.UTC()
 	}
-	applied, err := s.affiliateService.RecordDistributionPaidCredit(ctx, o.UserID, o.ID, o.Amount, creditedAt)
+	applied, err := s.affiliateService.RecordDistributionPaidCredit(ctx, o.UserID, o.ID, amount, creditedAt)
 	if err != nil {
 		s.writeAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_FAILED", "system", map[string]any{
 			"error":      err.Error(),
-			"amount":     o.Amount,
+			"amount":     amount,
 			"creditedAt": creditedAt.Format(time.RFC3339Nano),
+			"order_type": orderType,
 		})
 		slog.Warn("[PaymentService] affiliate distribution paid credit failed", "orderID", o.ID, "userID", o.UserID, "error", err)
 		return nil
 	}
 	if applied && !s.hasAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_APPLIED") {
 		s.writeAuditLog(ctx, o.ID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_APPLIED", "system", map[string]any{
-			"amount":     o.Amount,
+			"amount":     amount,
 			"creditedAt": creditedAt.Format(time.RFC3339Nano),
+			"order_type": orderType,
 		})
 	}
 	return nil
@@ -421,13 +432,13 @@ func (s *PaymentService) ExecuteSubscriptionFulfillment(ctx context.Context, oid
 		return infraerrors.NotFound("NOT_FOUND", "order not found")
 	}
 	if o.Status == OrderStatusCompleted {
-		return nil
+		return s.recordDistributionPaidCreditForOrder(ctx, o)
 	}
 	if psIsRefundStatus(o.Status) {
 		return infraerrors.BadRequest("INVALID_STATUS", "refund-related order cannot fulfill")
 	}
 	if o.Status != OrderStatusPaid && o.Status != OrderStatusFailed {
-		return infraerrors.BadRequest("INVALID_STATUS", "order cannot fulfill in status "+o.Status)
+		return infraerrors.BadRequest("INVALID_STATUS", "order cannot fulfill in status "+string(o.Status))
 	}
 	if o.SubscriptionGroupID == nil || o.SubscriptionDays == nil {
 		return infraerrors.BadRequest("INVALID_STATUS", "missing subscription info")
@@ -462,8 +473,9 @@ func (s *PaymentService) doSub(ctx context.Context, o *dbent.PaymentOrder) error
 
 	claimAction := "SUBSCRIPTION_FULFILLMENT_CLAIM"
 	claimed, err := s.claimPaymentAuditAction(txCtx, tx.Client(), o.ID, claimAction, map[string]any{
-		"group_id": gid,
-		"days":     days,
+		"group_id":   gid,
+		"days":       days,
+		"order_type": string(o.OrderType),
 	})
 	if err != nil {
 		return fmt.Errorf("claim subscription fulfillment: %w", err)
@@ -476,7 +488,7 @@ func (s *PaymentService) doSub(ctx context.Context, o *dbent.PaymentOrder) error
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit idempotent subscription completion: %w", err)
 		}
-		return nil
+		return s.recordDistributionPaidCreditForOrder(ctx, o)
 	}
 
 	orderNote := fmt.Sprintf("payment order %d", o.ID)
@@ -490,7 +502,7 @@ func (s *PaymentService) doSub(ctx context.Context, o *dbent.PaymentOrder) error
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit subscription fulfillment: %w", err)
 	}
-	return nil
+	return s.recordDistributionPaidCreditForOrder(ctx, o)
 }
 
 func (s *PaymentService) hasAuditLog(ctx context.Context, orderID int64, action string) bool {
@@ -636,6 +648,19 @@ func (s *PaymentService) updateClaimedAffiliateRebateAudit(ctx context.Context, 
 		return errors.New("affiliate rebate claim log not found")
 	}
 	return nil
+}
+
+func distributionPaidCreditAmountForOrder(o *dbent.PaymentOrder) (float64, bool) {
+	if o == nil {
+		return 0, false
+	}
+	if o.OrderType != payment.OrderTypeBalance && o.OrderType != payment.OrderTypeSubscription {
+		return 0, false
+	}
+	if o.Amount <= 0 || math.IsNaN(o.Amount) || math.IsInf(o.Amount, 0) {
+		return 0, false
+	}
+	return o.Amount, true
 }
 
 func (s *PaymentService) markFailed(ctx context.Context, oid int64, cause error) {

@@ -191,7 +191,7 @@ func (h *DataManagementHandler) CreateBackupJob(c *gin.Context) {
 
 	triggeredBy := "admin:unknown"
 	if subject, ok := middleware2.GetAuthSubjectFromContext(c); ok {
-		triggeredBy = "admin:" + strconv.FormatInt(subject.UserID, 10)
+		triggeredBy = subject.ActorScope("admin")
 	}
 	job, err := h.dataManagementService.CreateBackupJob(c.Request.Context(), service.DataManagementCreateBackupJobInput{
 		BackupType:     req.BackupType,

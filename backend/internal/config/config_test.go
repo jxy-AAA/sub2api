@@ -772,6 +772,61 @@ func TestValidateUsageCleanupConfigDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultTraceExportConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.TraceExport.Enabled)
+	require.Equal(t, filepath.Clean("./data/trace-exports"), cfg.TraceExport.ExportDir)
+	require.Equal(t, 15, cfg.TraceExport.PollIntervalSeconds)
+	require.Equal(t, 200, cfg.TraceExport.BatchSize)
+	require.Equal(t, 3600, cfg.TraceExport.TaskTimeoutSeconds)
+	require.Equal(t, 50, cfg.TraceExport.CleanupBatchSize)
+	require.EqualValues(t, 100000, cfg.TraceExport.MaxRecordsPerTask)
+}
+
+func TestLoadTraceExportConfigFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("TRACE_EXPORT_ENABLED", "false")
+	t.Setenv("TRACE_EXPORT_EXPORT_DIR", "./custom-exports")
+	t.Setenv("TRACE_EXPORT_BATCH_SIZE", "25")
+	t.Setenv("TRACE_EXPORT_MAX_RECORDS_PER_TASK", "1234")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.TraceExport.Enabled)
+	require.Equal(t, filepath.Clean("./custom-exports"), cfg.TraceExport.ExportDir)
+	require.Equal(t, 25, cfg.TraceExport.BatchSize)
+	require.EqualValues(t, 1234, cfg.TraceExport.MaxRecordsPerTask)
+}
+
+func TestValidateTraceExportConfigEnabled(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.TraceExport.Enabled = true
+	cfg.TraceExport.BatchSize = 0
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "trace_export.batch_size")
+}
+
+func TestValidateTraceExportConfigDisabled(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.TraceExport.Enabled = false
+	cfg.TraceExport.MaxRecordsPerTask = -1
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "trace_export.max_records_per_task")
+}
+
 func TestConfigAddressHelpers(t *testing.T) {
 	server := ServerConfig{Host: "127.0.0.1", Port: 9000}
 	if server.Address() != "127.0.0.1:9000" {

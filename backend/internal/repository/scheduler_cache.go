@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -66,6 +67,14 @@ if currentActive ~= false and currentActive ~= ARGV[1] then
 end
 
 return 1
+`)
+
+	unlockBucketScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+	return redis.call('DEL', KEYS[1])
+end
+
+return 0
 `)
 )
 
@@ -278,13 +287,32 @@ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]t
 }
 
 func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
-	key := schedulerBucketKey(schedulerLockPrefix, bucket)
-	return c.rdb.SetNX(ctx, key, time.Now().UnixNano(), ttl).Result()
+	_, ok, err := c.TryLockBucketWithToken(ctx, bucket, ttl)
+	return ok, err
 }
 
 func (c *schedulerCache) UnlockBucket(ctx context.Context, bucket service.SchedulerBucket) error {
+	// Legacy interface cannot prove ownership. Keep it a no-op rather than
+	// risk deleting a lock renewed by another instance.
+	return nil
+}
+
+func (c *schedulerCache) TryLockBucketWithToken(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (string, bool, error) {
 	key := schedulerBucketKey(schedulerLockPrefix, bucket)
-	return c.rdb.Del(ctx, key).Err()
+	token := uuid.NewString()
+	ok, err := c.rdb.SetNX(ctx, key, token, ttl).Result()
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return token, true, nil
+}
+
+func (c *schedulerCache) UnlockBucketWithToken(ctx context.Context, bucket service.SchedulerBucket, token string) error {
+	if token == "" {
+		return nil
+	}
+	key := schedulerBucketKey(schedulerLockPrefix, bucket)
+	return unlockBucketScript.Run(ctx, c.rdb, []string{key}, token).Err()
 }
 
 func (c *schedulerCache) ListBuckets(ctx context.Context) ([]service.SchedulerBucket, error) {

@@ -29,6 +29,12 @@ func (_u *PaymentOrderUpdate) Where(ps ...predicate.PaymentOrder) *PaymentOrderU
 	return _u
 }
 
+// SetUpdatedAt sets the "updated_at" field.
+func (_u *PaymentOrderUpdate) SetUpdatedAt(v time.Time) *PaymentOrderUpdate {
+	_u.mutation.SetUpdatedAt(v)
+	return _u
+}
+
 // SetUserID sets the "user_id" field.
 func (_u *PaymentOrderUpdate) SetUserID(v int64) *PaymentOrderUpdate {
 	_u.mutation.SetUserID(v)
@@ -271,13 +277,13 @@ func (_u *PaymentOrderUpdate) ClearQrCodeImg() *PaymentOrderUpdate {
 }
 
 // SetOrderType sets the "order_type" field.
-func (_u *PaymentOrderUpdate) SetOrderType(v string) *PaymentOrderUpdate {
+func (_u *PaymentOrderUpdate) SetOrderType(v paymentorder.OrderType) *PaymentOrderUpdate {
 	_u.mutation.SetOrderType(v)
 	return _u
 }
 
 // SetNillableOrderType sets the "order_type" field if the given value is not nil.
-func (_u *PaymentOrderUpdate) SetNillableOrderType(v *string) *PaymentOrderUpdate {
+func (_u *PaymentOrderUpdate) SetNillableOrderType(v *paymentorder.OrderType) *PaymentOrderUpdate {
 	if v != nil {
 		_u.SetOrderType(*v)
 	}
@@ -418,13 +424,13 @@ func (_u *PaymentOrderUpdate) ClearProviderSnapshot() *PaymentOrderUpdate {
 }
 
 // SetStatus sets the "status" field.
-func (_u *PaymentOrderUpdate) SetStatus(v string) *PaymentOrderUpdate {
+func (_u *PaymentOrderUpdate) SetStatus(v paymentorder.Status) *PaymentOrderUpdate {
 	_u.mutation.SetStatus(v)
 	return _u
 }
 
 // SetNillableStatus sets the "status" field if the given value is not nil.
-func (_u *PaymentOrderUpdate) SetNillableStatus(v *string) *PaymentOrderUpdate {
+func (_u *PaymentOrderUpdate) SetNillableStatus(v *paymentorder.Status) *PaymentOrderUpdate {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
@@ -768,12 +774,6 @@ func (_u *PaymentOrderUpdate) ClearSrcURL() *PaymentOrderUpdate {
 	return _u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (_u *PaymentOrderUpdate) SetUpdatedAt(v time.Time) *PaymentOrderUpdate {
-	_u.mutation.SetUpdatedAt(v)
-	return _u
-}
-
 // SetUser sets the "user" edge to the User entity.
 func (_u *PaymentOrderUpdate) SetUser(v *User) *PaymentOrderUpdate {
 	return _u.SetUserID(v.ID)
@@ -921,6 +921,9 @@ func (_u *PaymentOrderUpdate) sqlSave(ctx context.Context) (_node int, err error
 			}
 		}
 	}
+	if value, ok := _u.mutation.UpdatedAt(); ok {
+		_spec.SetField(paymentorder.FieldUpdatedAt, field.TypeTime, value)
+	}
 	if value, ok := _u.mutation.UserEmail(); ok {
 		_spec.SetField(paymentorder.FieldUserEmail, field.TypeString, value)
 	}
@@ -982,7 +985,7 @@ func (_u *PaymentOrderUpdate) sqlSave(ctx context.Context) (_node int, err error
 		_spec.ClearField(paymentorder.FieldQrCodeImg, field.TypeString)
 	}
 	if value, ok := _u.mutation.OrderType(); ok {
-		_spec.SetField(paymentorder.FieldOrderType, field.TypeString, value)
+		_spec.SetField(paymentorder.FieldOrderType, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.PlanID(); ok {
 		_spec.SetField(paymentorder.FieldPlanID, field.TypeInt64, value)
@@ -1030,7 +1033,7 @@ func (_u *PaymentOrderUpdate) sqlSave(ctx context.Context) (_node int, err error
 		_spec.ClearField(paymentorder.FieldProviderSnapshot, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.Status(); ok {
-		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
+		_spec.SetField(paymentorder.FieldStatus, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.RefundAmount(); ok {
 		_spec.SetField(paymentorder.FieldRefundAmount, field.TypeFloat64, value)
@@ -1128,9 +1131,6 @@ func (_u *PaymentOrderUpdate) sqlSave(ctx context.Context) (_node int, err error
 	if _u.mutation.SrcURLCleared() {
 		_spec.ClearField(paymentorder.FieldSrcURL, field.TypeString)
 	}
-	if value, ok := _u.mutation.UpdatedAt(); ok {
-		_spec.SetField(paymentorder.FieldUpdatedAt, field.TypeTime, value)
-	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
@@ -1178,6 +1178,12 @@ type PaymentOrderUpdateOne struct {
 	fields   []string
 	hooks    []Hook
 	mutation *PaymentOrderMutation
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (_u *PaymentOrderUpdateOne) SetUpdatedAt(v time.Time) *PaymentOrderUpdateOne {
+	_u.mutation.SetUpdatedAt(v)
+	return _u
 }
 
 // SetUserID sets the "user_id" field.
@@ -1422,13 +1428,13 @@ func (_u *PaymentOrderUpdateOne) ClearQrCodeImg() *PaymentOrderUpdateOne {
 }
 
 // SetOrderType sets the "order_type" field.
-func (_u *PaymentOrderUpdateOne) SetOrderType(v string) *PaymentOrderUpdateOne {
+func (_u *PaymentOrderUpdateOne) SetOrderType(v paymentorder.OrderType) *PaymentOrderUpdateOne {
 	_u.mutation.SetOrderType(v)
 	return _u
 }
 
 // SetNillableOrderType sets the "order_type" field if the given value is not nil.
-func (_u *PaymentOrderUpdateOne) SetNillableOrderType(v *string) *PaymentOrderUpdateOne {
+func (_u *PaymentOrderUpdateOne) SetNillableOrderType(v *paymentorder.OrderType) *PaymentOrderUpdateOne {
 	if v != nil {
 		_u.SetOrderType(*v)
 	}
@@ -1569,13 +1575,13 @@ func (_u *PaymentOrderUpdateOne) ClearProviderSnapshot() *PaymentOrderUpdateOne 
 }
 
 // SetStatus sets the "status" field.
-func (_u *PaymentOrderUpdateOne) SetStatus(v string) *PaymentOrderUpdateOne {
+func (_u *PaymentOrderUpdateOne) SetStatus(v paymentorder.Status) *PaymentOrderUpdateOne {
 	_u.mutation.SetStatus(v)
 	return _u
 }
 
 // SetNillableStatus sets the "status" field if the given value is not nil.
-func (_u *PaymentOrderUpdateOne) SetNillableStatus(v *string) *PaymentOrderUpdateOne {
+func (_u *PaymentOrderUpdateOne) SetNillableStatus(v *paymentorder.Status) *PaymentOrderUpdateOne {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
@@ -1919,12 +1925,6 @@ func (_u *PaymentOrderUpdateOne) ClearSrcURL() *PaymentOrderUpdateOne {
 	return _u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (_u *PaymentOrderUpdateOne) SetUpdatedAt(v time.Time) *PaymentOrderUpdateOne {
-	_u.mutation.SetUpdatedAt(v)
-	return _u
-}
-
 // SetUser sets the "user" edge to the User entity.
 func (_u *PaymentOrderUpdateOne) SetUser(v *User) *PaymentOrderUpdateOne {
 	return _u.SetUserID(v.ID)
@@ -2102,6 +2102,9 @@ func (_u *PaymentOrderUpdateOne) sqlSave(ctx context.Context) (_node *PaymentOrd
 			}
 		}
 	}
+	if value, ok := _u.mutation.UpdatedAt(); ok {
+		_spec.SetField(paymentorder.FieldUpdatedAt, field.TypeTime, value)
+	}
 	if value, ok := _u.mutation.UserEmail(); ok {
 		_spec.SetField(paymentorder.FieldUserEmail, field.TypeString, value)
 	}
@@ -2163,7 +2166,7 @@ func (_u *PaymentOrderUpdateOne) sqlSave(ctx context.Context) (_node *PaymentOrd
 		_spec.ClearField(paymentorder.FieldQrCodeImg, field.TypeString)
 	}
 	if value, ok := _u.mutation.OrderType(); ok {
-		_spec.SetField(paymentorder.FieldOrderType, field.TypeString, value)
+		_spec.SetField(paymentorder.FieldOrderType, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.PlanID(); ok {
 		_spec.SetField(paymentorder.FieldPlanID, field.TypeInt64, value)
@@ -2211,7 +2214,7 @@ func (_u *PaymentOrderUpdateOne) sqlSave(ctx context.Context) (_node *PaymentOrd
 		_spec.ClearField(paymentorder.FieldProviderSnapshot, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.Status(); ok {
-		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
+		_spec.SetField(paymentorder.FieldStatus, field.TypeEnum, value)
 	}
 	if value, ok := _u.mutation.RefundAmount(); ok {
 		_spec.SetField(paymentorder.FieldRefundAmount, field.TypeFloat64, value)
@@ -2308,9 +2311,6 @@ func (_u *PaymentOrderUpdateOne) sqlSave(ctx context.Context) (_node *PaymentOrd
 	}
 	if _u.mutation.SrcURLCleared() {
 		_spec.ClearField(paymentorder.FieldSrcURL, field.TypeString)
-	}
-	if value, ok := _u.mutation.UpdatedAt(); ok {
-		_spec.SetField(paymentorder.FieldUpdatedAt, field.TypeTime, value)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{

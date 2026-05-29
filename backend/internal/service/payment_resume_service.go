@@ -41,6 +41,9 @@ const (
 
 	paymentResumeTokenTTL       = 24 * time.Hour
 	wechatPaymentResumeTokenTTL = 15 * time.Minute
+
+	paymentPublicLookupTokenType = "payment_public_lookup"
+	paymentPublicLookupTokenTTL  = 15 * time.Minute
 )
 
 type ResumeTokenClaims struct {
@@ -65,6 +68,15 @@ type WeChatPaymentResumeClaims struct {
 	Scope       string `json:"scp,omitempty"`
 	IssuedAt    int64  `json:"iat"`
 	ExpiresAt   int64  `json:"exp,omitempty"`
+}
+
+type PublicOrderLookupClaims struct {
+	TokenType  string `json:"tk,omitempty"`
+	OrderID    int64  `json:"oid"`
+	OutTradeNo string `json:"otn,omitempty"`
+	UserID     int64  `json:"uid,omitempty"`
+	IssuedAt   int64  `json:"iat"`
+	ExpiresAt  int64  `json:"exp,omitempty"`
 }
 
 type PaymentResumeService struct {
@@ -273,7 +285,7 @@ func allowedReturnURLHost(returnURLHost string, requestHost string, refererURL s
 	return sameOriginHost(returnURLHost, parsedReferer.Host)
 }
 
-func buildPaymentReturnURL(base string, orderID int64, outTradeNo string, resumeToken string) (string, error) {
+func buildPaymentReturnURL(base string, orderID int64, outTradeNo string, resumeToken string, publicLookupToken string) (string, error) {
 	canonical := strings.TrimSpace(base)
 	if canonical == "" {
 		return "", nil
@@ -297,6 +309,9 @@ func buildPaymentReturnURL(base string, orderID int64, outTradeNo string, resume
 	}
 	if strings.TrimSpace(resumeToken) != "" {
 		query.Set("resume_token", strings.TrimSpace(resumeToken))
+	}
+	if strings.TrimSpace(publicLookupToken) != "" {
+		query.Set("lookup_token", strings.TrimSpace(publicLookupToken))
 	}
 	query.Set("status", "success")
 	parsed.RawQuery = query.Encode()
@@ -357,6 +372,45 @@ func (s *PaymentResumeService) ParseToken(token string) (*ResumeTokenClaims, err
 		return nil, infraerrors.BadRequest("INVALID_RESUME_TOKEN", "resume token missing order id")
 	}
 	if err := validatePaymentResumeExpiry(claims.ExpiresAt, "INVALID_RESUME_TOKEN", "resume token has expired"); err != nil {
+		return nil, err
+	}
+	return &claims, nil
+}
+
+func (s *PaymentResumeService) CreatePublicOrderLookupToken(claims PublicOrderLookupClaims) (string, error) {
+	if err := s.ensureSigningKey(); err != nil {
+		return "", err
+	}
+	claims.OutTradeNo = strings.TrimSpace(claims.OutTradeNo)
+	if claims.OrderID <= 0 && claims.OutTradeNo == "" {
+		return "", fmt.Errorf("public order lookup token requires order id or out_trade_no")
+	}
+	if claims.IssuedAt == 0 {
+		claims.IssuedAt = time.Now().Unix()
+	}
+	if claims.ExpiresAt == 0 {
+		claims.ExpiresAt = time.Now().Add(paymentPublicLookupTokenTTL).Unix()
+	}
+	claims.TokenType = paymentPublicLookupTokenType
+	return s.createSignedToken(claims)
+}
+
+func (s *PaymentResumeService) ParsePublicOrderLookupToken(token string) (*PublicOrderLookupClaims, error) {
+	if err := s.ensureSigningKey(); err != nil {
+		return nil, err
+	}
+	var claims PublicOrderLookupClaims
+	if err := s.parseSignedToken(token, &claims); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_PUBLIC_ORDER_LOOKUP_TOKEN", "public order lookup token payload is invalid")
+	}
+	if claims.TokenType != paymentPublicLookupTokenType {
+		return nil, infraerrors.BadRequest("INVALID_PUBLIC_ORDER_LOOKUP_TOKEN", "public order lookup token type mismatch")
+	}
+	claims.OutTradeNo = strings.TrimSpace(claims.OutTradeNo)
+	if claims.OrderID <= 0 && claims.OutTradeNo == "" {
+		return nil, infraerrors.BadRequest("INVALID_PUBLIC_ORDER_LOOKUP_TOKEN", "public order lookup token is missing order reference")
+	}
+	if err := validatePaymentResumeExpiry(claims.ExpiresAt, "INVALID_PUBLIC_ORDER_LOOKUP_TOKEN", "public order lookup token has expired"); err != nil {
 		return nil, err
 	}
 	return &claims, nil

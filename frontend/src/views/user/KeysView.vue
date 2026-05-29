@@ -24,8 +24,8 @@
             />
           </div>
           <EndpointPopover
-            v-if="publicSettings?.api_base_url || (publicSettings?.custom_endpoints?.length ?? 0) > 0"
-            :api-base-url="publicSettings?.api_base_url || ''"
+            v-if="sandogApiBaseUrl || (publicSettings?.custom_endpoints?.length ?? 0) > 0"
+            :api-base-url="sandogApiBaseUrl"
             :custom-endpoints="publicSettings?.custom_endpoints || []"
           />
         </div>
@@ -327,6 +327,23 @@
               >
                 <Icon name="upload" size="sm" />
                 <span class="text-xs">{{ t('keys.importToCcSwitch') }}</span>
+              </button>
+              <!-- Configure Claude Code Button -->
+              <button
+                v-if="canConfigureClaudeCode(row)"
+                @click="configureClaudeCode(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-900/20 dark:hover:text-violet-400"
+              >
+                <Icon name="terminal" size="sm" />
+                <span class="text-xs">{{ t('keys.configureClaudeCode') }}</span>
+              </button>
+              <!-- Configure OpenClaw Button -->
+              <button
+                @click="configureOpenClaw(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-cyan-50 hover:text-cyan-600 dark:hover:bg-cyan-900/20 dark:hover:text-cyan-400"
+              >
+                <Icon name="copy" size="sm" />
+                <span class="text-xs">{{ t('keys.configureOpenClaw') }}</span>
               </button>
               <!-- Toggle Status Button -->
               <button
@@ -924,7 +941,7 @@
     <UseKeyModal
       :show="showUseKeyModal"
       :api-key="selectedKey?.key || ''"
-      :base-url="publicSettings?.api_base_url || ''"
+      :base-url="sandogApiBaseUrl"
       :platform="selectedKey?.group?.platform || null"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
@@ -1073,6 +1090,7 @@ import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
+import { SANDOG_API_BASE_URL, SANDOG_DEFAULT_MODEL, SANDOG_ORIGIN } from '@/constants/sandog'
 
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
@@ -1093,6 +1111,7 @@ interface GroupOption {
 
 const appStore = useAppStore()
 const onboardingStore = useOnboardingStore()
+const sandogApiBaseUrl = SANDOG_API_BASE_URL
 const { copyToClipboard: clipboardCopy } = useClipboard()
 
 const columns = computed<Column[]>(() => [
@@ -1686,6 +1705,130 @@ const resetRateLimitUsage = async () => {
   }
 }
 
+const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '')
+
+const getBaseRoot = () => trimTrailingSlash(sandogApiBaseUrl.replace(/\/v1\/?$/, ''))
+
+const getAnthropicClientBaseUrl = (row: ApiKey) => {
+  const baseRoot = getBaseRoot()
+  const platform = row.group?.platform || 'anthropic'
+  return platform === 'antigravity' ? `${baseRoot}/antigravity/v1` : `${baseRoot}/v1`
+}
+
+const canConfigureClaudeCode = (row: ApiKey) => {
+  const platform = row.group?.platform || 'anthropic'
+  return platform !== 'gemini' && platform !== 'openai' && platform !== 'openai_compatible'
+}
+
+const powershellSingleQuoted = (value: string) => `'${value.replace(/'/g, "''")}'`
+
+const copyClientConfig = async (content: string, successKey: string) => {
+  await clipboardCopy(content, t(successKey))
+}
+
+const getOpenClawProviderConfig = (row: ApiKey) => {
+  const baseRoot = getBaseRoot()
+  const platform = row.group?.platform || 'anthropic'
+
+  switch (platform) {
+    case 'openai':
+    case 'openai_compatible':
+      return {
+        api: 'openai-responses',
+        baseUrl: `${baseRoot}/v1`,
+        modelId: SANDOG_DEFAULT_MODEL,
+        modelName: 'GPT-5.5',
+        contextWindow: 1050000,
+        maxTokens: 128000,
+        input: ['text', 'image', 'pdf']
+      }
+    case 'gemini':
+      return {
+        api: 'google-generative-ai',
+        baseUrl: `${baseRoot}/v1beta`,
+        modelId: 'gemini-2.0-flash',
+        modelName: 'Gemini 2.0 Flash',
+        contextWindow: 1048576,
+        maxTokens: 65536,
+        input: ['text', 'image', 'pdf']
+      }
+    case 'antigravity':
+      return {
+        api: 'anthropic-messages',
+        baseUrl: `${baseRoot}/antigravity/v1`,
+        modelId: 'claude-sonnet-4-6',
+        modelName: 'Claude 4.6 Sonnet',
+        contextWindow: 200000,
+        maxTokens: 64000,
+        input: ['text', 'image', 'pdf']
+      }
+    default:
+      return {
+        api: 'anthropic-messages',
+        baseUrl: `${baseRoot}/v1`,
+        modelId: 'claude-sonnet-4-6',
+        modelName: 'Claude 4.6 Sonnet',
+        contextWindow: 200000,
+        maxTokens: 64000,
+        input: ['text', 'image', 'pdf']
+      }
+  }
+}
+
+const configureClaudeCode = async (row: ApiKey) => {
+  const baseUrl = getAnthropicClientBaseUrl(row)
+  const config = `# PowerShell: one-click configure Claude Code for this API key
+$claudeDir = Join-Path $env:USERPROFILE '.claude'
+New-Item -ItemType Directory -Force -Path $claudeDir | Out-Null
+$settingsPath = Join-Path $claudeDir 'settings.json'
+$settings = [ordered]@{
+  env = [ordered]@{
+    ANTHROPIC_BASE_URL = ${powershellSingleQuoted(baseUrl)}
+    ANTHROPIC_AUTH_TOKEN = ${powershellSingleQuoted(row.key)}
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+    CLAUDE_CODE_ATTRIBUTION_HEADER = '0'
+  }
+}
+$settings | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -Path $settingsPath
+Write-Host "Claude Code configured: $settingsPath"`
+
+  await copyClientConfig(config, 'keys.configureClaudeCodeCopied')
+}
+
+const configureOpenClaw = async (row: ApiKey) => {
+  const providerId = 'sub2api'
+  const provider = getOpenClawProviderConfig(row)
+  const modelRef = `${providerId}/${provider.modelId}`
+  const inputList = provider.input.map((item) => powershellSingleQuoted(item)).join(', ')
+  const config = `# PowerShell: one-click configure OpenClaw for this API key
+$provider = @{
+  baseUrl = ${powershellSingleQuoted(provider.baseUrl)}
+  apiKey = ${powershellSingleQuoted(row.key)}
+  api = ${powershellSingleQuoted(provider.api)}
+  contextWindow = ${provider.contextWindow}
+  maxTokens = ${provider.maxTokens}
+  models = @(
+    @{
+      id = ${powershellSingleQuoted(provider.modelId)}
+      name = ${powershellSingleQuoted(provider.modelName)}
+      contextWindow = ${provider.contextWindow}
+      maxTokens = ${provider.maxTokens}
+      input = @(${inputList})
+    }
+  )
+}
+$providerJson = $provider | ConvertTo-Json -Depth 10 -Compress
+openclaw config set models.providers.${providerId} $providerJson --strict-json --merge
+$allowedModels = @{}
+$allowedModels[${powershellSingleQuoted(modelRef)}] = @{}
+$allowedModelsJson = $allowedModels | ConvertTo-Json -Depth 10 -Compress
+openclaw config set agents.defaults.models $allowedModelsJson --strict-json --merge
+openclaw models set ${modelRef}
+openclaw config validate`
+
+  await copyClientConfig(config, 'keys.configureOpenClawCopied')
+}
+
 const importToCcswitch = (row: ApiKey) => {
   const platform = row.group?.platform || 'anthropic'
 
@@ -1701,7 +1844,10 @@ const importToCcswitch = (row: ApiKey) => {
 }
 
 const executeCcsImport = (row: ApiKey, clientType: 'claude' | 'gemini') => {
-  const baseUrl = publicSettings.value?.api_base_url || window.location.origin
+  const baseUrl = sandogApiBaseUrl
+  const baseRoot = baseUrl.replace(/\/v1\/?$/, '').replace(/\/+$/, '')
+  const apiBase = `${baseRoot}/v1`
+  const geminiBase = `${baseRoot}/v1beta`
   const platform = row.group?.platform || 'anthropic'
 
   // Determine app name and endpoint based on platform and client type
@@ -1711,26 +1857,28 @@ const executeCcsImport = (row: ApiKey, clientType: 'claude' | 'gemini') => {
   if (platform === 'antigravity') {
     // Antigravity always uses /antigravity suffix
     app = clientType === 'gemini' ? 'gemini' : 'claude'
-    endpoint = `${baseUrl}/antigravity`
+    endpoint = clientType === 'gemini'
+      ? `${baseRoot}/antigravity/v1beta`
+      : `${baseRoot}/antigravity/v1`
   } else {
     switch (platform) {
       case 'openai':
         app = 'codex'
-        endpoint = baseUrl
+        endpoint = apiBase
         break
       case 'gemini':
         app = 'gemini'
-        endpoint = baseUrl
+        endpoint = geminiBase
         break
       default: // anthropic
         app = 'claude'
-        endpoint = baseUrl
+        endpoint = apiBase
     }
   }
 
   const usageScript = `({
     request: {
-      url: "{{baseUrl}}/v1/usage",
+      url: "{{baseUrl}}/usage",
       method: "GET",
       headers: { "Authorization": "Bearer {{apiKey}}" }
     },
@@ -1745,19 +1893,25 @@ const executeCcsImport = (row: ApiKey, clientType: 'claude' | 'gemini') => {
     }
   })`
   const providerName = (publicSettings.value?.site_name || 'sub2api').trim() || 'sub2api'
+  const homepage = baseRoot || SANDOG_ORIGIN
 
   const params = new URLSearchParams({
     resource: 'provider',
     app: app,
     name: providerName,
-    homepage: baseUrl,
+    homepage,
     endpoint: endpoint,
     apiKey: row.key,
     configFormat: 'json',
+    usageBaseUrl: apiBase,
     usageEnabled: 'true',
     usageScript: btoa(usageScript),
     usageAutoInterval: '30'
   })
+  if (app === 'codex') {
+    params.set('model', SANDOG_DEFAULT_MODEL)
+  }
+
   const deeplink = `ccswitch://v1/import?${params.toString()}`
 
   try {

@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
+	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -102,4 +104,15 @@ func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, erro
 func (r *settingRepository) Delete(ctx context.Context, key string) error {
 	_, err := r.client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
 	return err
+}
+
+func (r *settingRepository) RawDB() (*sql.DB, error) {
+	if r == nil || r.client == nil {
+		return nil, nil
+	}
+	drv, ok := r.client.Driver().(*entsql.Driver)
+	if !ok {
+		return nil, sql.ErrConnDone
+	}
+	return drv.DB(), nil
 }

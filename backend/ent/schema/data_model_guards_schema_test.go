@@ -62,6 +62,8 @@ func TestAccountAndPaymentOrderEnumsAreExplicit(t *testing.T) {
 		domain.PlatformOpenAI,
 		domain.PlatformGemini,
 		domain.PlatformAntigravity,
+		domain.PlatformOpenAICompatible,
+		domain.PlatformAnthropicCompatible,
 	)
 	requireFieldEnumValues(t, accountSchema, "type",
 		domain.AccountTypeOAuth,

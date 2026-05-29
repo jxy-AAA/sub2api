@@ -9,6 +9,8 @@ func TestAllPlatforms(t *testing.T) {
 		PlatformOpenAI,
 		PlatformGemini,
 		PlatformAntigravity,
+		PlatformOpenAICompatible,
+		PlatformAnthropicCompatible,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("AllPlatforms length = %d, want %d", len(got), len(want))

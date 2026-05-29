@@ -105,11 +105,20 @@ func (s *cleanupRepoStub) DeleteUsageLogsBatch(ctx context.Context, filters serv
 var _ service.UsageCleanupRepository = (*cleanupRepoStub)(nil)
 
 func setupCleanupRouter(cleanupService *service.UsageCleanupService, userID int64) *gin.Engine {
+	var subject *middleware.AuthSubject
+	if userID > 0 {
+		subject = &middleware.AuthSubject{UserID: userID}
+	}
+	return setupCleanupRouterWithSubject(cleanupService, subject)
+}
+
+func setupCleanupRouterWithSubject(cleanupService *service.UsageCleanupService, subject *middleware.AuthSubject) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	if userID > 0 {
+	if subject != nil {
+		authSubject := *subject
 		router.Use(func(c *gin.Context) {
-			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: userID})
+			c.Set(string(middleware.ContextKeyUser), authSubject)
 			c.Next()
 		})
 	}
@@ -133,6 +142,34 @@ func TestUsageHandlerCreateCleanupTaskUnauthorized(t *testing.T) {
 	router.ServeHTTP(recorder, req)
 
 	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+}
+
+func TestUsageHandlerCreateCleanupTaskRejectsSystemAdminPrincipal(t *testing.T) {
+	repo := &cleanupRepoStub{}
+	cfg := &config.Config{UsageCleanup: config.UsageCleanupConfig{Enabled: true, MaxRangeDays: 31}}
+	cleanupService := service.NewUsageCleanupService(repo, nil, nil, cfg)
+	router := setupCleanupRouterWithSubject(cleanupService, &middleware.AuthSubject{
+		UserID:        0,
+		PrincipalID:   "admin-key:test",
+		PrincipalType: "admin_api_key",
+		IsSystem:      true,
+	})
+
+	payload := map[string]any{
+		"start_date": "2024-01-01",
+		"end_date":   "2024-01-02",
+		"timezone":   "UTC",
+	}
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/usage/cleanup-tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Empty(t, repo.created)
 }
 
 func TestUsageHandlerCreateCleanupTaskUnavailable(t *testing.T) {

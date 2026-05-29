@@ -33,10 +33,12 @@ func newProxyRepositoryWithSQL(client *dbent.Client, sqlq sqlQuerier) *proxyRepo
 }
 
 func (r *proxyRepository) Create(ctx context.Context, proxyIn *service.Proxy) error {
+	host := service.NormalizeProxyHost(proxyIn.Host)
+	proxyIn.Host = host
 	builder := r.client.Proxy.Create().
 		SetName(proxyIn.Name).
 		SetProtocol(proxyIn.Protocol).
-		SetHost(proxyIn.Host).
+		SetHost(host).
 		SetPort(proxyIn.Port).
 		SetStatus(proxyIn.Status)
 	if proxyIn.Username != "" {
@@ -84,10 +86,12 @@ func (r *proxyRepository) ListByIDs(ctx context.Context, ids []int64) ([]service
 }
 
 func (r *proxyRepository) Update(ctx context.Context, proxyIn *service.Proxy) error {
+	host := service.NormalizeProxyHost(proxyIn.Host)
+	proxyIn.Host = host
 	builder := r.client.Proxy.UpdateOneID(proxyIn.ID).
 		SetName(proxyIn.Name).
 		SetProtocol(proxyIn.Protocol).
-		SetHost(proxyIn.Host).
+		SetHost(host).
 		SetPort(proxyIn.Port).
 		SetStatus(proxyIn.Status)
 	if proxyIn.Username != "" {
@@ -284,6 +288,7 @@ func (r *proxyRepository) ListActive(ctx context.Context) ([]service.Proxy, erro
 
 // ExistsByHostPortAuth checks if a proxy with the same host, port, username, and password exists
 func (r *proxyRepository) ExistsByHostPortAuth(ctx context.Context, host string, port int, username, password string) (bool, error) {
+	host = service.NormalizeProxyHost(host)
 	q := r.client.Proxy.Query().
 		Where(proxy.HostEQ(host), proxy.PortEQ(port))
 

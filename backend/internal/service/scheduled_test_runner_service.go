@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -11,26 +12,42 @@ import (
 )
 
 const scheduledTestDefaultMaxWorkers = 10
+const scheduledTestDefaultClaimBatchSize = 100
+const scheduledTestRunTimeout = 5 * time.Minute
+const scheduledTestClaimLease = scheduledTestRunTimeout + time.Minute
+
+type scheduledTestRunnerAccountTester interface {
+	RunTestBackground(ctx context.Context, accountID int64, modelID string) (*ScheduledTestResult, error)
+}
+
+type scheduledTestRunnerRecoveryService interface {
+	RecoverAccountAfterSuccessfulTest(ctx context.Context, accountID int64) (*SuccessfulTestRecoveryResult, error)
+}
 
 // ScheduledTestRunnerService periodically scans due test plans and executes them.
 type ScheduledTestRunnerService struct {
 	planRepo       ScheduledTestPlanRepository
 	scheduledSvc   *ScheduledTestService
-	accountTestSvc *AccountTestService
-	rateLimitSvc   *RateLimitService
+	accountTestSvc scheduledTestRunnerAccountTester
+	rateLimitSvc   scheduledTestRunnerRecoveryService
 	cfg            *config.Config
 
-	cron      *cron.Cron
-	startOnce sync.Once
-	stopOnce  sync.Once
+	cron       *cron.Cron
+	startOnce  sync.Once
+	stopOnce   sync.Once
+	running    atomic.Int32
+	tickDelay  time.Duration
+	claimLimit int
+	claimLease time.Duration
+	nowFunc    func() time.Time
 }
 
 // NewScheduledTestRunnerService creates a new runner.
 func NewScheduledTestRunnerService(
 	planRepo ScheduledTestPlanRepository,
 	scheduledSvc *ScheduledTestService,
-	accountTestSvc *AccountTestService,
-	rateLimitSvc *RateLimitService,
+	accountTestSvc scheduledTestRunnerAccountTester,
+	rateLimitSvc scheduledTestRunnerRecoveryService,
 	cfg *config.Config,
 ) *ScheduledTestRunnerService {
 	return &ScheduledTestRunnerService{
@@ -39,6 +56,10 @@ func NewScheduledTestRunnerService(
 		accountTestSvc: accountTestSvc,
 		rateLimitSvc:   rateLimitSvc,
 		cfg:            cfg,
+		tickDelay:      10 * time.Second,
+		claimLimit:     scheduledTestDefaultClaimBatchSize,
+		claimLease:     scheduledTestClaimLease,
+		nowFunc:        time.Now,
 	}
 }
 
@@ -85,16 +106,36 @@ func (s *ScheduledTestRunnerService) Stop() {
 }
 
 func (s *ScheduledTestRunnerService) runScheduled() {
-	// Delay 10s so execution lands at ~:10 of each minute instead of :00.
-	time.Sleep(10 * time.Second)
+	if s == nil {
+		return
+	}
+	if !s.running.CompareAndSwap(0, 1) {
+		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] previous run still in progress, skipping overlap")
+		return
+	}
+	defer s.running.Store(0)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// Delay 10s so execution lands at ~:10 of each minute instead of :00.
+	if s.tickDelay > 0 {
+		time.Sleep(s.tickDelay)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), scheduledTestRunTimeout)
 	defer cancel()
 
-	now := time.Now()
-	plans, err := s.planRepo.ListDue(ctx, now)
+	now := s.now()
+	claimLimit := s.claimLimit
+	if claimLimit <= 0 {
+		claimLimit = scheduledTestDefaultClaimBatchSize
+	}
+	claimLease := s.claimLease
+	if claimLease <= 0 {
+		claimLease = scheduledTestClaimLease
+	}
+
+	plans, err := s.planRepo.ClaimDue(ctx, now, now.Add(claimLease), claimLimit)
 	if err != nil {
-		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] ListDue error: %v", err)
+		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] ClaimDue error: %v", err)
 		return
 	}
 	if len(plans) == 0 {
@@ -135,15 +176,33 @@ func (s *ScheduledTestRunnerService) runOnePlan(ctx context.Context, plan *Sched
 		s.tryRecoverAccount(ctx, plan.AccountID, plan.ID)
 	}
 
-	nextRun, err := computeNextRun(plan.CronExpression, time.Now())
+	finishedAt := s.now()
+	nextRun, err := computeNextRun(plan.CronExpression, finishedAt)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d computeNextRun error: %v", plan.ID, err)
 		return
 	}
 
-	if err := s.planRepo.UpdateAfterRun(ctx, plan.ID, time.Now(), nextRun); err != nil {
-		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d UpdateAfterRun error: %v", plan.ID, err)
+	claimedUntil := time.Time{}
+	if plan.NextRunAt != nil {
+		claimedUntil = *plan.NextRunAt
 	}
+
+	updated, err := s.planRepo.UpdateAfterRun(ctx, plan.ID, claimedUntil, finishedAt, nextRun)
+	if err != nil {
+		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d UpdateAfterRun error: %v", plan.ID, err)
+		return
+	}
+	if !updated {
+		logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] plan=%d UpdateAfterRun skipped: lease ownership lost", plan.ID)
+	}
+}
+
+func (s *ScheduledTestRunnerService) now() time.Time {
+	if s == nil || s.nowFunc == nil {
+		return time.Now()
+	}
+	return s.nowFunc()
 }
 
 // tryRecoverAccount attempts to recover an account from recoverable runtime state.

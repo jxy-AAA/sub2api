@@ -24,6 +24,34 @@ type AnnouncementCreate struct {
 	conflict []sql.ConflictOption
 }
 
+// SetCreatedAt sets the "created_at" field.
+func (_c *AnnouncementCreate) SetCreatedAt(v time.Time) *AnnouncementCreate {
+	_c.mutation.SetCreatedAt(v)
+	return _c
+}
+
+// SetNillableCreatedAt sets the "created_at" field if the given value is not nil.
+func (_c *AnnouncementCreate) SetNillableCreatedAt(v *time.Time) *AnnouncementCreate {
+	if v != nil {
+		_c.SetCreatedAt(*v)
+	}
+	return _c
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (_c *AnnouncementCreate) SetUpdatedAt(v time.Time) *AnnouncementCreate {
+	_c.mutation.SetUpdatedAt(v)
+	return _c
+}
+
+// SetNillableUpdatedAt sets the "updated_at" field if the given value is not nil.
+func (_c *AnnouncementCreate) SetNillableUpdatedAt(v *time.Time) *AnnouncementCreate {
+	if v != nil {
+		_c.SetUpdatedAt(*v)
+	}
+	return _c
+}
+
 // SetTitle sets the "title" field.
 func (_c *AnnouncementCreate) SetTitle(v string) *AnnouncementCreate {
 	_c.mutation.SetTitle(v)
@@ -134,34 +162,6 @@ func (_c *AnnouncementCreate) SetNillableUpdatedBy(v *int64) *AnnouncementCreate
 	return _c
 }
 
-// SetCreatedAt sets the "created_at" field.
-func (_c *AnnouncementCreate) SetCreatedAt(v time.Time) *AnnouncementCreate {
-	_c.mutation.SetCreatedAt(v)
-	return _c
-}
-
-// SetNillableCreatedAt sets the "created_at" field if the given value is not nil.
-func (_c *AnnouncementCreate) SetNillableCreatedAt(v *time.Time) *AnnouncementCreate {
-	if v != nil {
-		_c.SetCreatedAt(*v)
-	}
-	return _c
-}
-
-// SetUpdatedAt sets the "updated_at" field.
-func (_c *AnnouncementCreate) SetUpdatedAt(v time.Time) *AnnouncementCreate {
-	_c.mutation.SetUpdatedAt(v)
-	return _c
-}
-
-// SetNillableUpdatedAt sets the "updated_at" field if the given value is not nil.
-func (_c *AnnouncementCreate) SetNillableUpdatedAt(v *time.Time) *AnnouncementCreate {
-	if v != nil {
-		_c.SetUpdatedAt(*v)
-	}
-	return _c
-}
-
 // AddReadIDs adds the "reads" edge to the AnnouncementRead entity by IDs.
 func (_c *AnnouncementCreate) AddReadIDs(ids ...int64) *AnnouncementCreate {
 	_c.mutation.AddReadIDs(ids...)
@@ -212,14 +212,6 @@ func (_c *AnnouncementCreate) ExecX(ctx context.Context) {
 
 // defaults sets the default values of the builder before save.
 func (_c *AnnouncementCreate) defaults() {
-	if _, ok := _c.mutation.Status(); !ok {
-		v := announcement.DefaultStatus
-		_c.mutation.SetStatus(v)
-	}
-	if _, ok := _c.mutation.NotifyMode(); !ok {
-		v := announcement.DefaultNotifyMode
-		_c.mutation.SetNotifyMode(v)
-	}
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		v := announcement.DefaultCreatedAt()
 		_c.mutation.SetCreatedAt(v)
@@ -228,10 +220,24 @@ func (_c *AnnouncementCreate) defaults() {
 		v := announcement.DefaultUpdatedAt()
 		_c.mutation.SetUpdatedAt(v)
 	}
+	if _, ok := _c.mutation.Status(); !ok {
+		v := announcement.DefaultStatus
+		_c.mutation.SetStatus(v)
+	}
+	if _, ok := _c.mutation.NotifyMode(); !ok {
+		v := announcement.DefaultNotifyMode
+		_c.mutation.SetNotifyMode(v)
+	}
 }
 
 // check runs all checks and user-defined validators on the builder.
 func (_c *AnnouncementCreate) check() error {
+	if _, ok := _c.mutation.CreatedAt(); !ok {
+		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "Announcement.created_at"`)}
+	}
+	if _, ok := _c.mutation.UpdatedAt(); !ok {
+		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "Announcement.updated_at"`)}
+	}
 	if _, ok := _c.mutation.Title(); !ok {
 		return &ValidationError{Name: "title", err: errors.New(`ent: missing required field "Announcement.title"`)}
 	}
@@ -264,12 +270,6 @@ func (_c *AnnouncementCreate) check() error {
 			return &ValidationError{Name: "notify_mode", err: fmt.Errorf(`ent: validator failed for field "Announcement.notify_mode": %w`, err)}
 		}
 	}
-	if _, ok := _c.mutation.CreatedAt(); !ok {
-		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "Announcement.created_at"`)}
-	}
-	if _, ok := _c.mutation.UpdatedAt(); !ok {
-		return &ValidationError{Name: "updated_at", err: errors.New(`ent: missing required field "Announcement.updated_at"`)}
-	}
 	return nil
 }
 
@@ -297,6 +297,14 @@ func (_c *AnnouncementCreate) createSpec() (*Announcement, *sqlgraph.CreateSpec)
 		_spec = sqlgraph.NewCreateSpec(announcement.Table, sqlgraph.NewFieldSpec(announcement.FieldID, field.TypeInt64))
 	)
 	_spec.OnConflict = _c.conflict
+	if value, ok := _c.mutation.CreatedAt(); ok {
+		_spec.SetField(announcement.FieldCreatedAt, field.TypeTime, value)
+		_node.CreatedAt = value
+	}
+	if value, ok := _c.mutation.UpdatedAt(); ok {
+		_spec.SetField(announcement.FieldUpdatedAt, field.TypeTime, value)
+		_node.UpdatedAt = value
+	}
 	if value, ok := _c.mutation.Title(); ok {
 		_spec.SetField(announcement.FieldTitle, field.TypeString, value)
 		_node.Title = value
@@ -333,14 +341,6 @@ func (_c *AnnouncementCreate) createSpec() (*Announcement, *sqlgraph.CreateSpec)
 		_spec.SetField(announcement.FieldUpdatedBy, field.TypeInt64, value)
 		_node.UpdatedBy = &value
 	}
-	if value, ok := _c.mutation.CreatedAt(); ok {
-		_spec.SetField(announcement.FieldCreatedAt, field.TypeTime, value)
-		_node.CreatedAt = value
-	}
-	if value, ok := _c.mutation.UpdatedAt(); ok {
-		_spec.SetField(announcement.FieldUpdatedAt, field.TypeTime, value)
-		_node.UpdatedAt = value
-	}
 	if nodes := _c.mutation.ReadsIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.O2M,
@@ -364,7 +364,7 @@ func (_c *AnnouncementCreate) createSpec() (*Announcement, *sqlgraph.CreateSpec)
 // of the `INSERT` statement. For example:
 //
 //	client.Announcement.Create().
-//		SetTitle(v).
+//		SetCreatedAt(v).
 //		OnConflict(
 //			// Update the row with the new values
 //			// the was proposed for insertion.
@@ -373,7 +373,7 @@ func (_c *AnnouncementCreate) createSpec() (*Announcement, *sqlgraph.CreateSpec)
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.AnnouncementUpsert) {
-//			SetTitle(v+v).
+//			SetCreatedAt(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *AnnouncementCreate) OnConflict(opts ...sql.ConflictOption) *AnnouncementUpsertOne {
@@ -408,6 +408,18 @@ type (
 		*sql.UpdateSet
 	}
 )
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *AnnouncementUpsert) SetUpdatedAt(v time.Time) *AnnouncementUpsert {
+	u.Set(announcement.FieldUpdatedAt, v)
+	return u
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *AnnouncementUpsert) UpdateUpdatedAt() *AnnouncementUpsert {
+	u.SetExcluded(announcement.FieldUpdatedAt)
+	return u
+}
 
 // SetTitle sets the "title" field.
 func (u *AnnouncementUpsert) SetTitle(v string) *AnnouncementUpsert {
@@ -559,18 +571,6 @@ func (u *AnnouncementUpsert) ClearUpdatedBy() *AnnouncementUpsert {
 	return u
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (u *AnnouncementUpsert) SetUpdatedAt(v time.Time) *AnnouncementUpsert {
-	u.Set(announcement.FieldUpdatedAt, v)
-	return u
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *AnnouncementUpsert) UpdateUpdatedAt() *AnnouncementUpsert {
-	u.SetExcluded(announcement.FieldUpdatedAt)
-	return u
-}
-
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -614,6 +614,20 @@ func (u *AnnouncementUpsertOne) Update(set func(*AnnouncementUpsert)) *Announcem
 		set(&AnnouncementUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *AnnouncementUpsertOne) SetUpdatedAt(v time.Time) *AnnouncementUpsertOne {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.SetUpdatedAt(v)
+	})
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *AnnouncementUpsertOne) UpdateUpdatedAt() *AnnouncementUpsertOne {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.UpdateUpdatedAt()
+	})
 }
 
 // SetTitle sets the "title" field.
@@ -791,20 +805,6 @@ func (u *AnnouncementUpsertOne) ClearUpdatedBy() *AnnouncementUpsertOne {
 	})
 }
 
-// SetUpdatedAt sets the "updated_at" field.
-func (u *AnnouncementUpsertOne) SetUpdatedAt(v time.Time) *AnnouncementUpsertOne {
-	return u.Update(func(s *AnnouncementUpsert) {
-		s.SetUpdatedAt(v)
-	})
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *AnnouncementUpsertOne) UpdateUpdatedAt() *AnnouncementUpsertOne {
-	return u.Update(func(s *AnnouncementUpsert) {
-		s.UpdateUpdatedAt()
-	})
-}
-
 // Exec executes the query.
 func (u *AnnouncementUpsertOne) Exec(ctx context.Context) error {
 	if len(u.create.conflict) == 0 {
@@ -940,7 +940,7 @@ func (_c *AnnouncementCreateBulk) ExecX(ctx context.Context) {
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.AnnouncementUpsert) {
-//			SetTitle(v+v).
+//			SetCreatedAt(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *AnnouncementCreateBulk) OnConflict(opts ...sql.ConflictOption) *AnnouncementUpsertBulk {
@@ -1014,6 +1014,20 @@ func (u *AnnouncementUpsertBulk) Update(set func(*AnnouncementUpsert)) *Announce
 		set(&AnnouncementUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (u *AnnouncementUpsertBulk) SetUpdatedAt(v time.Time) *AnnouncementUpsertBulk {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.SetUpdatedAt(v)
+	})
+}
+
+// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
+func (u *AnnouncementUpsertBulk) UpdateUpdatedAt() *AnnouncementUpsertBulk {
+	return u.Update(func(s *AnnouncementUpsert) {
+		s.UpdateUpdatedAt()
+	})
 }
 
 // SetTitle sets the "title" field.
@@ -1188,20 +1202,6 @@ func (u *AnnouncementUpsertBulk) UpdateUpdatedBy() *AnnouncementUpsertBulk {
 func (u *AnnouncementUpsertBulk) ClearUpdatedBy() *AnnouncementUpsertBulk {
 	return u.Update(func(s *AnnouncementUpsert) {
 		s.ClearUpdatedBy()
-	})
-}
-
-// SetUpdatedAt sets the "updated_at" field.
-func (u *AnnouncementUpsertBulk) SetUpdatedAt(v time.Time) *AnnouncementUpsertBulk {
-	return u.Update(func(s *AnnouncementUpsert) {
-		s.SetUpdatedAt(v)
-	})
-}
-
-// UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
-func (u *AnnouncementUpsertBulk) UpdateUpdatedAt() *AnnouncementUpsertBulk {
-	return u.Update(func(s *AnnouncementUpsert) {
-		s.UpdateUpdatedAt()
 	})
 }
 

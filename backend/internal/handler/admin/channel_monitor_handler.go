@@ -8,7 +8,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -293,7 +292,10 @@ func (h *ChannelMonitorHandler) Create(c *gin.Context) {
 		return
 	}
 
-	subject, _ := middleware2.GetAuthSubjectFromContext(c)
+	subject, ok := requireAdminSubject(c)
+	if !ok {
+		return
+	}
 
 	enabled := true
 	if req.Enabled != nil {
@@ -310,7 +312,7 @@ func (h *ChannelMonitorHandler) Create(c *gin.Context) {
 		GroupName:        req.GroupName,
 		Enabled:          enabled,
 		IntervalSeconds:  req.IntervalSeconds,
-		CreatedBy:        subject.UserID,
+		CreatedBy:        adminActorUserID(subject),
 		TemplateID:       req.TemplateID,
 		ExtraHeaders:     req.ExtraHeaders,
 		BodyOverrideMode: req.BodyOverrideMode,

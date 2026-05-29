@@ -182,6 +182,9 @@ export default {
 
   // Setup Wizard
   setup: {
+    remoteTokenTitle: '远程安装需要 Setup Token',
+    remoteTokenHint: '当前不是本地请求。请填写管理员预先配置的 setup token 后再继续安装。',
+    remoteTokenPlaceholder: '请输入 setup token',
     title: 'Sub2API 安装向导',
     description: '配置您的 Sub2API 实例',
     database: {
@@ -260,6 +263,7 @@ export default {
     search: '搜索',
     filter: '筛选',
     export: '导出',
+    download: '下载',
     import: '导入',
     actions: '操作',
     status: '状态',
@@ -360,6 +364,8 @@ export default {
     groups: '分组管理',
     channels: '渠道管理',
     availableChannels: '可用渠道',
+    modelMarket: '模型广场',
+    traces: 'Trace 管理',
     subscriptions: '订阅管理',
     accounts: '账号管理',
     proxies: 'IP管理',
@@ -663,6 +669,10 @@ export default {
     copyToClipboard: '复制到剪贴板',
     copied: '已复制！',
     importToCcSwitch: '导入到 CCS',
+    configureClaudeCode: 'Claude Code',
+    configureOpenClaw: 'OpenClaw',
+    configureClaudeCodeCopied: 'Claude Code 配置命令已复制，请在 PowerShell 中运行以更新本机密钥。',
+    configureOpenClawCopied: 'OpenClaw 配置命令已复制，请在 PowerShell 中运行以更新本机密钥。',
     enable: '启用',
     disable: '禁用',
     nameLabel: '名称',
@@ -1002,14 +1012,66 @@ export default {
     }
   },
 
+  modelMarket: {
+    title: '模型广场',
+    description: '浏览你可用的模型、兼容协议、可访问渠道与价格',
+    searchPlaceholder: '搜索模型、供应商或渠道...',
+    count: '显示 {filtered} / {total} 个模型',
+    filters: {
+      protocol: '协议',
+      provider: '供应商',
+      capability: '能力 / 标签',
+      allProtocols: '全部协议',
+      allProviders: '全部供应商',
+      allCapabilities: '全部能力'
+    },
+    fields: {
+      provider: '供应商 / 平台',
+      contextWindow: '上下文窗口',
+      channels: '渠道'
+    },
+    sections: {
+      pricing: '定价',
+      capabilities: '能力',
+      tags: '标签',
+      channels: '可用渠道'
+    },
+    badges: {
+      recommended: '推荐',
+      tieredPricing: '阶梯定价'
+    },
+    status: {
+      active: '可用',
+      hidden: '隐藏',
+      disabled: '停用',
+      unavailable: '不可用'
+    },
+    protocolLabels: {
+      openai: 'OpenAI 接口',
+      anthropic: 'Anthropic 接口'
+    },
+    emptyTitle: '暂无可用模型',
+    emptyDescription: '你可访问的已发布模型会在这里展示兼容性与价格详情。',
+    emptyFilteredTitle: '没有匹配模型',
+    emptyFilteredDescription: '请调整搜索词或筛选条件。',
+    errorTitle: '加载模型广场失败',
+    noPricing: '暂无定价',
+    noCapabilities: '暂无能力标签',
+    noChannels: '暂无可访问渠道详情',
+    unknownContext: '未知',
+    unknownProtocol: '未知协议',
+    unknownProvider: '未知供应商'
+  },
+
   affiliate: {
     title: '代理分销',
     description: '管理你的代理码、分组倍率和下级营业数据',
     yourCode: '我的代理码',
-    inviteLink: '邀请链接',
-    copyCode: '复制邀请码',
-    copyLink: '复制链接',
-    codeCopied: '代理码已复制',
+      inviteLink: '邀请链接',
+      copyCode: '复制邀请码',
+      copyLink: '复制链接',
+      generateInviteLink: '生成邀请链接',
+      codeCopied: '代理码已复制',
     linkCopied: '邀请链接已复制',
     loadFailed: '加载代理分销数据失败',
     transferFailed: '转入余额失败',
@@ -1452,6 +1514,299 @@ export default {
       systemSettings: '系统设置',
       configureSystem: '配置系统设置',
       failedToLoad: '加载仪表盘数据失败'
+    },
+
+    modelMarket: {
+      title: '模型广场',
+      description: '维护用户侧模型发现与兼容性提示的目录元数据',
+      searchPlaceholder: '搜索模型、供应商或能力...',
+      createModel: '创建模型',
+      editModel: '编辑模型',
+      deleteModel: '删除模型',
+      importFromChannels: '从渠道导入',
+      importSuccess: '已导入 {imported} 个模型，更新 {updated} 个模型',
+      importFailed: '从渠道导入模型失败',
+      modelCreated: '模型创建成功',
+      modelUpdated: '模型更新成功',
+      modelDeleted: '模型删除成功',
+      saveFailed: '保存模型失败',
+      loadFailed: '加载模型广场数据失败',
+      deleteFailed: '删除模型失败',
+      deleteConfirm: '确定要删除“{name}”吗？',
+      emptyTitle: '模型目录为空',
+      emptyDescription: '可以手动创建模型，或从渠道定价中导入模型填充广场。',
+      availableChannelCount: '{count} 个可用渠道',
+      allProtocols: '全部协议',
+      allStatuses: '全部状态',
+      allProviders: '全部供应商',
+      allCapabilities: '全部能力',
+      protocols: {
+        openai: 'OpenAI 接口',
+        anthropic: 'Anthropic 接口'
+      },
+      statuses: {
+        active: '启用',
+        hidden: '隐藏',
+        disabled: '停用'
+      },
+      columns: {
+        model: '模型',
+        provider: '供应商',
+        capabilities: '能力',
+        contextWindow: '上下文窗口',
+        status: '状态',
+        sortOrder: '排序',
+        updatedAt: '更新时间',
+        actions: '操作'
+      },
+      form: {
+        displayName: '展示名称',
+        displayNamePlaceholder: '例如 Claude Sonnet 4',
+        modelId: '模型 ID',
+        modelIdPlaceholder: '例如 claude-sonnet-4',
+        providerKey: '供应商 Key',
+        providerKeyPlaceholder: '例如 anthropic_compatible',
+        protocol: '协议',
+        capabilities: '能力标签',
+        capabilitiesPlaceholder: '例如 chat, tools, vision',
+        capabilitiesHint: '使用逗号分隔，展示给用户的能力标签。',
+        tags: '附加标签',
+        tagsPlaceholder: '例如 recommended, coding',
+        tagsHint: '使用逗号分隔，用于高亮或筛选。',
+        contextWindow: '上下文窗口',
+        contextWindowPlaceholder: '例如 200000',
+        contextWindowInvalid: '上下文窗口必须是正整数',
+        status: '状态',
+        sortOrder: '排序值',
+        description: '描述',
+        descriptionPlaceholder: '面向用户的简短说明',
+        metadata: '元数据',
+        metadataPlaceholder: '{"release_stage":"beta"}',
+        metadataHint: '可选 JSON 对象，用于附加展示信息。',
+        metadataInvalid: '元数据必须是合法 JSON',
+        requiredFields: '模型 ID、展示名称和供应商 Key 为必填项'
+      }
+    },
+
+    traces: {
+      title: 'Trace 管理',
+      description: '统一查看采集到的 trace 记录，维护采集规则，并管理导出任务。',
+      stats: {
+        records: '记录数',
+        rules: '规则数',
+        exports: '导出任务',
+        rootAdmin: '导出权限'
+      },
+      badges: {
+        rootAdmin: 'Root Admin',
+        adminOnly: '需 Root Admin',
+        enabled: '启用',
+        disabled: '停用'
+      },
+      tabs: {
+        records: '记录',
+        recordsDescription: '检索、查看并删除已采集的 trace 数据',
+        rules: '规则',
+        rulesDescription: '配置哪些请求会被持久化为 trace 记录',
+        exports: '导出',
+        exportsDescription: '创建、跟踪、取消并下载导出任务',
+        rootOnly: '仅 Root'
+      },
+      access: {
+        rootOnlyTitle: '需要 Root Admin 权限',
+        rootOnlyDescription: 'Trace 导出任务仅限 Root Admin 使用。请由 Root Admin 创建、取消或下载导出文件。',
+        rootOnlyToast: 'Trace 导出任务需要 Root Admin 权限'
+      },
+      filters: {
+        allRules: '全部规则',
+        model: '模型',
+        modelPlaceholder: '例如 gpt-5.4、claude-sonnet-4',
+        keyword: '关键字',
+        keywordPlaceholder: '提示词、工具名、响应内容...',
+        userId: '用户 ID',
+        apiKeyId: 'API Key ID',
+        ruleId: '规则 ID',
+        startDate: '开始日期',
+        endDate: '结束日期',
+        timezone: '时区',
+        minInputTokens: '最小输入 Token',
+        maxInputTokens: '最大输入 Token',
+        minOutputTokens: '最小输出 Token',
+        maxOutputTokens: '最大输出 Token',
+        minTotalTokens: '最小总 Token',
+        maxTotalTokens: '最大总 Token',
+        inputTokens: '输入 Token',
+        outputTokens: '输出 Token',
+        totalTokens: '总 Token'
+      },
+      records: {
+        title: 'Trace 记录',
+        description: '按模型、调用方、规则、日期和 Token 范围筛选采集记录，并查看原始 JSON。',
+        applyFilters: '应用筛选',
+        hideAdvanced: '收起高级筛选',
+        showAdvanced: '展开高级筛选',
+        deleteSelected: '批量删除（{count}）',
+        selectedCount: '已选 {count} 条 / 共 {total} 条',
+        pageHint: '第 {page} / {pages} 页',
+        columns: {
+          id: 'ID',
+          model: '模型',
+          actors: '主体',
+          tokens: 'Token',
+          status: '状态',
+          createdAt: '采集时间'
+        },
+        account: '账号',
+        apiKey: 'API Key',
+        rule: '规则',
+        inputTokens: '输入',
+        outputTokens: '输出',
+        totalTokens: '总计',
+        requestedModel: '请求模型',
+        upstreamModel: '上游模型',
+        user: '用户',
+        statusUnknown: '未知',
+        noSelection: '请先选择至少一条 trace 记录',
+        deleteTitle: '删除 Trace 记录',
+        deleteConfirm: '确定删除模型“{model}”的 trace #{id} 吗？',
+        deleted: 'Trace 记录已删除',
+        deleteSelectedTitle: '批量删除 Trace 记录',
+        deleteSelectedConfirm: '确定删除已选的 {count} 条 trace 记录吗？',
+        batchDeleted: '已删除 {count} 条 trace 记录',
+        emptyTitle: '暂无 Trace 记录',
+        emptyDescription: '网关命中采集规则后，记录会展示在这里。',
+        loadFailed: '加载 Trace 记录失败',
+        detailLoadFailed: '加载 Trace 详情失败',
+        deleteFailed: '删除 Trace 记录失败',
+        batchDeleteFailed: '批量删除 Trace 记录失败'
+      },
+      rules: {
+        title: '采集规则',
+        description: '按模型、调用方、关键字、Token 范围和生效时间控制哪些流量会进入 Trace 存储。',
+        create: '创建规则',
+        edit: '编辑规则',
+        created: 'Trace 规则已创建',
+        updated: 'Trace 规则已更新',
+        deleteTitle: '删除 Trace 规则',
+        deleteConfirm: '确定删除规则“{name}”吗？',
+        deleted: 'Trace 规则已删除',
+        emptyTitle: '暂无采集规则',
+        emptyDescription: '创建规则后，只会采集你真正关心的请求流量。',
+        priority: '优先级',
+        priorityLabel: '优先级',
+        modelPatterns: '模型模式',
+        modelPatternsPlaceholder: '逗号分隔的通配模式，例如 gpt-*、claude-*',
+        userIds: '用户 ID 列表',
+        userIdsPlaceholder: '逗号分隔的正整数用户 ID',
+        apiKeyIds: 'API Key ID 列表',
+        apiKeyIdsPlaceholder: '逗号分隔的正整数 API Key ID',
+        keywords: '关键字',
+        keywordsPlaceholder: '逗号分隔的关键字，用于匹配提示词或响应内容',
+        minTokensLabel: '最小 Token',
+        maxTokensLabel: '最大 Token',
+        samplingRatioLabel: '采样比例',
+        activeFromLabel: '生效开始',
+        activeToLabel: '生效结束',
+        columns: {
+          name: '规则',
+          targets: '目标',
+          conditions: '条件',
+          sampling: '采样',
+          updatedAt: '更新时间'
+        },
+        tokenRange: 'Token 范围',
+        activeWindow: '生效窗口',
+        alwaysOn: '始终生效',
+        unbounded: '不限',
+        loadFailed: '加载 Trace 规则失败',
+        saveFailed: '保存 Trace 规则失败',
+        deleteFailed: '删除 Trace 规则失败'
+      },
+      export: {
+        title: '导出任务',
+        description: '基于筛选条件创建导出任务，跟踪执行进度，并下载完成后的文件。',
+        includeRaw: '包含原始请求和响应负载',
+        targetRecords: '目标条数',
+        targetRecordsHint: '采集满目标条数后生成 JSON',
+        metadataOnly: '仅元数据',
+        copyFromRecords: '复制记录筛选条件',
+        createTask: '创建导出任务',
+        created: 'Trace 导出任务已创建',
+        cancelTitle: '取消导出任务',
+        cancelConfirm: '确定取消导出任务 #{id} 吗？',
+        cancelTask: '取消任务',
+        canceled: 'Trace 导出任务已取消',
+        taskCount: '{count} 个导出任务',
+        polling: '存在运行中的任务时自动刷新',
+        progressLabel: '{processed} / {total} 条记录',
+        emptyTitle: '暂无导出任务',
+        emptyDescription: '创建任务后，可将 Trace 数据导出用于离线排障、审计或事故复盘。',
+        noFilters: '未设置筛选条件',
+        columns: {
+          id: 'ID',
+          status: '状态',
+          filters: '筛选条件',
+          progress: '进度',
+          file: '文件',
+          createdAt: '创建时间'
+        },
+        status: {
+          pending: '等待中',
+          running: '执行中',
+          succeeded: '已完成',
+          failed: '失败',
+          canceled: '已取消'
+        },
+        loadFailed: '加载 Trace 导出任务失败',
+        createFailed: '创建 Trace 导出任务失败',
+        cancelFailed: '取消 Trace 导出任务失败',
+        downloadFailed: '下载 Trace 导出文件失败'
+      },
+      detail: {
+        title: 'Trace #{id}',
+        structured: '结构化',
+        raw: '原始 JSON',
+        noData: '无数据',
+        fields: {
+          recordId: '记录 ID',
+          taskId: '任务 ID',
+          requestId: '请求 ID',
+          responseId: '响应 ID',
+          model: '模型',
+          protocol: '协议',
+          userId: '用户 ID',
+          apiKeyId: 'API Key ID',
+          accountId: '账号 ID',
+          ruleId: '规则 ID',
+          totalTokens: '总 Token',
+          upstreamStatus: '上游状态',
+          createdAt: '采集时间',
+          requestContentType: '请求 Content-Type',
+          responseContentType: '响应 Content-Type',
+          dedupeHash: '去重 Hash'
+        },
+        sections: {
+          prompt: 'Prompt',
+          candidates: 'Candidates',
+          tools: 'Tools',
+          signature: 'Signature',
+          meta: 'Metadata',
+          rawRequest: '原始请求',
+          rawResponse: '原始响应',
+          rawRequestText: '原始请求文本',
+          rawResponseText: '原始响应文本'
+        }
+      },
+      validation: {
+        requiredField: '{field} 为必填项',
+        invalidInteger: '{field} 必须是整数',
+        invalidPositiveInteger: '{field} 必须是正整数',
+        invalidNonNegativeInteger: '{field} 必须是非负整数',
+        invalidIdList: '{field} 必须是逗号分隔的正整数列表',
+        invalidRange: '{field} 的最小值不能大于最大值',
+        invalidSamplingRatio: '采样比例必须大于 0 且不超过 1',
+        invalidWindowRange: '生效开始时间不能晚于结束时间'
+      }
     },
 
     backup: {
@@ -2142,7 +2497,9 @@ export default {
       platforms: {
         all: '全部平台',
         anthropic: 'Anthropic',
+        anthropic_compatible: 'Anthropic 接口',
         openai: 'OpenAI',
+        openai_compatible: 'OpenAI 接口 / 国模',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
       },
@@ -3120,8 +3477,16 @@ export default {
         claude: 'Claude',
         openai: 'OpenAI',
         anthropic: 'Anthropic',
+        anthropic_compatible: 'Anthropic 接口',
         gemini: 'Gemini',
+        openai_compatible: 'OpenAI 接口 / 国模',
         antigravity: 'Antigravity',
+      },
+      compatibleProviders: {
+        openaiDescription:
+          '适用于 OpenRouter、硅基流动、火山、阿里等国模/三方兼容的 OpenAI 接口，使用 Base URL、API Key 和可选请求头接入。',
+        anthropicDescription:
+          '适用于 Claude 镜像、国模/三方兼容等 Anthropic 接口，使用 Base URL、API Key 和可选请求头接入。'
       },
       types: {
         oauth: 'OAuth',
@@ -3608,9 +3973,16 @@ export default {
       // Upstream type
       upstream: {
         baseUrl: '上游 Base URL',
-        baseUrlHint: '上游 Antigravity 服务的地址，例如：https://cloudcode-pa.googleapis.com',
+        baseUrlHint:
+          '上游接口地址，例如 https://api.openai.com、https://api.anthropic.com 或其他兼容服务地址。',
         apiKey: '上游 API Key',
         apiKeyHint: '上游服务的 API Key',
+        headers: '自定义请求头',
+        headersPlaceholder:
+          '{\n  "x-api-version": "2024-01-01",\n  "anthropic-beta": "prompt-caching-2024-07-31"\n}',
+        headersHint:
+          '可选 JSON 对象，会合并到上游请求中，适用于国模/三方兼容接口要求额外鉴权或客户端请求头的场景。',
+        invalidHeaders: '请求头必须是合法的 JSON 对象',
         pleaseEnterBaseUrl: '请输入上游 Base URL',
         pleaseEnterApiKey: '请输入上游 API Key'
       },
@@ -6748,7 +7120,7 @@ export default {
     refundReason: '退款原因',
     refundReasonPlaceholder: '请描述您的退款原因',
     stripeLoadFailed: '支付组件加载失败，请刷新页面重试',
-    stripeMissingParams: '缺少订单ID或支付密钥',
+  stripeMissingParams: '缺少支付订单或安全支付会话',
     stripeNotConfigured: 'Stripe 未配置',
     errors: {
       tooManyPending: '待支付订单过多（最多 {max} 个），请先完成或取消现有订单',

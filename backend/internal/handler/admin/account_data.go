@@ -79,10 +79,6 @@ type DataImportError struct {
 	Message  string `json:"message"`
 }
 
-func buildProxyKey(protocol, host string, port int, username, password string) string {
-	return fmt.Sprintf("%s|%s|%d|%s|%s", strings.TrimSpace(protocol), strings.TrimSpace(host), port, strings.TrimSpace(username), strings.TrimSpace(password))
-}
-
 func (h *AccountHandler) ExportData(c *gin.Context) {
 	ctx := c.Request.Context()
 
@@ -164,6 +160,8 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	}
 
 	payload := DataPayload{
+		Type:       dataType,
+		Version:    dataVersion,
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
 		Proxies:    dataProxies,
 		Accounts:   dataAccounts,
@@ -211,11 +209,8 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	}
 
 	for i := range dataPayload.Proxies {
-		item := dataPayload.Proxies[i]
+		item := canonicalizeDataProxy(dataPayload.Proxies[i])
 		key := item.ProxyKey
-		if key == "" {
-			key = buildProxyKey(item.Protocol, item.Host, item.Port, item.Username, item.Password)
-		}
 		if err := validateDataProxy(item); err != nil {
 			result.ProxyFailed++
 			result.Errors = append(result.Errors, DataImportError{
@@ -285,7 +280,11 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 		var proxyID *int64
 		if item.ProxyKey != nil && *item.ProxyKey != "" {
-			if id, ok := proxyKeyToID[*item.ProxyKey]; ok {
+			proxyKey := *item.ProxyKey
+			if parsed, ok := parseProxyKey(proxyKey); ok {
+				proxyKey = buildProxyKey(parsed.Protocol, parsed.Host, parsed.Port, parsed.Username, parsed.Password)
+			}
+			if id, ok := proxyKeyToID[proxyKey]; ok {
 				proxyID = &id
 			} else {
 				result.AccountFailed++
@@ -293,7 +292,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 					Kind:     "account",
 					Name:     item.Name,
 					ProxyKey: *item.ProxyKey,
-					Message:  "proxy_key not found",
+					Message:  formatProxyKeyNotFound(*item.ProxyKey),
 				})
 				continue
 			}
@@ -523,6 +522,7 @@ func validateDataHeader(payload DataPayload) error {
 }
 
 func validateDataProxy(item DataProxy) error {
+	item = canonicalizeDataProxy(item)
 	if strings.TrimSpace(item.Protocol) == "" {
 		return errors.New("proxy protocol is required")
 	}

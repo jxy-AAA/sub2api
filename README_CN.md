@@ -130,6 +130,7 @@ Sub2API 是一个 AI API 网关平台，用于分发和管理 AI 产品订阅的
 ## 文档
 
 - 文档索引：[docs/README.md](docs/README.md)
+- 合规导出说明：[docs/COMPLIANCE_DATA_EXPORT_CN.md](docs/COMPLIANCE_DATA_EXPORT_CN.md)
 - 开发指南：[DEV_GUIDE.md](DEV_GUIDE.md)
 - 变更日志：[CHANGELOG.md](CHANGELOG.md)
 
@@ -363,6 +364,9 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 默认仅监听 `127.0.0.1`。对外提供服务前，请先通过 Caddy / Nginx / TLS 反向代理暴露。
 
 ```bash
+# liveness
+curl http://127.0.0.1:8080/livez
+# readiness
 curl http://127.0.0.1:8080/health
 ```
 
@@ -593,10 +597,10 @@ transport http {
 **验证：**
 
 ```bash
-# h2c prior knowledge
-curl --http2-prior-knowledge -I http://localhost:8080/health
+# h2c prior knowledge (/livez = liveness)
+curl --http2-prior-knowledge -I http://localhost:8080/livez
 # HTTP/1.1 回退
-curl --http1.1 -I http://localhost:8080/health
+curl --http1.1 -I http://localhost:8080/livez
 # WebSocket 回退验证（需管理员 token）
 websocat -H="Sec-WebSocket-Protocol: sub2api-admin, jwt.<ADMIN_TOKEN>" ws://localhost:8080/api/v1/admin/ops/ws/qps
 ```
@@ -632,6 +636,16 @@ go generate ./cmd/server
 - 启用方式：设置环境变量 `RUN_MODE=simple`
 - 功能差异：隐藏 SaaS 相关功能，跳过计费流程
 - 安全注意事项：生产环境需同时设置 `SIMPLE_MODE_CONFIRM=true` 才允许启动
+
+---
+
+## 模型广场与兼容客户端
+
+- 已登录用户可访问 `/model-market`，查看自己当前可用的模型、兼容协议、可达渠道与价格概览。
+- 在配置客户端前，建议先通过模型广场确认某个模型对应的是 `OpenAI 兼容` 还是 `Anthropic 兼容` 上游。
+- `OpenAI 兼容` 上游适合 GPT 风格客户端，例如 Cursor。将客户端 Base URL 指向你的 Sub2API 地址，并使用标准 OpenAI 路径，如 `/v1/chat/completions` 或 `/v1/responses`。
+- `Anthropic 兼容` 上游适合 Claude Code 与 Anthropic SDK。将 Base URL 指向你的 Sub2API 地址，并使用 `/v1/messages`。
+- 更具体的网关说明见 `docs/GATEWAYS.md`。
 
 ---
 

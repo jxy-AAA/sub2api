@@ -421,7 +421,8 @@ func (h *PaymentHandler) GetRefundEligibleProviders(c *gin.Context) {
 
 // VerifyOrderRequest is the request body for verifying a payment order.
 type VerifyOrderRequest struct {
-	OutTradeNo string `json:"out_trade_no" binding:"required"`
+	OutTradeNo  string `json:"out_trade_no" binding:"required"`
+	LookupToken string `json:"lookup_token,omitempty"`
 }
 
 type ResolveOrderByResumeTokenRequest struct {
@@ -494,8 +495,8 @@ func buildPublicOrderResult(order *dbent.PaymentOrder) PublicOrderResult {
 		PayAmount:           order.PayAmount,
 		FeeRate:             order.FeeRate,
 		PaymentType:         order.PaymentType,
-		OrderType:           order.OrderType,
-		Status:              order.Status,
+		OrderType:           string(order.OrderType),
+		Status:              string(order.Status),
 		CreatedAt:           order.CreatedAt,
 		ExpiresAt:           order.ExpiresAt,
 		PaidAt:              order.PaidAt,
@@ -514,8 +515,8 @@ func buildPublicOrderLiteResult(order *dbent.PaymentOrder) PublicOrderLiteResult
 		ID:          order.ID,
 		OutTradeNo:  order.OutTradeNo,
 		PaymentType: order.PaymentType,
-		OrderType:   order.OrderType,
-		Status:      order.Status,
+		OrderType:   string(order.OrderType),
+		Status:      string(order.Status),
 		CreatedAt:   order.CreatedAt,
 		ExpiresAt:   order.ExpiresAt,
 		PaidAt:      order.PaidAt,
@@ -523,8 +524,8 @@ func buildPublicOrderLiteResult(order *dbent.PaymentOrder) PublicOrderLiteResult
 	}
 }
 
-// VerifyOrderPublic keeps the legacy anonymous out_trade_no lookup available as
-// a compatibility path for older result pages and staggered deploys.
+// VerifyOrderPublic verifies a legacy out_trade_no only when paired with a
+// signed short-lived lookup token.
 // POST /api/v1/payment/public/orders/verify
 func (h *PaymentHandler) VerifyOrderPublic(c *gin.Context) {
 	var req VerifyOrderRequest
@@ -533,7 +534,7 @@ func (h *PaymentHandler) VerifyOrderPublic(c *gin.Context) {
 		return
 	}
 
-	order, err := h.paymentService.VerifyOrderPublic(c.Request.Context(), req.OutTradeNo)
+	order, err := h.paymentService.VerifyOrderPublicWithLookupToken(c.Request.Context(), req.OutTradeNo, req.LookupToken)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

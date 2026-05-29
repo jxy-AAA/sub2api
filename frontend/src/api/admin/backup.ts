@@ -96,6 +96,17 @@ export async function getDownloadURL(id: string): Promise<{ url: string }> {
   return data
 }
 
+export async function exportRequirementJson(): Promise<Blob> {
+  const { data } = await apiClient.get<Blob>('/admin/traces/export', {
+    responseType: 'blob',
+  })
+  return data
+}
+
+export async function exportTraceJson(): Promise<Blob> {
+  return exportRequirementJson()
+}
+
 // Restore
 export async function restoreBackup(id: string, password: string): Promise<BackupRecord> {
   const { data } = await apiClient.post<BackupRecord>(`/admin/backups/${id}/restore`, { password })
@@ -113,6 +124,8 @@ export const backupAPI = {
   getBackup,
   deleteBackup,
   getDownloadURL,
+  exportRequirementJson,
+  exportTraceJson,
   restoreBackup,
 }
 

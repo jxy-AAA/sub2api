@@ -1,6 +1,7 @@
 import tu9 from '../assets/apihub-guide/tu9.png'
 import tu10 from '../assets/apihub-guide/tu10.png'
 import tu11 from '../assets/apihub-guide/tu11.png'
+import { SANDOG_API_BASE_URL, SANDOG_DEFAULT_MODEL } from '@/constants/sandog'
 
 export interface ApihubGuideImageMap { tu9: string; tu10: string; tu11: string }
 export interface ApihubGuideSidebarItem { text: string; href: string }
@@ -30,7 +31,7 @@ export interface ApihubGuideDocument {
   contentBlocks: ApihubGuideContentBlock[]
 }
 
-const apiBaseURL = 'https://api.apihub.cc/v1'
+const apiBaseURL = SANDOG_API_BASE_URL
 const providerName = 'APIHub'
 
 export const apihubGuideImages: ApihubGuideImageMap = { tu9, tu10, tu11 }
@@ -126,7 +127,7 @@ function codeBlock(code: string, language = 'bash') {
 }
 
 const codexConfig = `model_provider = "APIHub"
-model = "gpt-5.4"
+model = "${SANDOG_DEFAULT_MODEL}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 approval_policy = "on-request"
@@ -166,7 +167,7 @@ codex --version`)}<p>推荐使用 CC-Switch 快速配置工具进行图形化配
       id: 'config-steps',
       title: '配置步骤',
       level: 3,
-      blocks: [{ type: 'html', html: `<h4>1. 启动 CC-Switch 并切换到 Codex 标签</h4><ol><li>打开 CC-Switch 应用程序</li><li>点击顶部的「Codex」标签页</li><li>点击右上角橙色「+」按钮添加新配置</li></ol><p><img src="${tu9}" alt="CC-Switch Codex 标签页"></p><h4>2. 填写 CodeX 提供商配置</h4><ol><li>提供商名称：建议填写 APIHub</li><li>Base URL?<code>${apiBaseURL}</code></li><li>API Key?粘贴你从 APIHub 平台获取的 CodeX 专用令牌（codex 令牌组）</li><li>Model?<code>gpt-5.4</code></li><li>其他配置：按需调整推理强度、网络访问等参数</li><li>点击「保存」按钮</li></ol><p><img src="${tu10}" alt="CC-Switch 添加 CodeX 配置"></p><p><img src="${tu11}" alt="CC-Switch CodeX 配置详情"></p><div class="custom-block tip"><p class="custom-block-title">提示</p><ul><li>CC-Switch 会自动创建 <code>~/.codex/config.toml</code> 和 <code>auth.json</code> 文件</li><li>可以添加多个提供商配置，随时切换</li><li>切换配置后，关闭并重启 CodeX 即可生效</li></ul></div><h4>3. 启用配置并使用</h4><ol><li>在配置列表中找到刚创建的 APIHub 配置</li><li>点击配置右侧的「当前使用」按钮</li><li>配置会被标记为「当前使用」状态</li><li>重启 CodeX，新配置即可生效</li></ol><h4>4. 系统托盘快速切换</h4><p>CC-Switch 支持通过系统托盘快速切换 CodeX 配置：</p><ul><li>右键点击系统托盘中的 CC-Switch 图标</li><li>在菜单中选择 Codex 分类</li><li>直接选择要切换到的配置</li><li>配置立即生效，无需打开主界面</li></ul><div class="custom-block warning"><p class="custom-block-title">注意事项</p><ul><li>务必从 APIHub 平台创建「codex」令牌组的专用密钥</li><li>CodeX 令牌与 Claude Code 令牌不通用</li><li>切换配置后需要重启 CodeX 才能生效</li><li>可在 CC-Switch 中测试 API 端点速度</li></ul></div>` }],
+      blocks: [{ type: 'html', html: `<h4>1. 启动 CC-Switch 并切换到 Codex 标签</h4><ol><li>打开 CC-Switch 应用程序</li><li>点击顶部的「Codex」标签页</li><li>点击右上角橙色「+」按钮添加新配置</li></ol><p><img src="${tu9}" alt="CC-Switch Codex 标签页"></p><h4>2. 填写 CodeX 提供商配置</h4><ol><li>提供商名称：建议填写 APIHub</li><li>Base URL?<code>${apiBaseURL}</code></li><li>API Key?粘贴你从 APIHub 平台获取的 CodeX 专用令牌（codex 令牌组）</li><li>Model?<code>${SANDOG_DEFAULT_MODEL}</code></li><li>其他配置：按需调整推理强度、网络访问等参数</li><li>点击「保存」按钮</li></ol><p><img src="${tu10}" alt="CC-Switch 添加 CodeX 配置"></p><p><img src="${tu11}" alt="CC-Switch CodeX 配置详情"></p><div class="custom-block tip"><p class="custom-block-title">提示</p><ul><li>CC-Switch 会自动创建 <code>~/.codex/config.toml</code> 和 <code>auth.json</code> 文件</li><li>可以添加多个提供商配置，随时切换</li><li>切换配置后，关闭并重启 CodeX 即可生效</li></ul></div><h4>3. 启用配置并使用</h4><ol><li>在配置列表中找到刚创建的 APIHub 配置</li><li>点击配置右侧的「当前使用」按钮</li><li>配置会被标记为「当前使用」状态</li><li>重启 CodeX，新配置即可生效</li></ol><h4>4. 系统托盘快速切换</h4><p>CC-Switch 支持通过系统托盘快速切换 CodeX 配置：</p><ul><li>右键点击系统托盘中的 CC-Switch 图标</li><li>在菜单中选择 Codex 分类</li><li>直接选择要切换到的配置</li><li>配置立即生效，无需打开主界面</li></ul><div class="custom-block warning"><p class="custom-block-title">注意事项</p><ul><li>务必从 APIHub 平台创建「codex」令牌组的专用密钥</li><li>CodeX 令牌与 Claude Code 令牌不通用</li><li>切换配置后需要重启 CodeX 才能生效</li><li>可在 CC-Switch 中测试 API 端点速度</li></ul></div>` }],
     },
     {
       id: 'manual-config',
@@ -224,7 +225,7 @@ codex`)}` }],
     { id: 'register-account', title: '注册账号', level: 2, blocks: [{ type: 'html', html: `<p>请先完成 APIHub 账号注册和登录，再创建 CodeX 专用密钥。</p>` }] },
     { id: 'create-key', title: '创建专属 Key', level: 2, blocks: [{ type: 'html', html: `<p>进入 API 密钥管理页创建新密钥，并务必选择 codex 令牌组。</p>` }] },
     { id: 'token-settings', title: '修改令牌设置', level: 2, blocks: [{ type: 'html', html: `<p>可按需调整密钥名称、分组、限额、IP 限制和启停状态。</p>` }] },
-    { id: 'model-selection', title: '模型选择', level: 2, blocks: [{ type: 'html', html: `<p>CodeX 示例配置使用 <code>gpt-5.4</code>，也可按后台可用模型调整。</p>` }] },
+    { id: 'model-selection', title: '模型选择', level: 2, blocks: [{ type: 'html', html: `<p>CodeX 示例配置使用 <code>${SANDOG_DEFAULT_MODEL}</code>，也可按后台可用模型调整。</p>` }] },
     { id: 'recharge', title: '充值', level: 2, blocks: [{ type: 'html', html: `<p>长时间使用 CodeX 前请确认 APIHub 余额充足。</p>` }] },
     { id: 'claude-code-hub', title: 'Claude Code Hub', level: 2, blocks: [{ type: 'html', html: `<p>Claude Code Hub 可用于管理 Claude Code 相关配置，接入时同样使用 APIHub 的 Base URL 和专用 Key。</p>` }] },
     { id: 'hapi-remote-control', title: 'Hapi 远程控制', level: 2, blocks: [{ type: 'html', html: `<p>Hapi 远程控制中将接口地址设置为 <code>${apiBaseURL}</code>，密钥使用 APIHub 专用 Key。</p>` }] },

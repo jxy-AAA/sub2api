@@ -40,11 +40,11 @@ func (c *snapshotHydrationCache) UpdateLastUsed(ctx context.Context, updates map
 	return nil
 }
 
-func (c *snapshotHydrationCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
-	return true, nil
+func (c *snapshotHydrationCache) TryLockBucketWithToken(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (string, bool, error) {
+	return "token", true, nil
 }
 
-func (c *snapshotHydrationCache) UnlockBucket(ctx context.Context, bucket SchedulerBucket) error {
+func (c *snapshotHydrationCache) UnlockBucketWithToken(ctx context.Context, bucket SchedulerBucket, token string) error {
 	return nil
 }
 

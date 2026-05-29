@@ -2,7 +2,6 @@ package admin
 
 import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -179,9 +178,8 @@ func (h *BackupHandler) RestoreBackup(c *gin.Context) {
 	}
 
 	// 从上下文获取当前管理员用户 ID
-	sub, ok := middleware.GetAuthSubjectFromContext(c)
+	sub, ok := requireHumanAdminSubject(c, "admin JWT required for restore")
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
 		return
 	}
 

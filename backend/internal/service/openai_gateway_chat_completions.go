@@ -62,11 +62,16 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 ) (*OpenAIForwardResult, error) {
 	// 入口分流：仅 APIKey 账号受 Responses 探测标记影响。
 	// OAuth 等其他账号类型仍保持原有 Responses 路由，不受 unknown 默认值变化影响。
-	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+	if account.IsStaticKeyAccount() && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 
 	startTime := time.Now()
+	captureGatewayClientRequest(c, inferGatewayTraceProtocol(c, "openai"), body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"stream":       gjson.GetBytes(body, "stream").Bool(),
+	})
 
 	// 1. Parse Chat Completions request
 	var chatReq apicompat.ChatCompletionsRequest
@@ -215,6 +220,15 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if promptCacheKey != "" {
 		upstreamReq.Header.Set("session_id", generateSessionUUID(promptCacheKey))
 	}
+	captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "openai"), upstreamReq, responsesBody, map[string]any{
+		"account_id":      account.ID,
+		"account_type":    string(account.Type),
+		"original_model":  originalModel,
+		"upstream_model":  upstreamModel,
+		"stream":          true,
+		"client_stream":   clientStream,
+		"responses_shape": isResponsesShape,
+	})
 
 	// 7. Send request
 	proxyURL := ""
@@ -366,7 +380,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai chat_completions buffered", requestID)
+	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(c, resp, "openai chat_completions buffered", requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -435,6 +449,13 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "openai"), resp, traceBuf, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": upstreamModel,
+		"stream":         true,
+		"format":         "sse",
+	})
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -564,6 +585,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	if streamInterval <= 0 && keepaliveInterval <= 0 {
 		for scanner.Scan() {
 			line := scanner.Text()
+			traceBuf.WriteLine(line)
 			payload, ok := extractOpenAISSEDataLine(line)
 			if !ok {
 				continue
@@ -636,6 +658,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			}
 			lastDataAt = time.Now()
 			line := ev.line
+			traceBuf.WriteLine(line)
 			payload, ok := extractOpenAISSEDataLine(line)
 			if !ok {
 				continue

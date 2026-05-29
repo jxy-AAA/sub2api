@@ -573,6 +573,11 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 
 func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
 	startTime := time.Now()
+	captureGatewayClientRequest(c, inferGatewayTraceProtocol(c, "gemini"), body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"stream":       gjson.GetBytes(body, "stream").Bool(),
+	})
 
 	var req struct {
 		Model  string `json:"model"`
@@ -604,6 +609,11 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	}
 
 	var requestIDHeader string
+	var upstreamBodyForTrace []byte
+	setUpstreamBodyForTrace := func(raw []byte) []byte {
+		upstreamBodyForTrace = append([]byte(nil), raw...)
+		return upstreamBodyForTrace
+	}
 	var buildReq func(ctx context.Context) (*http.Request, string, error)
 	useUpstreamStream := req.Stream
 	if account.Type == AccountTypeOAuth && !req.Stream && strings.TrimSpace(account.GetCredential("project_id")) != "" {
@@ -634,8 +644,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				fullURL += "?alt=sse"
 			}
 
-			restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(restGeminiReq))
+			requestBody := setUpstreamBodyForTrace(normalizeGeminiRequestForAIStudio(geminiReq))
+			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(requestBody))
 			if err != nil {
 				return nil, "", err
 			}
@@ -685,9 +695,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					return nil, "", fmt.Errorf("failed to parse gemini request: %w", err)
 				}
 				wrapped["request"] = inner
-				wrappedBytes, _ := json.Marshal(wrapped)
+				requestBody, _ := json.Marshal(wrapped)
 
-				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(wrappedBytes))
+				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(setUpstreamBodyForTrace(requestBody)))
 				if err != nil {
 					return nil, "", err
 				}
@@ -708,8 +718,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					fullURL += "?alt=sse"
 				}
 
-				restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
-				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(restGeminiReq))
+				requestBody := setUpstreamBodyForTrace(normalizeGeminiRequestForAIStudio(geminiReq))
+				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(requestBody))
 				if err != nil {
 					return nil, "", err
 				}
@@ -739,8 +749,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				return nil, "", err
 			}
 
-			restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(restGeminiReq))
+			requestBody := setUpstreamBodyForTrace(normalizeGeminiRequestForAIStudio(geminiReq))
+			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(requestBody))
 			if err != nil {
 				return nil, "", err
 			}
@@ -772,9 +782,13 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 		// Capture upstream request body for ops retry of this attempt.
 		if c != nil {
-			// In this code path `body` is already the JSON sent to upstream.
-			c.Set(OpsUpstreamRequestBodyKey, string(body))
+			c.Set(OpsUpstreamRequestBodyKey, string(upstreamBodyForTrace))
 		}
+		captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "gemini"), upstreamReq, upstreamBodyForTrace, map[string]any{
+			"original_model": originalModel,
+			"upstream_model": mappedModel,
+			"stream":         useUpstreamStream,
+		})
 
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
@@ -1055,7 +1069,13 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		firstTokenMs = streamRes.firstTokenMs
 	} else {
 		if useUpstreamStream {
-			collected, usageObj, err := collectGeminiSSE(resp.Body, true)
+			traceBuf := newGatewayTraceBodyBuffer()
+			defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "gemini"), resp, traceBuf, map[string]any{
+				"stream":        true,
+				"client_stream": false,
+				"format":        "sse",
+			})
+			collected, usageObj, err := collectGeminiSSE(resp.Body, true, traceBuf)
 			if err != nil {
 				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
 			}
@@ -1104,6 +1124,13 @@ func isGeminiSignatureRelatedError(respBody []byte) bool {
 
 func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte) (*ForwardResult, error) {
 	startTime := time.Now()
+	captureGatewayClientRequest(c, inferGatewayTraceProtocol(c, "gemini"), body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"action":       action,
+		"model":        originalModel,
+		"stream":       stream,
+	})
 
 	if strings.TrimSpace(originalModel) == "" {
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Missing model in URL")
@@ -1151,6 +1178,11 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	forceAIStudio := action == "countTokens"
 
 	var requestIDHeader string
+	var upstreamBodyForTrace []byte
+	setUpstreamBodyForTrace := func(raw []byte) []byte {
+		upstreamBodyForTrace = append([]byte(nil), raw...)
+		return upstreamBodyForTrace
+	}
 	var buildReq func(ctx context.Context) (*http.Request, string, error)
 
 	switch account.Type {
@@ -1172,7 +1204,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				fullURL += "?alt=sse"
 			}
 
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(body))
+			requestBody := setUpstreamBodyForTrace(body)
+			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(requestBody))
 			if err != nil {
 				return nil, "", err
 			}
@@ -1217,9 +1250,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					return nil, "", fmt.Errorf("failed to parse gemini request: %w", err)
 				}
 				wrapped["request"] = inner
-				wrappedBytes, _ := json.Marshal(wrapped)
+				requestBody, _ := json.Marshal(wrapped)
 
-				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(wrappedBytes))
+				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(setUpstreamBodyForTrace(requestBody)))
 				if err != nil {
 					return nil, "", err
 				}
@@ -1240,7 +1273,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					fullURL += "?alt=sse"
 				}
 
-				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(body))
+				requestBody := setUpstreamBodyForTrace(body)
+				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(requestBody))
 				if err != nil {
 					return nil, "", err
 				}
@@ -1266,7 +1300,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				return nil, "", err
 			}
 
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(body))
+			requestBody := setUpstreamBodyForTrace(body)
+			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(requestBody))
 			if err != nil {
 				return nil, "", err
 			}
@@ -1297,9 +1332,14 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 
 		// Capture upstream request body for ops retry of this attempt.
 		if c != nil {
-			// In this code path `body` is already the JSON sent to upstream.
-			c.Set(OpsUpstreamRequestBodyKey, string(body))
+			c.Set(OpsUpstreamRequestBodyKey, string(upstreamBodyForTrace))
 		}
+		captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "gemini"), upstreamReq, upstreamBodyForTrace, map[string]any{
+			"action":         upstreamAction,
+			"original_model": originalModel,
+			"upstream_model": mappedModel,
+			"stream":         useUpstreamStream,
+		})
 
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
@@ -1582,7 +1622,14 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		firstTokenMs = streamRes.firstTokenMs
 	} else {
 		if useUpstreamStream {
-			collected, usageObj, err := collectGeminiSSE(resp.Body, isOAuth)
+			traceBuf := newGatewayTraceBodyBuffer()
+			defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "gemini"), resp, traceBuf, map[string]any{
+				"action":        upstreamAction,
+				"stream":        true,
+				"client_stream": false,
+				"format":        "sse",
+			})
+			collected, usageObj, err := collectGeminiSSE(resp.Body, isOAuth, traceBuf)
 			if err != nil {
 				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Failed to read upstream stream")
 			}
@@ -1942,6 +1989,11 @@ func (s *GeminiMessagesCompatService) handleNonStreamingResponse(c *gin.Context,
 	if err != nil {
 		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response")
 	}
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "gemini"), resp, body, map[string]any{
+		"format": "json",
+		"model":  originalModel,
+		"stream": false,
+	})
 
 	unwrappedBody, err := unwrapGeminiResponse(body)
 	if err != nil {
@@ -1995,6 +2047,12 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 	var usage ClaudeUsage
 	finishReason := ""
 	sawToolUse := false
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "gemini"), resp, traceBuf, map[string]any{
+		"format": "sse",
+		"model":  originalModel,
+		"stream": true,
+	})
 
 	nextBlockIndex := 0
 	openBlockIndex := -1
@@ -2008,6 +2066,9 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			traceBuf.WriteString(line)
+		}
 		if err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("stream read error: %w", err)
 		}
@@ -2256,7 +2317,7 @@ func unwrapIfNeeded(isOAuth bool, raw []byte) []byte {
 	return inner
 }
 
-func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsage, error) {
+func collectGeminiSSE(body io.Reader, isOAuth bool, traceBuf *gatewayTraceBodyBuffer) (map[string]any, *ClaudeUsage, error) {
 	reader := bufio.NewReader(body)
 
 	var last map[string]any
@@ -2267,6 +2328,9 @@ func collectGeminiSSE(body io.Reader, isOAuth bool) (map[string]any, *ClaudeUsag
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
+			if traceBuf != nil {
+				traceBuf.WriteString(line)
+			}
 			trimmed := strings.TrimRight(line, "\r\n")
 			if strings.HasPrefix(trimmed, "data:") {
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
@@ -2491,6 +2555,10 @@ func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Co
 	if err != nil {
 		return nil, err
 	}
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "gemini"), resp, respBody, map[string]any{
+		"format": "json",
+		"stream": false,
+	})
 
 	if isOAuth {
 		unwrappedBody, uwErr := unwrapGeminiResponse(respBody)
@@ -2547,10 +2615,16 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 	reader := bufio.NewReader(resp.Body)
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "gemini"), resp, traceBuf, map[string]any{
+		"format": "sse",
+		"stream": true,
+	})
 
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
+			traceBuf.WriteString(line)
 			trimmed := strings.TrimRight(line, "\r\n")
 			if strings.HasPrefix(trimmed, "data:") {
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))

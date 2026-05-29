@@ -120,3 +120,45 @@ func TestSettingHandler_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *
 	require.True(t, resp.Data.WeChatOAuthOpenEnabled)
 	require.True(t, resp.Data.WeChatOAuthMPEnabled)
 }
+
+func TestSettingHandler_GetPublicSettings_DefaultLoginAgreementMentionsDataExport(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewSettingHandler(service.NewSettingService(&settingHandlerPublicRepoStub{
+		values: map[string]string{},
+	}, &config.Config{}), "test-version")
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/settings/public", nil)
+
+	h.GetPublicSettings(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			LoginAgreementUpdatedAt string `json:"login_agreement_updated_at"`
+			LoginAgreementDocuments []struct {
+				ID        string `json:"id"`
+				ContentMD string `json:"content_md"`
+			} `json:"login_agreement_documents"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Equal(t, "2026-05-27", resp.Data.LoginAgreementUpdatedAt)
+	require.Len(t, resp.Data.LoginAgreementDocuments, 4)
+
+	var clause string
+	for _, doc := range resp.Data.LoginAgreementDocuments {
+		if doc.ID == "service-specific-terms" {
+			clause = doc.ContentMD
+			break
+		}
+	}
+	require.Contains(t, clause, "数据")
+	require.Contains(t, clause, "导出")
+	require.Contains(t, clause, "JSON")
+}

@@ -2,12 +2,15 @@ package httputil
 
 import (
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -80,6 +83,29 @@ func TestReadRequestBodyWithPrealloc_DecodesGzip(t *testing.T) {
 
 func TestReadRequestBodyWithPrealloc_DecodesDeflate(t *testing.T) {
 	var buf bytes.Buffer
+	zw, err := flate.NewWriter(&buf, flate.DefaultCompression)
+	if err != nil {
+		t.Fatalf("flate writer: %v", err)
+	}
+	if _, err := zw.Write([]byte(samplePayload)); err != nil {
+		t.Fatalf("flate write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("flate close: %v", err)
+	}
+
+	req := newRequestWithBody(t, buf.Bytes(), "deflate")
+	got, err := ReadRequestBodyWithPrealloc(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got) != samplePayload {
+		t.Fatalf("body mismatch: got %q", got)
+	}
+}
+
+func TestReadRequestBodyWithPrealloc_DecodesDeflateZlibWrapped(t *testing.T) {
+	var buf bytes.Buffer
 	zw := zlib.NewWriter(&buf)
 	if _, err := zw.Write([]byte(samplePayload)); err != nil {
 		t.Fatalf("zlib write: %v", err)
@@ -98,13 +124,33 @@ func TestReadRequestBodyWithPrealloc_DecodesDeflate(t *testing.T) {
 	}
 }
 
+func TestReadRequestBodyWithPrealloc_DecodesBrotli(t *testing.T) {
+	var buf bytes.Buffer
+	bw := brotli.NewWriter(&buf)
+	if _, err := bw.Write([]byte(samplePayload)); err != nil {
+		t.Fatalf("brotli write: %v", err)
+	}
+	if err := bw.Close(); err != nil {
+		t.Fatalf("brotli close: %v", err)
+	}
+
+	req := newRequestWithBody(t, buf.Bytes(), "br")
+	got, err := ReadRequestBodyWithPrealloc(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got) != samplePayload {
+		t.Fatalf("body mismatch: got %q", got)
+	}
+}
+
 func TestReadRequestBodyWithPrealloc_RejectsUnsupportedEncoding(t *testing.T) {
-	req := newRequestWithBody(t, []byte(samplePayload), "br")
+	req := newRequestWithBody(t, []byte(samplePayload), "snappy")
 	_, err := ReadRequestBodyWithPrealloc(req)
 	if err == nil {
 		t.Fatal("expected error for unsupported encoding, got nil")
 	}
-	if !strings.Contains(err.Error(), "br") {
+	if !strings.Contains(err.Error(), "snappy") {
 		t.Fatalf("error should mention encoding, got %v", err)
 	}
 }
@@ -139,5 +185,117 @@ func TestReadRequestBodyWithPrealloc_RespectsIdentityEncoding(t *testing.T) {
 	}
 	if string(got) != samplePayload {
 		t.Fatalf("body mismatch: got %q", got)
+	}
+}
+
+func TestReadRequestBodyWithPrealloc_RejectsRawBodyOverConfiguredLimit(t *testing.T) {
+	req := WithRequestBodyLimit(newRequestWithBody(t, []byte("12345"), ""), 4)
+
+	_, err := ReadRequestBodyWithPrealloc(req)
+	if err == nil {
+		t.Fatal("expected max bytes error, got nil")
+	}
+
+	var maxErr *http.MaxBytesError
+	if !errors.As(err, &maxErr) {
+		t.Fatalf("expected MaxBytesError, got %T: %v", err, err)
+	}
+	if maxErr.Limit != 4 {
+		t.Fatalf("MaxBytesError.Limit = %d, want 4", maxErr.Limit)
+	}
+}
+
+func TestReadRequestBodyWithPrealloc_RejectsCompressedBodyOverConfiguredLimit(t *testing.T) {
+	payload := strings.Repeat("a", 1024)
+	limit := int64(128)
+
+	tests := []struct {
+		name     string
+		encoding string
+		encode   func(t *testing.T, body []byte) []byte
+	}{
+		{
+			name:     "gzip",
+			encoding: "gzip",
+			encode: func(t *testing.T, body []byte) []byte {
+				t.Helper()
+				var buf bytes.Buffer
+				gw := gzip.NewWriter(&buf)
+				if _, err := gw.Write(body); err != nil {
+					t.Fatalf("gzip write: %v", err)
+				}
+				if err := gw.Close(); err != nil {
+					t.Fatalf("gzip close: %v", err)
+				}
+				return buf.Bytes()
+			},
+		},
+		{
+			name:     "deflate",
+			encoding: "deflate",
+			encode: func(t *testing.T, body []byte) []byte {
+				t.Helper()
+				var buf bytes.Buffer
+				zw, err := flate.NewWriter(&buf, flate.DefaultCompression)
+				if err != nil {
+					t.Fatalf("flate writer: %v", err)
+				}
+				if _, err := zw.Write(body); err != nil {
+					t.Fatalf("flate write: %v", err)
+				}
+				if err := zw.Close(); err != nil {
+					t.Fatalf("flate close: %v", err)
+				}
+				return buf.Bytes()
+			},
+		},
+		{
+			name:     "brotli",
+			encoding: "br",
+			encode: func(t *testing.T, body []byte) []byte {
+				t.Helper()
+				var buf bytes.Buffer
+				bw := brotli.NewWriter(&buf)
+				if _, err := bw.Write(body); err != nil {
+					t.Fatalf("brotli write: %v", err)
+				}
+				if err := bw.Close(); err != nil {
+					t.Fatalf("brotli close: %v", err)
+				}
+				return buf.Bytes()
+			},
+		},
+		{
+			name:     "zstd",
+			encoding: "zstd",
+			encode: func(t *testing.T, body []byte) []byte {
+				t.Helper()
+				enc, err := zstd.NewWriter(nil)
+				if err != nil {
+					t.Fatalf("zstd writer: %v", err)
+				}
+				defer enc.Close()
+				return enc.EncodeAll(body, nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := WithRequestBodyLimit(newRequestWithBody(t, tt.encode(t, []byte(payload)), tt.encoding), limit)
+
+			_, err := ReadRequestBodyWithPrealloc(req)
+			if err == nil {
+				t.Fatal("expected max bytes error, got nil")
+			}
+
+			var maxErr *http.MaxBytesError
+			if !errors.As(err, &maxErr) {
+				t.Fatalf("expected MaxBytesError, got %T: %v", err, err)
+			}
+			if maxErr.Limit != limit {
+				t.Fatalf("MaxBytesError.Limit = %d, want %d", maxErr.Limit, limit)
+			}
+		})
 	}
 }

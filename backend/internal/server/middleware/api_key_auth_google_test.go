@@ -320,7 +320,7 @@ func TestApiKeyAuthWithSubscriptionGoogleSetsGroupContext(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestApiKeyAuthWithSubscriptionGoogle_QueryKeyAllowedOnV1Beta(t *testing.T) {
+func TestApiKeyAuthWithSubscriptionGoogle_QueryKeyRejectedByDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
@@ -345,8 +345,39 @@ func TestApiKeyAuthWithSubscriptionGoogle_QueryKeyAllowedOnV1Beta(t *testing.T) 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.NotContains(t, rec.Body.String(), "valid")
+}
+
+func TestApiKeyAuthWithSubscriptionGoogle_QueryKeyAllowedWhenCompatibilityEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	apiKeyService := newTestAPIKeyService(fakeAPIKeyRepo{
+		getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+			return &service.APIKey{
+				ID:     1,
+				Key:    key,
+				Status: service.StatusActive,
+				User: &service.User{
+					ID:     123,
+					Status: service.StatusActive,
+				},
+			}, nil
+		},
+	})
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gemini.AllowNativeQueryAPIKey = true
+	r.Use(APIKeyAuthWithSubscriptionGoogle(apiKeyService, nil, cfg))
+	r.GET("/v1beta/test", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
+
+	req := httptest.NewRequest(http.MethodGet, "/v1beta/test?key=valid", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Contains(t, rec.Header().Get("Warning"), "Query parameter key is deprecated")
+	require.Contains(t, rec.Header().Get("Warning"), "compatibility-only")
+	require.Equal(t, "", req.URL.Query().Get("key"))
 }
 
 func TestApiKeyAuthWithSubscriptionGoogle_IPRestrictionDoesNotTrustSpoofedForwardHeaders(t *testing.T) {

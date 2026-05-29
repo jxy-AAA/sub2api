@@ -80,16 +80,6 @@ func Notes(v string) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldNotes, v))
 }
 
-// Platform applies equality check predicate on the "platform" field. It's identical to PlatformEQ.
-func Platform(v string) predicate.Account {
-	return predicate.Account(sql.FieldEQ(FieldPlatform, v))
-}
-
-// Type applies equality check predicate on the "type" field. It's identical to TypeEQ.
-func Type(v string) predicate.Account {
-	return predicate.Account(sql.FieldEQ(FieldType, v))
-}
-
 // ProxyID applies equality check predicate on the "proxy_id" field. It's identical to ProxyIDEQ.
 func ProxyID(v int64) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldProxyID, v))
@@ -113,11 +103,6 @@ func Priority(v int) predicate.Account {
 // RateMultiplier applies equality check predicate on the "rate_multiplier" field. It's identical to RateMultiplierEQ.
 func RateMultiplier(v float64) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldRateMultiplier, v))
-}
-
-// Status applies equality check predicate on the "status" field. It's identical to StatusEQ.
-func Status(v string) predicate.Account {
-	return predicate.Account(sql.FieldEQ(FieldStatus, v))
 }
 
 // ErrorMessage applies equality check predicate on the "error_message" field. It's identical to ErrorMessageEQ.
@@ -456,133 +441,43 @@ func NotesContainsFold(v string) predicate.Account {
 }
 
 // PlatformEQ applies the EQ predicate on the "platform" field.
-func PlatformEQ(v string) predicate.Account {
+func PlatformEQ(v Platform) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldPlatform, v))
 }
 
 // PlatformNEQ applies the NEQ predicate on the "platform" field.
-func PlatformNEQ(v string) predicate.Account {
+func PlatformNEQ(v Platform) predicate.Account {
 	return predicate.Account(sql.FieldNEQ(FieldPlatform, v))
 }
 
 // PlatformIn applies the In predicate on the "platform" field.
-func PlatformIn(vs ...string) predicate.Account {
+func PlatformIn(vs ...Platform) predicate.Account {
 	return predicate.Account(sql.FieldIn(FieldPlatform, vs...))
 }
 
 // PlatformNotIn applies the NotIn predicate on the "platform" field.
-func PlatformNotIn(vs ...string) predicate.Account {
+func PlatformNotIn(vs ...Platform) predicate.Account {
 	return predicate.Account(sql.FieldNotIn(FieldPlatform, vs...))
 }
 
-// PlatformGT applies the GT predicate on the "platform" field.
-func PlatformGT(v string) predicate.Account {
-	return predicate.Account(sql.FieldGT(FieldPlatform, v))
-}
-
-// PlatformGTE applies the GTE predicate on the "platform" field.
-func PlatformGTE(v string) predicate.Account {
-	return predicate.Account(sql.FieldGTE(FieldPlatform, v))
-}
-
-// PlatformLT applies the LT predicate on the "platform" field.
-func PlatformLT(v string) predicate.Account {
-	return predicate.Account(sql.FieldLT(FieldPlatform, v))
-}
-
-// PlatformLTE applies the LTE predicate on the "platform" field.
-func PlatformLTE(v string) predicate.Account {
-	return predicate.Account(sql.FieldLTE(FieldPlatform, v))
-}
-
-// PlatformContains applies the Contains predicate on the "platform" field.
-func PlatformContains(v string) predicate.Account {
-	return predicate.Account(sql.FieldContains(FieldPlatform, v))
-}
-
-// PlatformHasPrefix applies the HasPrefix predicate on the "platform" field.
-func PlatformHasPrefix(v string) predicate.Account {
-	return predicate.Account(sql.FieldHasPrefix(FieldPlatform, v))
-}
-
-// PlatformHasSuffix applies the HasSuffix predicate on the "platform" field.
-func PlatformHasSuffix(v string) predicate.Account {
-	return predicate.Account(sql.FieldHasSuffix(FieldPlatform, v))
-}
-
-// PlatformEqualFold applies the EqualFold predicate on the "platform" field.
-func PlatformEqualFold(v string) predicate.Account {
-	return predicate.Account(sql.FieldEqualFold(FieldPlatform, v))
-}
-
-// PlatformContainsFold applies the ContainsFold predicate on the "platform" field.
-func PlatformContainsFold(v string) predicate.Account {
-	return predicate.Account(sql.FieldContainsFold(FieldPlatform, v))
-}
-
 // TypeEQ applies the EQ predicate on the "type" field.
-func TypeEQ(v string) predicate.Account {
+func TypeEQ(v Type) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldType, v))
 }
 
 // TypeNEQ applies the NEQ predicate on the "type" field.
-func TypeNEQ(v string) predicate.Account {
+func TypeNEQ(v Type) predicate.Account {
 	return predicate.Account(sql.FieldNEQ(FieldType, v))
 }
 
 // TypeIn applies the In predicate on the "type" field.
-func TypeIn(vs ...string) predicate.Account {
+func TypeIn(vs ...Type) predicate.Account {
 	return predicate.Account(sql.FieldIn(FieldType, vs...))
 }
 
 // TypeNotIn applies the NotIn predicate on the "type" field.
-func TypeNotIn(vs ...string) predicate.Account {
+func TypeNotIn(vs ...Type) predicate.Account {
 	return predicate.Account(sql.FieldNotIn(FieldType, vs...))
-}
-
-// TypeGT applies the GT predicate on the "type" field.
-func TypeGT(v string) predicate.Account {
-	return predicate.Account(sql.FieldGT(FieldType, v))
-}
-
-// TypeGTE applies the GTE predicate on the "type" field.
-func TypeGTE(v string) predicate.Account {
-	return predicate.Account(sql.FieldGTE(FieldType, v))
-}
-
-// TypeLT applies the LT predicate on the "type" field.
-func TypeLT(v string) predicate.Account {
-	return predicate.Account(sql.FieldLT(FieldType, v))
-}
-
-// TypeLTE applies the LTE predicate on the "type" field.
-func TypeLTE(v string) predicate.Account {
-	return predicate.Account(sql.FieldLTE(FieldType, v))
-}
-
-// TypeContains applies the Contains predicate on the "type" field.
-func TypeContains(v string) predicate.Account {
-	return predicate.Account(sql.FieldContains(FieldType, v))
-}
-
-// TypeHasPrefix applies the HasPrefix predicate on the "type" field.
-func TypeHasPrefix(v string) predicate.Account {
-	return predicate.Account(sql.FieldHasPrefix(FieldType, v))
-}
-
-// TypeHasSuffix applies the HasSuffix predicate on the "type" field.
-func TypeHasSuffix(v string) predicate.Account {
-	return predicate.Account(sql.FieldHasSuffix(FieldType, v))
-}
-
-// TypeEqualFold applies the EqualFold predicate on the "type" field.
-func TypeEqualFold(v string) predicate.Account {
-	return predicate.Account(sql.FieldEqualFold(FieldType, v))
-}
-
-// TypeContainsFold applies the ContainsFold predicate on the "type" field.
-func TypeContainsFold(v string) predicate.Account {
-	return predicate.Account(sql.FieldContainsFold(FieldType, v))
 }
 
 // ProxyIDEQ applies the EQ predicate on the "proxy_id" field.
@@ -786,68 +681,23 @@ func RateMultiplierLTE(v float64) predicate.Account {
 }
 
 // StatusEQ applies the EQ predicate on the "status" field.
-func StatusEQ(v string) predicate.Account {
+func StatusEQ(v Status) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldStatus, v))
 }
 
 // StatusNEQ applies the NEQ predicate on the "status" field.
-func StatusNEQ(v string) predicate.Account {
+func StatusNEQ(v Status) predicate.Account {
 	return predicate.Account(sql.FieldNEQ(FieldStatus, v))
 }
 
 // StatusIn applies the In predicate on the "status" field.
-func StatusIn(vs ...string) predicate.Account {
+func StatusIn(vs ...Status) predicate.Account {
 	return predicate.Account(sql.FieldIn(FieldStatus, vs...))
 }
 
 // StatusNotIn applies the NotIn predicate on the "status" field.
-func StatusNotIn(vs ...string) predicate.Account {
+func StatusNotIn(vs ...Status) predicate.Account {
 	return predicate.Account(sql.FieldNotIn(FieldStatus, vs...))
-}
-
-// StatusGT applies the GT predicate on the "status" field.
-func StatusGT(v string) predicate.Account {
-	return predicate.Account(sql.FieldGT(FieldStatus, v))
-}
-
-// StatusGTE applies the GTE predicate on the "status" field.
-func StatusGTE(v string) predicate.Account {
-	return predicate.Account(sql.FieldGTE(FieldStatus, v))
-}
-
-// StatusLT applies the LT predicate on the "status" field.
-func StatusLT(v string) predicate.Account {
-	return predicate.Account(sql.FieldLT(FieldStatus, v))
-}
-
-// StatusLTE applies the LTE predicate on the "status" field.
-func StatusLTE(v string) predicate.Account {
-	return predicate.Account(sql.FieldLTE(FieldStatus, v))
-}
-
-// StatusContains applies the Contains predicate on the "status" field.
-func StatusContains(v string) predicate.Account {
-	return predicate.Account(sql.FieldContains(FieldStatus, v))
-}
-
-// StatusHasPrefix applies the HasPrefix predicate on the "status" field.
-func StatusHasPrefix(v string) predicate.Account {
-	return predicate.Account(sql.FieldHasPrefix(FieldStatus, v))
-}
-
-// StatusHasSuffix applies the HasSuffix predicate on the "status" field.
-func StatusHasSuffix(v string) predicate.Account {
-	return predicate.Account(sql.FieldHasSuffix(FieldStatus, v))
-}
-
-// StatusEqualFold applies the EqualFold predicate on the "status" field.
-func StatusEqualFold(v string) predicate.Account {
-	return predicate.Account(sql.FieldEqualFold(FieldStatus, v))
-}
-
-// StatusContainsFold applies the ContainsFold predicate on the "status" field.
-func StatusContainsFold(v string) predicate.Account {
-	return predicate.Account(sql.FieldContainsFold(FieldStatus, v))
 }
 
 // ErrorMessageEQ applies the EQ predicate on the "error_message" field.

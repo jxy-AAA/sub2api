@@ -64,7 +64,14 @@ export interface AffiliateDirectChild {
   role?: 'agent' | 'user' | string
   joined_at?: string | null
   today_revenue_usd: number
+  today_business_rmb: number
   today_rebate_rmb: number
+  direct_total_usage_usd: number
+  direct_total_usage_rmb: number
+  direct_user_usage_usd: number
+  direct_user_usage_rmb: number
+  direct_agent_usage_usd: number
+  direct_agent_usage_rmb: number
   current_rebate_balance_rmb: number
   group_rates: AffiliateGroupRate[]
 }
@@ -79,7 +86,14 @@ export interface AffiliateDirectChildResponse {
   created_at?: string | null
   today_revenue_usd?: number | null
   today_business_usd?: number | null
+  today_business_rmb?: number | null
   today_rebate_rmb?: number | null
+  direct_total_usage_usd?: number | null
+  direct_total_usage_rmb?: number | null
+  direct_user_usage_usd?: number | null
+  direct_user_usage_rmb?: number | null
+  direct_agent_usage_usd?: number | null
+  direct_agent_usage_rmb?: number | null
   current_rebate_balance_rmb?: number | null
   group_rates?: AffiliateRawGroupRate[] | null
   current_group_rates?: AffiliateRawGroupRate[] | null
@@ -92,6 +106,7 @@ export interface AffiliateDistributionDetail {
   invite_group_rates: AffiliateGroupRate[]
   my_group_rates: AffiliateGroupRate[]
   today_revenue_usd: number
+  today_business_rmb: number
   today_rebate_rmb: number
   current_rebate_balance_rmb: number
   direct_children: AffiliateDirectChild[]
@@ -109,6 +124,7 @@ export interface AffiliateDistributionDetailResponse {
   group_rates?: AffiliateRawGroupRate[] | null
   today_revenue_usd?: number | null
   today_business_usd?: number | null
+  today_business_rmb?: number | null
   today_rebate_rmb?: number | null
   current_rebate_balance_rmb?: number | null
   direct_children?: AffiliateDirectChildResponse[] | null

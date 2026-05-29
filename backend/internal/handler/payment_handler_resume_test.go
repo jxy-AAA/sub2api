@@ -76,7 +76,7 @@ func TestApplyWeChatPaymentResumeClaimsRejectsPaymentTypeMismatch(t *testing.T) 
 }
 
 func TestVerifyOrderPublicReturnsLegacyOrderState(t *testing.T) {
-	t.Parallel()
+	t.Setenv("PAYMENT_RESUME_SIGNING_KEY", "0123456789abcdef0123456789abcdef")
 
 	gin.SetMode(gin.TestMode)
 
@@ -117,6 +117,14 @@ func TestVerifyOrderPublicReturnsLegacyOrderState(t *testing.T) {
 		Save(context.Background())
 	require.NoError(t, err)
 
+	resumeSvc := service.NewPaymentResumeService([]byte("0123456789abcdef0123456789abcdef"))
+	lookupToken, err := resumeSvc.CreatePublicOrderLookupToken(service.PublicOrderLookupClaims{
+		OrderID:    order.ID,
+		OutTradeNo: order.OutTradeNo,
+		UserID:     user.ID,
+	})
+	require.NoError(t, err)
+
 	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil)
 	h := NewPaymentHandler(paymentSvc, nil, nil)
 
@@ -125,7 +133,7 @@ func TestVerifyOrderPublicReturnsLegacyOrderState(t *testing.T) {
 	ctx.Request = httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/payment/public/orders/verify",
-		bytes.NewBufferString(`{"out_trade_no":"legacy-order-no"}`),
+		bytes.NewBufferString(`{"out_trade_no":"legacy-order-no","lookup_token":"`+lookupToken+`"}`),
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
@@ -358,4 +366,43 @@ func TestVerifyOrderPublicRejectsBlankOutTradeNo(t *testing.T) {
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
 	require.Equal(t, http.StatusBadRequest, resp.Code)
 	require.Equal(t, "INVALID_OUT_TRADE_NO", resp.Reason)
+}
+
+func TestVerifyOrderPublicRejectsMissingLookupToken(t *testing.T) {
+	t.Setenv("PAYMENT_RESUME_SIGNING_KEY", "0123456789abcdef0123456789abcdef")
+	gin.SetMode(gin.TestMode)
+
+	db, err := sql.Open("sqlite", "file:payment_handler_public_verify_missing_lookup?mode=memory&cache=shared")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	_, err = db.Exec("PRAGMA foreign_keys = ON")
+	require.NoError(t, err)
+
+	drv := entsql.OpenDB(dialect.SQLite, db)
+	client := enttest.NewClient(t, enttest.WithOptions(dbent.Driver(drv)))
+	t.Cleanup(func() { _ = client.Close() })
+
+	paymentSvc := service.NewPaymentService(client, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil)
+	h := NewPaymentHandler(paymentSvc, nil, nil)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/payment/public/orders/verify",
+		bytes.NewBufferString(`{"out_trade_no":"legacy-order-no"}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.VerifyOrderPublic(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+
+	var resp struct {
+		Code   int    `json:"code"`
+		Reason string `json:"reason"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.Equal(t, "INVALID_PUBLIC_ORDER_LOOKUP_TOKEN", resp.Reason)
 }

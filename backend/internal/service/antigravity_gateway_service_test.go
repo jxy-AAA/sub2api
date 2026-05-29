@@ -794,7 +794,7 @@ func TestStreamUpstreamResponse_UsageAndFirstToken(t *testing.T) {
 	}()
 
 	start := time.Now().Add(-10 * time.Millisecond)
-	result := svc.streamUpstreamResponse(c, resp, start)
+	result := svc.streamUpstreamResponse(c, resp, start, "")
 	_ = pr.Close()
 
 	require.NotNil(t, result)
@@ -840,7 +840,7 @@ func TestStreamUpstreamResponse_NormalComplete(t *testing.T) {
 		fmt.Fprintln(pw, "")
 	}()
 
-	result := svc.streamUpstreamResponse(c, resp, time.Now())
+	result := svc.streamUpstreamResponse(c, resp, time.Now(), "")
 	_ = pr.Close()
 
 	require.NotNil(t, result)
@@ -1043,7 +1043,7 @@ func TestStreamUpstreamResponse_ClientDisconnectDrainsUsage(t *testing.T) {
 		fmt.Fprintln(pw, "")
 	}()
 
-	result := svc.streamUpstreamResponse(c, resp, time.Now())
+	result := svc.streamUpstreamResponse(c, resp, time.Now(), "")
 	_ = pr.Close()
 
 	require.NotNil(t, result)
@@ -1068,7 +1068,7 @@ func TestStreamUpstreamResponse_ContextCanceled(t *testing.T) {
 
 	resp := &http.Response{StatusCode: http.StatusOK, Body: cancelReadCloser{}, Header: http.Header{}}
 
-	result := svc.streamUpstreamResponse(c, resp, time.Now())
+	result := svc.streamUpstreamResponse(c, resp, time.Now(), "")
 
 	require.NotNil(t, result)
 	require.True(t, result.clientDisconnect)
@@ -1090,7 +1090,7 @@ func TestStreamUpstreamResponse_Timeout(t *testing.T) {
 	pr, pw := io.Pipe()
 	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
 
-	result := svc.streamUpstreamResponse(c, resp, time.Now())
+	result := svc.streamUpstreamResponse(c, resp, time.Now(), "")
 	_ = pw.Close()
 	_ = pr.Close()
 
@@ -1120,7 +1120,7 @@ func TestStreamUpstreamResponse_TimeoutAfterClientDisconnect(t *testing.T) {
 		// 不关闭 pw → 等待超时
 	}()
 
-	result := svc.streamUpstreamResponse(c, resp, time.Now())
+	result := svc.streamUpstreamResponse(c, resp, time.Now(), "")
 	_ = pw.Close()
 	_ = pr.Close()
 
@@ -1493,4 +1493,86 @@ func generateLargeUnwrapJSON(minSize int) []byte {
 	outer := map[string]any{"response": inner}
 	b, _ := json.Marshal(outer)
 	return b
+}
+
+func TestAntigravityRetryLoop_CapturesUpstreamRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
+	oldAvailability := antigravity.DefaultURLAvailability
+	antigravity.BaseURLs = []string{"https://ag-capture.test"}
+	antigravity.DefaultURLAvailability = antigravity.NewURLAvailability(time.Minute)
+	defer func() {
+		antigravity.BaseURLs = oldBaseURLs
+		antigravity.DefaultURLAvailability = oldAvailability
+	}()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/antigravity/v1/messages", bytes.NewReader([]byte(`{}`)))
+
+	upstream := &queuedHTTPUpstreamStub{
+		responses: []*http.Response{{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}},
+	}
+	svc := &AntigravityGatewayService{}
+	account := &Account{
+		ID:          41,
+		Name:        "ag-oauth",
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+	}
+
+	result, err := svc.antigravityRetryLoop(antigravityRetryLoopParams{
+		ctx:            context.Background(),
+		prefix:         "[capture-test]",
+		account:        account,
+		accessToken:    "token",
+		action:         "streamGenerateContent",
+		body:           []byte(`{"request":"wrapped"}`),
+		upstreamModel:  "gemini-2.5-pro",
+		c:              c,
+		httpUpstream:   upstream,
+		requestedModel: "claude-sonnet-4-5",
+		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	captures := GetGatewayTraceCaptures(c)
+	require.Len(t, captures, 1)
+	require.Equal(t, GatewayTraceStageUpstreamRequest, captures[0].Stage)
+	require.Equal(t, "antigravity.messages", captures[0].Protocol)
+	require.Equal(t, `{"request":"wrapped"}`, captures[0].Body)
+	require.Equal(t, "streamGenerateContent", captures[0].Meta["action"])
+	require.Equal(t, "claude-sonnet-4-5", captures[0].Meta["original_model"])
+	require.Equal(t, "gemini-2.5-pro", captures[0].Meta["upstream_model"])
+}
+
+func TestAntigravityForwardGeminiCountTokensDoesNotCaptureUpstreamRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/antigravity/v1beta/models/gemini-2.5-pro:countTokens", bytes.NewReader([]byte(`{"contents":[]}`)))
+
+	svc := &AntigravityGatewayService{}
+	account := &Account{
+		ID:       42,
+		Name:     "ag-oauth",
+		Platform: PlatformAntigravity,
+		Type:     AccountTypeOAuth,
+	}
+
+	result, err := svc.ForwardGemini(context.Background(), c, account, "gemini-2.5-pro", "countTokens", false, []byte(`{"contents":[]}`), false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Empty(t, GetGatewayTraceCaptures(c))
 }

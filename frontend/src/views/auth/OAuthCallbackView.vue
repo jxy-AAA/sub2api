@@ -91,69 +91,28 @@
         </button>
       </div>
 
-      <div v-else class="card p-6">
+      <div v-else class="card p-6 text-center">
         <h1 class="text-lg font-semibold text-gray-900 dark:text-white">
-          {{ t('auth.oauth.callbackTitle') }}
+          {{ t('auth.oauth.invalidCallbackTitle') }}
         </h1>
         <p class="mt-2 text-sm text-gray-600 dark:text-gray-400">
-          {{ t('auth.oauth.callbackHint') }}
+          {{ t('auth.oauth.invalidCallbackHint') }}
         </p>
-
-        <div class="mt-6 space-y-4">
-          <div>
-            <label class="input-label">{{ t('auth.oauth.code') }}</label>
-            <div class="flex gap-2">
-              <input class="input flex-1 font-mono text-sm" :value="code" readonly />
-              <button class="btn btn-secondary" type="button" :disabled="!code" @click="copy(code)">
-                {{ t('common.copy') }}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label class="input-label">{{ t('auth.oauth.state') }}</label>
-            <div class="flex gap-2">
-              <input class="input flex-1 font-mono text-sm" :value="state" readonly />
-              <button
-                class="btn btn-secondary"
-                type="button"
-                :disabled="!state"
-                @click="copy(state)"
-              >
-                {{ t('common.copy') }}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label class="input-label">{{ t('auth.oauth.fullUrl') }}</label>
-            <div class="flex gap-2">
-              <input class="input flex-1 font-mono text-xs" :value="fullUrl" readonly />
-              <button
-                class="btn btn-secondary"
-                type="button"
-                :disabled="!fullUrl"
-                @click="copy(fullUrl)"
-              >
-                {{ t('common.copy') }}
-              </button>
-            </div>
-          </div>
-        </div>
+        <button class="btn btn-primary mt-6" type="button" @click="router.replace('/login')">
+          {{ t('auth.backToLogin') }}
+        </button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { useClipboard } from '@/composables/useClipboard'
 import { useAppStore, useAuthStore } from '@/stores'
 import { apiClient } from '@/api/client'
 import {
-  clearOAuthCallbackFragment,
   exchangePendingOAuthCompletion,
   persistOAuthTokenContext,
   type OAuthTokenResponse
@@ -167,7 +126,6 @@ import {
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
-const { copyToClipboard } = useClipboard()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const isProcessing = ref(false)
@@ -191,18 +149,9 @@ type EmailOAuthPendingCompletion = Partial<OAuthTokenResponse> & {
   email?: string
   resolved_email?: string
   invitation_required?: boolean
+  error_message?: string
+  error_description?: string
 }
-
-const code = computed(() => (route.query.code as string) || '')
-const state = computed(() => (route.query.state as string) || '')
-const error = computed(
-  () => (route.query.error as string) || (route.query.error_description as string) || ''
-)
-
-const fullUrl = computed(() => {
-  if (typeof window === 'undefined') return ''
-  return window.location.href
-})
 const providerName = computed(() =>
   pendingProvider.value === 'google' ? 'Google' : 'GitHub'
 )
@@ -218,26 +167,6 @@ const canSubmitRegistration = computed(() => {
   if (invitationRequired.value && !invitationCode.value.trim()) return false
   return true
 })
-
-function parseFragmentParams(): URLSearchParams {
-  const raw = typeof window !== 'undefined' ? window.location.hash : ''
-  const hash = raw.startsWith('#') ? raw.slice(1) : raw
-  return new URLSearchParams(hash)
-}
-
-function readTokenResponse(params: URLSearchParams): OAuthTokenResponse | null {
-  const accessToken = params.get('access_token')?.trim() || ''
-  if (!accessToken) return null
-
-  const response: OAuthTokenResponse = { access_token: accessToken }
-  const refreshToken = params.get('refresh_token')?.trim() || ''
-  if (refreshToken) response.refresh_token = refreshToken
-  const expiresIn = Number.parseInt(params.get('expires_in')?.trim() || '', 10)
-  if (Number.isFinite(expiresIn) && expiresIn > 0) response.expires_in = expiresIn
-  const tokenType = params.get('token_type')?.trim() || ''
-  if (tokenType) response.token_type = tokenType
-  return response
-}
 
 function sanitizeRedirectPath(path: string | null | undefined): string {
   if (!path) return '/dashboard'
@@ -312,7 +241,10 @@ async function resumePendingEmailOAuth() {
       return
     }
 
-    appStore.showError(completion.error || t('auth.loginFailed'))
+    const completionMessage =
+      String(completion.error_description || completion.error_message || completion.error || '').trim()
+    appStore.showError(completionMessage || t('auth.loginFailed'))
+    invalidCallback.value = true
   } catch (e: unknown) {
     const err = e as { message?: string; response?: { data?: { message?: string } } }
     const message = err.response?.data?.message || err.message || t('auth.loginFailed')
@@ -366,51 +298,26 @@ async function handleSubmitRegistration() {
 }
 
 onMounted(async () => {
-  const params = parseFragmentParams()
-  clearOAuthCallbackFragment()
-  const tokenResponse = readTokenResponse(params)
-  const fragmentError = params.get('error') || ''
-  const fragmentErrorDescription =
-    params.get('error_description') || params.get('error_message') || ''
+  if (route.path === '/auth/oauth/callback' || route.path === '/auth/callback') {
+    const code = String(route.query.code || '').trim()
+    const providerError = String(route.query.error || '').trim()
+    const providerErrorDescription = String(route.query.error_description || '').trim()
+    const pendingEmailOAuthProvider = readPendingEmailOAuthProvider()
 
-  if (fragmentError) {
-    appStore.showError(fragmentErrorDescription || fragmentError)
-    return
-  }
-  if (!tokenResponse) {
-    if (route.path === '/auth/oauth/callback') {
-      const pendingEmailOAuthProvider = readPendingEmailOAuthProvider()
-      if (pendingEmailOAuthProvider && code.value && state.value) {
-        redirectProviderCallbackToBackend(pendingEmailOAuthProvider)
-        return
-      }
-      await resumePendingEmailOAuth()
+    const oauthSource = String(route.query.oauth_source || '').trim()
+
+    if (pendingEmailOAuthProvider && code && oauthSource !== 'backend') {
+      redirectProviderCallbackToBackend(pendingEmailOAuthProvider)
+      return
     }
+    if (providerError) {
+      appStore.showError(providerErrorDescription || providerError)
+      invalidCallback.value = true
+      return
+    }
+    await resumePendingEmailOAuth()
     return
   }
-
-  isProcessing.value = true
-  try {
-    await finalizeTokenResponse(tokenResponse, params.get('redirect') || '/dashboard')
-  } catch (error: unknown) {
-    const message = (error as { message?: string })?.message || t('auth.loginFailed')
-    appStore.showError(message)
-    isProcessing.value = false
-  }
+  invalidCallback.value = true
 })
-
-watch(
-  error,
-  (message) => {
-    if (message) {
-      appStore.showError(message)
-    }
-  },
-  { immediate: true }
-)
-
-const copy = (value: string) => {
-  if (!value) return
-  copyToClipboard(value)
-}
 </script>

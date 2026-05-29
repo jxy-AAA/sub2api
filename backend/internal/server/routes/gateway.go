@@ -12,8 +12,10 @@ import (
 )
 
 type gatewayRouteChains struct {
-	anthropic []gin.HandlerFunc
-	google    []gin.HandlerFunc
+	anthropic            []gin.HandlerFunc
+	google               []gin.HandlerFunc
+	antigravityAnthropic []gin.HandlerFunc
+	antigravityGoogle    []gin.HandlerFunc
 }
 
 // RegisterGatewayRoutes 娉ㄥ唽 API 缃戝叧璺敱锛圕laude/OpenAI/Gemini 鍏煎锛?
@@ -25,6 +27,7 @@ func RegisterGatewayRoutes(
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
+	traceService *service.ModelInteractionTraceService,
 	cfg *config.Config,
 ) {
 	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
@@ -40,6 +43,7 @@ func RegisterGatewayRoutes(
 		apiKeyService,
 		subscriptionService,
 		settingService,
+		traceService,
 		cfg,
 	)
 
@@ -61,12 +65,18 @@ func RegisterGatewayRoutes(
 	{
 		gateway.POST("/messages", messagesHandler)
 		gateway.POST("/messages/count_tokens", countTokensHandler)
+		// Models are served locally today; keep the recorder on the route chain,
+		// but avoid synthesizing empty upstream_request captures in the handler.
 		gateway.GET("/models", h.Gateway.Models)
 		gateway.GET("/usage", h.Gateway.Usage)
 		gateway.POST("/responses", responsesHandler)
 		gateway.POST("/responses/*subpath", responsesHandler)
+		// GET /responses upgrades to websocket. HTTP trace persistence only
+		// happens once the websocket forwarder emits capture entries itself.
 		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
 		gateway.POST("/chat/completions", chatCompletionsHandler)
+		// Images use dedicated handlers with multipart/raw request shapes; route
+		// registration stays here, while capture is owned by the image service.
 		gateway.POST("/images/generations", imagesHandler)
 		gateway.POST("/images/edits", imagesHandler)
 	}
@@ -93,17 +103,9 @@ func RegisterGatewayRoutes(
 	r.POST("/images/generations", appendHandlers(chains.anthropic, imagesHandler)...)
 	r.POST("/images/edits", appendHandlers(chains.anthropic, imagesHandler)...)
 
-	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
-	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
+	r.GET("/antigravity/models", appendHandlers(chains.antigravityAnthropic, h.Gateway.AntigravityModels)...)
 
-	antigravityV1 := r.Group("/antigravity/v1")
-	antigravityV1.Use(bodyLimit)
-	antigravityV1.Use(clientRequestID)
-	antigravityV1.Use(opsErrorLogger)
-	antigravityV1.Use(endpointNorm)
-	antigravityV1.Use(middleware.ForcePlatform(service.PlatformAntigravity))
-	antigravityV1.Use(gin.HandlerFunc(apiKeyAuth))
-	antigravityV1.Use(requireGroupAnthropic)
+	antigravityV1 := r.Group("/antigravity/v1", chains.antigravityAnthropic...)
 	{
 		antigravityV1.POST("/messages", h.Gateway.Messages)
 		antigravityV1.POST("/messages/count_tokens", h.Gateway.CountTokens)
@@ -111,15 +113,7 @@ func RegisterGatewayRoutes(
 		antigravityV1.GET("/usage", h.Gateway.Usage)
 	}
 
-	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
-	antigravityV1Beta := r.Group("/antigravity/v1beta")
-	antigravityV1Beta.Use(bodyLimit)
-	antigravityV1Beta.Use(clientRequestID)
-	antigravityV1Beta.Use(opsErrorLogger)
-	antigravityV1Beta.Use(endpointNorm)
-	antigravityV1Beta.Use(middleware.ForcePlatform(service.PlatformAntigravity))
-	antigravityV1Beta.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg))
-	antigravityV1Beta.Use(requireGroupGoogle)
+	antigravityV1Beta := r.Group("/antigravity/v1beta", chains.antigravityGoogle...)
 	{
 		antigravityV1Beta.GET("/models", h.Gateway.GeminiV1BetaListModels)
 		antigravityV1Beta.GET("/models/:model", h.Gateway.GeminiV1BetaGetModel)
@@ -136,6 +130,7 @@ func buildGatewayRouteChains(
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
 	settingService *service.SettingService,
+	traceService *service.ModelInteractionTraceService,
 	cfg *config.Config,
 ) gatewayRouteChains {
 	base := []gin.HandlerFunc{
@@ -143,6 +138,7 @@ func buildGatewayRouteChains(
 		clientRequestID,
 		opsErrorLogger,
 		endpointNorm,
+		middleware.GatewayTraceRecorder(traceService),
 	}
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
@@ -151,6 +147,18 @@ func buildGatewayRouteChains(
 		anthropic: appendHandlers(base, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic),
 		google: appendHandlers(
 			base,
+			middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg),
+			requireGroupGoogle,
+		),
+		antigravityAnthropic: appendHandlers(
+			base,
+			middleware.ForcePlatform(service.PlatformAntigravity),
+			gin.HandlerFunc(apiKeyAuth),
+			requireGroupAnthropic,
+		),
+		antigravityGoogle: appendHandlers(
+			base,
+			middleware.ForcePlatform(service.PlatformAntigravity),
 			middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg),
 			requireGroupGoogle,
 		),
@@ -164,7 +172,10 @@ func appendHandlers(handlers []gin.HandlerFunc, extra ...gin.HandlerFunc) []gin.
 
 func matchGroupPlatformHandler(platform string, matched gin.HandlerFunc, fallback gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if getGroupPlatform(c) == platform {
+		groupPlatform := getGroupPlatform(c)
+		if (platform == service.PlatformOpenAI && service.IsOpenAIProtocolPlatform(groupPlatform)) ||
+			(platform == service.PlatformAnthropic && service.IsAnthropicProtocolPlatform(groupPlatform)) ||
+			groupPlatform == platform {
 			matched(c)
 			return
 		}

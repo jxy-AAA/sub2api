@@ -219,7 +219,7 @@ func TestResetRuntimeLogConfig_ShouldFallbackToBaseline(t *testing.T) {
 
 func TestResetRuntimeLogConfig_InvalidOperator(t *testing.T) {
 	svc := &OpsService{settingRepo: newRuntimeSettingRepoStub()}
-	_, err := svc.ResetRuntimeLogConfig(context.Background(), 0)
+	_, err := svc.ResetRuntimeLogConfig(context.Background(), -1)
 	if err == nil {
 		t.Fatalf("expected invalid operator error")
 	}
@@ -478,7 +478,7 @@ func TestUpdateRuntimeLogConfig_PreconditionErrors(t *testing.T) {
 		SamplingInitial: 1,
 		SamplingNext:    1,
 		RetentionDays:   1,
-	}, 0); err == nil {
+	}, -1); err == nil {
 		t.Fatalf("expected invalid operator")
 	}
 }

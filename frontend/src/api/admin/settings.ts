@@ -806,6 +806,10 @@ export async function sendTestEmail(
 export interface AdminApiKeyStatus {
   exists: boolean;
   masked_key: string;
+  principal_id?: string;
+  principal_type?: string;
+  name?: string;
+  scopes?: string[];
 }
 
 /**
@@ -823,8 +827,20 @@ export async function getAdminApiKey(): Promise<AdminApiKeyStatus> {
  * Regenerate admin API key
  * @returns The new full API key (only shown once)
  */
-export async function regenerateAdminApiKey(): Promise<{ key: string }> {
-  const { data } = await apiClient.post<{ key: string }>(
+export async function regenerateAdminApiKey(): Promise<{
+  key: string;
+  principal_id: string;
+  principal_type: string;
+  name: string;
+  scopes: string[];
+}> {
+  const { data } = await apiClient.post<{
+    key: string;
+    principal_id: string;
+    principal_type: string;
+    name: string;
+    scopes: string[];
+  }>(
     "/admin/settings/admin-api-key/regenerate",
   );
   return data;

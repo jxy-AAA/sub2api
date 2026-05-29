@@ -74,16 +74,6 @@ vi.mock('@/api/auth', async () => {
   }
 })
 
-function createDeferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason?: unknown) => void
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-  return { promise, resolve, reject }
-}
-
 function mountRegisterView() {
   return mount(RegisterView, {
     global: {
@@ -138,17 +128,15 @@ describe('RegisterView', () => {
     validateAffiliateCodeMock.mockResolvedValue({ valid: true })
   })
 
-  it('prefills the agent invitation field from referral code and submits aff_code only', async () => {
+  it('uses the referral link code without rendering an agent invitation field', async () => {
     const wrapper = mountRegisterView()
 
     await flushPromises()
 
-    const affiliateInput = wrapper.get('#agent_invitation_code')
-    expect((affiliateInput.element as HTMLInputElement).value).toBe('QUERY-CODE')
+    expect(wrapper.find('#agent_invitation_code').exists()).toBe(false)
 
     await wrapper.get('#email').setValue('user@example.com')
     await wrapper.get('#password').setValue('secret-123')
-    await affiliateInput.setValue('MANUAL-CODE')
     await wrapper.get('form').trigger('submit.prevent')
     await flushPromises()
 
@@ -157,7 +145,7 @@ describe('RegisterView', () => {
       password: 'secret-123',
       turnstile_token: undefined,
       invitation_code: undefined,
-      aff_code: 'MANUAL-CODE',
+      aff_code: 'QUERY-CODE',
     })
     expect(registerMock.mock.calls[0][0]).not.toHaveProperty('promo_code')
     expect(pushMock).toHaveBeenCalledWith('/dashboard')
@@ -187,7 +175,6 @@ describe('RegisterView', () => {
     await flushPromises()
     await wrapper.get('#email').setValue('user@example.com')
     await wrapper.get('#password').setValue('secret-123')
-    await wrapper.get('#agent_invitation_code').setValue('AFF-EMAIL')
     await wrapper.get('form').trigger('submit.prevent')
     await flushPromises()
 
@@ -196,58 +183,26 @@ describe('RegisterView', () => {
       password: 'secret-123',
       turnstile_token: '',
       invitation_code: undefined,
-      aff_code: 'AFF-EMAIL',
+      aff_code: 'QUERY-CODE',
     })
     expect(sessionStorage.getItem('register_data')).toBeNull()
     expect(registerMock).not.toHaveBeenCalled()
     expect(pushMock).toHaveBeenCalledWith('/email-verify')
   })
 
-  it('ignores stale affiliate validation responses when newer input has already been validated', async () => {
-    vi.useFakeTimers()
-    routeState.query = {}
+  it('blocks registration when the hidden referral link code is invalid', async () => {
+    validateAffiliateCodeMock.mockResolvedValue({ valid: false, error_code: 'AFFILIATE_CODE_INVALID' })
 
-    const staleValidation = createDeferred<{ valid: boolean; error_code?: string }>()
-    const freshValidation = createDeferred<{ valid: boolean; error_code?: string }>()
-    validateAffiliateCodeMock
-      .mockImplementationOnce(() => staleValidation.promise)
-      .mockImplementationOnce(() => freshValidation.promise)
+    const wrapper = mountRegisterView()
+    await flushPromises()
 
-    try {
-      const wrapper = mountRegisterView()
-      await flushPromises()
+    await wrapper.get('#email').setValue('user@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
 
-      await wrapper.get('#email').setValue('user@example.com')
-      await wrapper.get('#password').setValue('secret-123')
-
-      const affiliateInput = wrapper.get('#agent_invitation_code')
-      await affiliateInput.setValue('STALE-CODE')
-      await vi.advanceTimersByTimeAsync(500)
-
-      await affiliateInput.setValue('FRESH-CODE')
-      await vi.advanceTimersByTimeAsync(500)
-
-      freshValidation.resolve({ valid: true })
-      await flushPromises()
-
-      staleValidation.resolve({ valid: false, error_code: 'AFFILIATE_CODE_INVALID' })
-      await flushPromises()
-
-      await wrapper.get('form').trigger('submit.prevent')
-      await flushPromises()
-
-      expect(validateAffiliateCodeMock).toHaveBeenCalledTimes(2)
-      expect(registerMock).toHaveBeenCalledWith({
-        email: 'user@example.com',
-        password: 'secret-123',
-        turnstile_token: undefined,
-        invitation_code: undefined,
-        aff_code: 'FRESH-CODE',
-      })
-      expect(showErrorMock).not.toHaveBeenCalled()
-    } finally {
-      vi.useRealTimers()
-    }
+    expect(validateAffiliateCodeMock).toHaveBeenCalledWith('QUERY-CODE')
+    expect(registerMock).not.toHaveBeenCalled()
   })
 })
 

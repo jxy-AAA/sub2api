@@ -295,10 +295,18 @@ func TestVerifyOrderPublicDoesNotCheckUpstreamForPendingOrder(t *testing.T) {
 	svc := &PaymentService{
 		entClient:       client,
 		registry:        registry,
+		resumeService:   NewPaymentResumeService([]byte("0123456789abcdef0123456789abcdef")),
 		providersLoaded: true,
 	}
 
-	got, err := svc.VerifyOrderPublic(ctx, order.OutTradeNo)
+	lookupToken, err := svc.resumeService.CreatePublicOrderLookupToken(PublicOrderLookupClaims{
+		OrderID:    order.ID,
+		OutTradeNo: order.OutTradeNo,
+		UserID:     user.ID,
+	})
+	require.NoError(t, err)
+
+	got, err := svc.VerifyOrderPublicWithLookupToken(ctx, order.OutTradeNo, lookupToken)
 	require.NoError(t, err)
 	require.Equal(t, order.ID, got.ID)
 	require.Equal(t, 0, provider.queryCount)
@@ -309,7 +317,17 @@ func TestVerifyOrderPublicRejectsBlankOutTradeNo(t *testing.T) {
 		entClient: newPaymentConfigServiceTestClient(t),
 	}
 
-	_, err := svc.VerifyOrderPublic(context.Background(), "   ")
+	_, err := svc.VerifyOrderPublicWithLookupToken(context.Background(), "   ", "token")
 	require.Error(t, err)
 	require.Equal(t, "INVALID_OUT_TRADE_NO", infraerrors.Reason(err))
+}
+
+func TestVerifyOrderPublicRejectsMissingLookupToken(t *testing.T) {
+	svc := &PaymentService{
+		entClient: newPaymentConfigServiceTestClient(t),
+	}
+
+	_, err := svc.VerifyOrderPublic(context.Background(), "sub2_public_verify_pending")
+	require.Error(t, err)
+	require.Equal(t, "PUBLIC_ORDER_LOOKUP_TOKEN_REQUIRED", infraerrors.Reason(err))
 }

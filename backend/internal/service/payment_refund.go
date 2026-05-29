@@ -371,7 +371,10 @@ func (s *PaymentService) isRefundGatewayConfirmed(ctx context.Context, p *Refund
 		return true
 	}
 	order, err := s.entClient.PaymentOrder.Get(ctx, p.OrderID)
-	return err == nil && order.RefundGatewayConfirmedAt != nil
+	if err == nil && order.RefundGatewayConfirmedAt != nil {
+		return true
+	}
+	return s.hasAuditLog(ctx, p.OrderID, "REFUND_GATEWAY_CONFIRMED")
 }
 
 func (s *PaymentService) markRefundGatewayConfirmed(ctx context.Context, p *RefundPlan, refundResponse *payment.RefundResponse) error {
@@ -383,6 +386,11 @@ func (s *PaymentService) markRefundGatewayConfirmed(ctx context.Context, p *Refu
 	if refundResponse != nil && strings.TrimSpace(refundResponse.RefundID) != "" {
 		refundID = strings.TrimSpace(refundResponse.RefundID)
 	}
+	auditErr := s.writeAuditLogWithClient(ctx, s.entClient, p.OrderID, "REFUND_GATEWAY_CONFIRMED", "system", map[string]any{
+		"gatewayAmount": p.GatewayAmount,
+		"refundAmount":  p.RefundAmount,
+		"refundID":      refundID,
+	})
 	update := s.entClient.PaymentOrder.UpdateOneID(p.OrderID).
 		SetRefundGatewayConfirmedAt(now).
 		SetRefundIdempotencyKey(refundRequestIDForOrder(p))
@@ -392,11 +400,9 @@ func (s *PaymentService) markRefundGatewayConfirmed(ctx context.Context, p *Refu
 	if _, err := update.Save(ctx); err != nil {
 		return err
 	}
-	s.writeAuditLog(ctx, p.OrderID, "REFUND_GATEWAY_CONFIRMED", "system", map[string]any{
-		"gatewayAmount": p.GatewayAmount,
-		"refundAmount":  p.RefundAmount,
-		"refundID":      refundID,
-	})
+	if auditErr != nil {
+		slog.Error("refund gateway confirmation audit failed", "orderID", p.OrderID, "error", auditErr)
+	}
 	return nil
 }
 
@@ -451,7 +457,7 @@ func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*Refu
 		return nil, fmt.Errorf("reverse affiliate distribution paid credit: %w", err)
 	}
 	_, err := s.entClient.PaymentOrder.UpdateOneID(p.OrderID).
-		SetStatus(fs).
+		SetStatus(paymentorder.Status(fs)).
 		SetRefundAmount(p.RefundAmount).
 		SetRefundReason(p.Reason).
 		SetRefundAt(now).
@@ -467,13 +473,18 @@ func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*Refu
 }
 
 func (s *PaymentService) reverseDistributionPaidCreditForRefund(ctx context.Context, p *RefundPlan, reversedAt time.Time) (bool, error) {
-	if s == nil || p == nil || p.Order == nil || p.Order.OrderType != payment.OrderTypeBalance || p.RefundAmount <= 0 {
+	if s == nil || p == nil || p.Order == nil || p.RefundAmount <= 0 {
+		return false, nil
+	}
+	orderType := string(p.Order.OrderType)
+	if p.Order.OrderType != payment.OrderTypeBalance && p.Order.OrderType != payment.OrderTypeSubscription {
 		return false, nil
 	}
 	if p.Order.UserID <= 0 || p.OrderID <= 0 {
 		err := errors.New("invalid order identity for affiliate distribution paid credit reversal")
 		s.writeAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSAL_FAILED", "system", map[string]any{
-			"error": err.Error(),
+			"error":      err.Error(),
+			"order_type": orderType,
 		})
 		slog.Warn("[PaymentService] affiliate distribution paid credit reversal skipped due to invalid order identity", "orderID", p.OrderID, "userID", p.Order.UserID)
 		return false, err
@@ -481,7 +492,8 @@ func (s *PaymentService) reverseDistributionPaidCreditForRefund(ctx context.Cont
 	if s.affiliateService == nil {
 		err := errors.New("affiliate distribution service unavailable")
 		s.writeAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSAL_FAILED", "system", map[string]any{
-			"error": err.Error(),
+			"error":      err.Error(),
+			"order_type": orderType,
 		})
 		slog.Warn("[PaymentService] affiliate distribution paid credit reversal service unavailable", "orderID", p.OrderID, "userID", p.Order.UserID)
 		return false, err
@@ -496,6 +508,7 @@ func (s *PaymentService) reverseDistributionPaidCreditForRefund(ctx context.Cont
 		s.writeAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSAL_FAILED", "system", map[string]any{
 			"error":      err.Error(),
 			"amount":     p.RefundAmount,
+			"order_type": orderType,
 			"reversedAt": reversedAt.Format(time.RFC3339Nano),
 		})
 		slog.Warn("[PaymentService] affiliate distribution paid credit reversal failed", "orderID", p.OrderID, "userID", p.Order.UserID, "error", err)
@@ -504,6 +517,7 @@ func (s *PaymentService) reverseDistributionPaidCreditForRefund(ctx context.Cont
 	if reversed && !s.hasAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSED") {
 		s.writeAuditLog(ctx, p.OrderID, "AFFILIATE_DISTRIBUTION_PAID_CREDIT_REVERSED", "system", map[string]any{
 			"amount":     p.RefundAmount,
+			"order_type": orderType,
 			"reversedAt": reversedAt.Format(time.RFC3339Nano),
 		})
 	}
@@ -533,5 +547,5 @@ func (s *PaymentService) restoreStatus(ctx context.Context, p *RefundPlan) {
 	if p.Order.Status == OrderStatusRefundRequested {
 		rs = OrderStatusRefundRequested
 	}
-	_, _ = s.entClient.PaymentOrder.UpdateOneID(p.OrderID).SetStatus(rs).Save(ctx)
+	_, _ = s.entClient.PaymentOrder.UpdateOneID(p.OrderID).SetStatus(paymentorder.Status(rs)).Save(ctx)
 }

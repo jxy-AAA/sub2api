@@ -3,6 +3,7 @@
 package paymentorder
 
 import (
+	"fmt"
 	"time"
 
 	"entgo.io/ent/dialect/sql"
@@ -14,6 +15,10 @@ const (
 	Label = "payment_order"
 	// FieldID holds the string denoting the id field in the database.
 	FieldID = "id"
+	// FieldCreatedAt holds the string denoting the created_at field in the database.
+	FieldCreatedAt = "created_at"
+	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
+	FieldUpdatedAt = "updated_at"
 	// FieldUserID holds the string denoting the user_id field in the database.
 	FieldUserID = "user_id"
 	// FieldUserEmail holds the string denoting the user_email field in the database.
@@ -94,10 +99,6 @@ const (
 	FieldSrcHost = "src_host"
 	// FieldSrcURL holds the string denoting the src_url field in the database.
 	FieldSrcURL = "src_url"
-	// FieldCreatedAt holds the string denoting the created_at field in the database.
-	FieldCreatedAt = "created_at"
-	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
-	FieldUpdatedAt = "updated_at"
 	// EdgeUser holds the string denoting the user edge name in mutations.
 	EdgeUser = "user"
 	// Table holds the table name of the paymentorder in the database.
@@ -114,6 +115,8 @@ const (
 // Columns holds all SQL columns for paymentorder fields.
 var Columns = []string{
 	FieldID,
+	FieldCreatedAt,
+	FieldUpdatedAt,
 	FieldUserID,
 	FieldUserEmail,
 	FieldUserName,
@@ -154,8 +157,6 @@ var Columns = []string{
 	FieldClientIP,
 	FieldSrcHost,
 	FieldSrcURL,
-	FieldCreatedAt,
-	FieldUpdatedAt,
 }
 
 // ValidColumn reports if the column name is valid (part of the table columns).
@@ -169,6 +170,12 @@ func ValidColumn(column string) bool {
 }
 
 var (
+	// DefaultCreatedAt holds the default value on creation for the "created_at" field.
+	DefaultCreatedAt func() time.Time
+	// DefaultUpdatedAt holds the default value on creation for the "updated_at" field.
+	DefaultUpdatedAt func() time.Time
+	// UpdateDefaultUpdatedAt holds the default value on update for the "updated_at" field.
+	UpdateDefaultUpdatedAt func() time.Time
 	// UserEmailValidator is a validator for the "user_email" field. It is called by the builders before save.
 	UserEmailValidator func(string) error
 	// UserNameValidator is a validator for the "user_name" field. It is called by the builders before save.
@@ -185,18 +192,10 @@ var (
 	PaymentTypeValidator func(string) error
 	// PaymentTradeNoValidator is a validator for the "payment_trade_no" field. It is called by the builders before save.
 	PaymentTradeNoValidator func(string) error
-	// DefaultOrderType holds the default value on creation for the "order_type" field.
-	DefaultOrderType string
-	// OrderTypeValidator is a validator for the "order_type" field. It is called by the builders before save.
-	OrderTypeValidator func(string) error
 	// ProviderInstanceIDValidator is a validator for the "provider_instance_id" field. It is called by the builders before save.
 	ProviderInstanceIDValidator func(string) error
 	// ProviderKeyValidator is a validator for the "provider_key" field. It is called by the builders before save.
 	ProviderKeyValidator func(string) error
-	// DefaultStatus holds the default value on creation for the "status" field.
-	DefaultStatus string
-	// StatusValidator is a validator for the "status" field. It is called by the builders before save.
-	StatusValidator func(string) error
 	// DefaultRefundAmount holds the default value on creation for the "refund_amount" field.
 	DefaultRefundAmount float64
 	// RefundGatewayRefundIDValidator is a validator for the "refund_gateway_refund_id" field. It is called by the builders before save.
@@ -211,13 +210,69 @@ var (
 	ClientIPValidator func(string) error
 	// SrcHostValidator is a validator for the "src_host" field. It is called by the builders before save.
 	SrcHostValidator func(string) error
-	// DefaultCreatedAt holds the default value on creation for the "created_at" field.
-	DefaultCreatedAt func() time.Time
-	// DefaultUpdatedAt holds the default value on creation for the "updated_at" field.
-	DefaultUpdatedAt func() time.Time
-	// UpdateDefaultUpdatedAt holds the default value on update for the "updated_at" field.
-	UpdateDefaultUpdatedAt func() time.Time
 )
+
+// OrderType defines the type for the "order_type" enum field.
+type OrderType string
+
+// OrderTypeBalance is the default value of the OrderType enum.
+const DefaultOrderType = OrderTypeBalance
+
+// OrderType values.
+const (
+	OrderTypeBalance      OrderType = "balance"
+	OrderTypeSubscription OrderType = "subscription"
+)
+
+func (ot OrderType) String() string {
+	return string(ot)
+}
+
+// OrderTypeValidator is a validator for the "order_type" field enum values. It is called by the builders before save.
+func OrderTypeValidator(ot OrderType) error {
+	switch ot {
+	case OrderTypeBalance, OrderTypeSubscription:
+		return nil
+	default:
+		return fmt.Errorf("paymentorder: invalid enum value for order_type field: %q", ot)
+	}
+}
+
+// Status defines the type for the "status" enum field.
+type Status string
+
+// StatusPENDING is the default value of the Status enum.
+const DefaultStatus = StatusPENDING
+
+// Status values.
+const (
+	StatusPENDING            Status = "PENDING"
+	StatusPAID               Status = "PAID"
+	StatusRECHARGING         Status = "RECHARGING"
+	StatusCOMPLETED          Status = "COMPLETED"
+	StatusEXPIRED            Status = "EXPIRED"
+	StatusCANCELLED          Status = "CANCELLED"
+	StatusFAILED             Status = "FAILED"
+	StatusREFUND_REQUESTED   Status = "REFUND_REQUESTED"
+	StatusREFUNDING          Status = "REFUNDING"
+	StatusPARTIALLY_REFUNDED Status = "PARTIALLY_REFUNDED"
+	StatusREFUNDED           Status = "REFUNDED"
+	StatusREFUND_FAILED      Status = "REFUND_FAILED"
+)
+
+func (s Status) String() string {
+	return string(s)
+}
+
+// StatusValidator is a validator for the "status" field enum values. It is called by the builders before save.
+func StatusValidator(s Status) error {
+	switch s {
+	case StatusPENDING, StatusPAID, StatusRECHARGING, StatusCOMPLETED, StatusEXPIRED, StatusCANCELLED, StatusFAILED, StatusREFUND_REQUESTED, StatusREFUNDING, StatusPARTIALLY_REFUNDED, StatusREFUNDED, StatusREFUND_FAILED:
+		return nil
+	default:
+		return fmt.Errorf("paymentorder: invalid enum value for status field: %q", s)
+	}
+}
 
 // OrderOption defines the ordering options for the PaymentOrder queries.
 type OrderOption func(*sql.Selector)
@@ -225,6 +280,16 @@ type OrderOption func(*sql.Selector)
 // ByID orders the results by the id field.
 func ByID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldID, opts...).ToFunc()
+}
+
+// ByCreatedAt orders the results by the created_at field.
+func ByCreatedAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldCreatedAt, opts...).ToFunc()
+}
+
+// ByUpdatedAt orders the results by the updated_at field.
+func ByUpdatedAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpdatedAt, opts...).ToFunc()
 }
 
 // ByUserID orders the results by the user_id field.
@@ -420,16 +485,6 @@ func BySrcHost(opts ...sql.OrderTermOption) OrderOption {
 // BySrcURL orders the results by the src_url field.
 func BySrcURL(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldSrcURL, opts...).ToFunc()
-}
-
-// ByCreatedAt orders the results by the created_at field.
-func ByCreatedAt(opts ...sql.OrderTermOption) OrderOption {
-	return sql.OrderByField(FieldCreatedAt, opts...).ToFunc()
-}
-
-// ByUpdatedAt orders the results by the updated_at field.
-func ByUpdatedAt(opts ...sql.OrderTermOption) OrderOption {
-	return sql.OrderByField(FieldUpdatedAt, opts...).ToFunc()
 }
 
 // ByUserField orders the results by user field.

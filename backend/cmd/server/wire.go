@@ -7,13 +7,15 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"sync"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -25,7 +27,7 @@ import (
 
 type Application struct {
 	Server  *http.Server
-	Cleanup func()
+	Cleanup func(context.Context)
 }
 
 type cleanupStep struct {
@@ -53,43 +55,110 @@ func (r *CleanupRegistry) AddSequential(name string, fn func() error) {
 }
 
 func (r *CleanupRegistry) Run(ctx context.Context) {
-	runParallel := func(steps []cleanupStep) {
-		var wg sync.WaitGroup
-		for i := range steps {
-			step := steps[i]
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := step.fn(); err != nil {
-					slog.Warn("cleanup step failed", "step", step.name, "error", err)
-					return
-				}
-				slog.Info("cleanup step succeeded", "step", step.name)
-			}()
+	if !runCleanupParallel(ctx, r.parallel) {
+		return
+	}
+	if !runCleanupSequential(ctx, r.sequential) {
+		return
+	}
+	slog.Info("cleanup steps completed")
+}
+
+type cleanupResult struct {
+	name string
+	err  error
+}
+
+func runCleanupParallel(ctx context.Context, steps []cleanupStep) bool {
+	if len(steps) == 0 {
+		return true
+	}
+	if err := ctx.Err(); err != nil {
+		slog.Warn("cleanup skipped before parallel steps", "error", err)
+		return false
+	}
+
+	results := make(chan cleanupResult, len(steps))
+	pending := make(map[string]struct{}, len(steps))
+
+	for i := range steps {
+		step := steps[i]
+		pending[step.name] = struct{}{}
+		go func(step cleanupStep) {
+			results <- cleanupResult{name: step.name, err: step.fn()}
+		}(step)
+	}
+
+	for completed := 0; completed < len(steps); completed++ {
+		select {
+		case result := <-results:
+			delete(pending, result.name)
+			logCleanupStepResult(result)
+		case <-ctx.Done():
+			slog.Warn(
+				"cleanup timed out while waiting for parallel steps",
+				"remaining_steps", joinCleanupStepNames(pending),
+				"error", ctx.Err(),
+			)
+			return false
 		}
-		wg.Wait()
 	}
 
-	runSequential := func(steps []cleanupStep) {
-		for i := range steps {
-			step := steps[i]
-			if err := step.fn(); err != nil {
-				slog.Warn("cleanup step failed", "step", step.name, "error", err)
-				continue
-			}
-			slog.Info("cleanup step succeeded", "step", step.name)
+	return true
+}
+
+func runCleanupSequential(ctx context.Context, steps []cleanupStep) bool {
+	for i := range steps {
+		step := steps[i]
+		if err := ctx.Err(); err != nil {
+			slog.Warn(
+				"cleanup timed out before sequential step",
+				"step", step.name,
+				"error", err,
+			)
+			return false
+		}
+
+		resultCh := make(chan cleanupResult, 1)
+		go func(step cleanupStep) {
+			resultCh <- cleanupResult{name: step.name, err: step.fn()}
+		}(step)
+
+		select {
+		case result := <-resultCh:
+			logCleanupStepResult(result)
+		case <-ctx.Done():
+			slog.Warn(
+				"cleanup timed out during sequential step",
+				"step", step.name,
+				"error", ctx.Err(),
+			)
+			return false
 		}
 	}
 
-	runParallel(r.parallel)
-	runSequential(r.sequential)
+	return true
+}
 
-	select {
-	case <-ctx.Done():
-		slog.Warn("cleanup timed out", "error", ctx.Err())
-	default:
-		slog.Info("cleanup steps completed")
+func logCleanupStepResult(result cleanupResult) {
+	if result.err != nil {
+		slog.Warn("cleanup step failed", "step", result.name, "error", result.err)
+		return
 	}
+	slog.Info("cleanup step succeeded", "step", result.name)
+}
+
+func joinCleanupStepNames(steps map[string]struct{}) string {
+	if len(steps) == 0 {
+		return ""
+	}
+
+	names := make([]string, 0, len(steps))
+	for name := range steps {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 type cleanupInfrastructure struct {
@@ -98,6 +167,14 @@ type cleanupInfrastructure struct {
 }
 
 func (c cleanupInfrastructure) Register(registry *CleanupRegistry) {
+	registry.AddSequential("SharedReqClients", func() error {
+		repository.CloseSharedReqClients()
+		return nil
+	})
+	registry.AddSequential("SharedHTTPClients", func() error {
+		httpclient.CloseSharedClients()
+		return nil
+	})
 	registry.AddSequential("Redis", func() error {
 		if c.Redis == nil {
 			return nil
@@ -142,7 +219,7 @@ type cleanupServices struct {
 	AffiliateDistributionMonthlyReset *service.AffiliateDistributionMonthlyResetService
 }
 
-func (s cleanupServices) Register(registry *CleanupRegistry) {
+func (s cleanupServices) Register(registry *CleanupRegistry, ctx context.Context) {
 	registry.AddParallel("AffiliateDistributionMonthlyResetService", func() error {
 		if s.AffiliateDistributionMonthlyReset != nil {
 			s.AffiliateDistributionMonthlyReset.Stop()
@@ -289,7 +366,7 @@ func (s cleanupServices) Register(registry *CleanupRegistry) {
 	})
 	registry.AddParallel("BackupService", func() error {
 		if s.BackupService != nil {
-			s.BackupService.Stop()
+			return s.BackupService.StopWithContext(ctx)
 		}
 		return nil
 	})
@@ -337,13 +414,13 @@ func provideServiceBuildInfo(buildInfo handler.BuildInfo) service.BuildInfo {
 	}
 }
 
-func provideCleanup(infra cleanupInfrastructure, services cleanupServices) func() {
-	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
+func provideCleanup(infra cleanupInfrastructure, services cleanupServices) func(context.Context) {
+	return func(ctx context.Context) {
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		registry := &CleanupRegistry{}
-		services.Register(registry)
+		services.Register(registry, ctx)
 		infra.Register(registry)
 		registry.Run(ctx)
 	}

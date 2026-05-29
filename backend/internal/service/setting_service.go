@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,6 +46,10 @@ type SettingRepository interface {
 	SetMultiple(ctx context.Context, settings map[string]string) error
 	GetAll(ctx context.Context) (map[string]string, error)
 	Delete(ctx context.Context, key string) error
+}
+
+type SettingHealthRepository interface {
+	RawDB() (*sql.DB, error)
 }
 
 // cachedVersionBounds 缓存 Claude Code 版本号上下限（进程内缓存，60s TTL）
@@ -206,7 +212,8 @@ const (
 	defaultGoogleOAuthScopes     = "openid email profile"
 	defaultGoogleOAuthFrontend   = "/auth/oauth/callback"
 	defaultLoginAgreementMode    = "modal"
-	defaultLoginAgreementDate    = "2026-03-31"
+	defaultLoginAgreementDate    = "2026-05-27"
+	defaultLoginAgreementNotice  = "为完成请求转发、风控审计、故障排查与合规留存，平台会按最小必要原则记录账号标识、请求时间、模型或渠道、请求与响应元数据及导出所需的相关上下文。经用户同意本协议后，root 管理员可在审计、申诉处理、监管配合或安全调查场景下，将上述留存数据导出为 JSON 文件；导出操作仅限授权管理员执行，并应遵守适用法律法规与最小必要访问原则。"
 )
 
 func normalizeLoginAgreementMode(raw string) string {
@@ -238,7 +245,7 @@ func defaultLoginAgreementDocuments() []LoginAgreementDocument {
 		{
 			ID:        "service-specific-terms",
 			Title:     "服务特定条款",
-			ContentMD: "",
+			ContentMD: defaultLoginAgreementNotice,
 		},
 	}
 }
@@ -539,6 +546,17 @@ func (s *SettingService) SetDefaultSubscriptionGroupReader(reader DefaultSubscri
 // SetProxyRepository injects a proxy repo for resolving websearch provider proxy URLs.
 func (s *SettingService) SetProxyRepository(repo ProxyRepository) {
 	s.proxyRepo = repo
+}
+
+func (s *SettingService) RawDB() (*sql.DB, error) {
+	if s == nil || s.settingRepo == nil {
+		return nil, fmt.Errorf("setting repo not configured")
+	}
+	healthRepo, ok := s.settingRepo.(SettingHealthRepository)
+	if !ok {
+		return nil, fmt.Errorf("setting repo does not expose raw db")
+	}
+	return healthRepo.RawDB()
 }
 
 // GetAllSettings 获取所有系统设置
@@ -2648,10 +2666,6 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// Affiliate (邀请返利) feature (default: disabled; strict true)
 	result.AffiliateEnabled = settings[SettingKeyAffiliateEnabled] == "true"
-	result.AffiliateRebateRate = parseAffiliateRebateRateSetting(settings[SettingKeyAffiliateRebateRate])
-	result.AffiliateRebateFreezeHours = parseAffiliateRebateFreezeHoursSetting(settings[SettingKeyAffiliateRebateFreezeHours])
-	result.AffiliateRebateDurationDays = parseAffiliateRebateDurationDaysSetting(settings[SettingKeyAffiliateRebateDurationDays])
-	result.AffiliateRebatePerInviteeCap = parseAffiliateRebatePerInviteeCapSetting(settings[SettingKeyAffiliateRebatePerInviteeCap])
 
 	// 风控中心功能（默认关闭，严格 true 才启用）
 	result.RiskControlEnabled = settings[SettingKeyRiskControlEnabled] == "true"
@@ -2973,8 +2987,13 @@ func (s *SettingService) GenerateAdminAPIKey(ctx context.Context) (string, error
 
 	key := AdminAPIKeyPrefix + hex.EncodeToString(bytes)
 
+	recordValue, err := marshalAdminAPIKeyRecord(key, time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+
 	// 存储到 settings 表
-	if err := s.settingRepo.Set(ctx, SettingKeyAdminAPIKey, key); err != nil {
+	if err := s.settingRepo.Set(ctx, SettingKeyAdminAPIKey, recordValue); err != nil {
 		return "", fmt.Errorf("save admin api key: %w", err)
 	}
 
@@ -2984,43 +3003,163 @@ func (s *SettingService) GenerateAdminAPIKey(ctx context.Context) (string, error
 // GetAdminAPIKeyStatus 获取管理员 API Key 状态
 // 返回脱敏的 key、是否存在、错误
 func (s *SettingService) GetAdminAPIKeyStatus(ctx context.Context) (maskedKey string, exists bool, err error) {
-	key, err := s.settingRepo.GetValue(ctx, SettingKeyAdminAPIKey)
+	record, err := s.GetAdminAPIKeyRecord(ctx)
 	if err != nil {
-		if errors.Is(err, ErrSettingNotFound) {
-			return "", false, nil
-		}
 		return "", false, err
 	}
-	if key == "" {
-		return "", false, nil
-	}
-
-	// 脱敏：显示前 10 位和后 4 位
-	if len(key) > 14 {
-		maskedKey = key[:10] + "..." + key[len(key)-4:]
-	} else {
-		maskedKey = key
-	}
-
-	return maskedKey, true, nil
+	return record.MaskedKey, record.Exists, nil
 }
 
 // GetAdminAPIKey 获取完整的管理员 API Key（仅供内部验证使用）
 // 如果未配置返回空字符串和 nil 错误，只有数据库错误时才返回 error
 func (s *SettingService) GetAdminAPIKey(ctx context.Context) (string, error) {
-	key, err := s.settingRepo.GetValue(ctx, SettingKeyAdminAPIKey)
+	record, err := s.GetAdminAPIKeyRecord(ctx)
 	if err != nil {
-		if errors.Is(err, ErrSettingNotFound) {
-			return "", nil // 未配置，返回空字符串
-		}
-		return "", err // 数据库错误
+		return "", err
 	}
-	return key, nil
+	return record.KeyMaterial, nil
 }
 
 // DeleteAdminAPIKey 删除管理员 API Key
 func (s *SettingService) DeleteAdminAPIKey(ctx context.Context) error {
 	return s.settingRepo.Delete(ctx, SettingKeyAdminAPIKey)
+}
+
+type adminAPIKeyStoredRecord struct {
+	Version   int        `json:"version"`
+	Hash      string     `json:"hash"`
+	Scope     string     `json:"scope,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+type AdminAPIKeyRecord struct {
+	Exists      bool
+	KeyMaterial string
+	Hash        string
+	MaskedKey   string
+	Scope       string
+	CreatedAt   time.Time
+	ExpiresAt   *time.Time
+	LegacyPlain bool
+}
+
+const adminAPIKeyRecordVersion = 1
+
+func hashAdminAPIKey(key string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
+	return hex.EncodeToString(sum[:])
+}
+
+func maskAdminAPIKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if len(key) > 14 {
+		return key[:10] + "..." + key[len(key)-4:]
+	}
+	return key
+}
+
+func marshalAdminAPIKeyRecord(key string, createdAt time.Time) (string, error) {
+	record := adminAPIKeyStoredRecord{
+		Version:   adminAPIKeyRecordVersion,
+		Hash:      hashAdminAPIKey(key),
+		Scope:     "admin:*",
+		CreatedAt: createdAt.UTC(),
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return "", fmt.Errorf("marshal admin api key: %w", err)
+	}
+	return string(payload), nil
+}
+
+func parseAdminAPIKeyRecord(raw string) (*AdminAPIKeyRecord, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return &AdminAPIKeyRecord{}, nil
+	}
+
+	if strings.HasPrefix(raw, "{") {
+		var stored adminAPIKeyStoredRecord
+		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+			return nil, fmt.Errorf("parse admin api key record: %w", err)
+		}
+		stored.Hash = strings.TrimSpace(stored.Hash)
+		if stored.Hash == "" {
+			return &AdminAPIKeyRecord{}, nil
+		}
+		if stored.Scope == "" {
+			stored.Scope = "admin:*"
+		}
+		return &AdminAPIKeyRecord{
+			Exists:    true,
+			Hash:      stored.Hash,
+			MaskedKey: "configured",
+			Scope:     stored.Scope,
+			CreatedAt: stored.CreatedAt,
+			ExpiresAt: stored.ExpiresAt,
+		}, nil
+	}
+
+	return &AdminAPIKeyRecord{
+		Exists:      true,
+		KeyMaterial: raw,
+		Hash:        hashAdminAPIKey(raw),
+		MaskedKey:   maskAdminAPIKey(raw),
+		Scope:       "admin:*",
+		LegacyPlain: true,
+	}, nil
+}
+
+func (s *SettingService) GetAdminAPIKeyRecord(ctx context.Context) (*AdminAPIKeyRecord, error) {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAdminAPIKey)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return &AdminAPIKeyRecord{}, nil
+		}
+		return nil, err
+	}
+	record, err := parseAdminAPIKeyRecord(raw)
+	if err != nil {
+		return nil, err
+	}
+	if record.LegacyPlain && record.KeyMaterial != "" {
+		upgraded, marshalErr := marshalAdminAPIKeyRecord(record.KeyMaterial, time.Now().UTC())
+		if marshalErr != nil {
+			slog.Warn("marshal legacy admin api key upgrade failed", "error", marshalErr)
+			return record, nil
+		}
+		if setErr := s.settingRepo.Set(ctx, SettingKeyAdminAPIKey, upgraded); setErr != nil {
+			slog.Warn("persist legacy admin api key upgrade failed", "error", setErr)
+			return record, nil
+		}
+		record.LegacyPlain = false
+		record.MaskedKey = "configured"
+		record.CreatedAt = time.Now().UTC()
+	}
+	return record, nil
+}
+
+func (s *SettingService) ValidateAdminAPIKey(ctx context.Context, presentedKey string) (*AdminAPIKeyRecord, bool, error) {
+	record, err := s.GetAdminAPIKeyRecord(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if !record.Exists {
+		return record, false, nil
+	}
+	presentedHash := hashAdminAPIKey(presentedKey)
+	if subtle.ConstantTimeCompare([]byte(presentedHash), []byte(record.Hash)) != 1 {
+		return record, false, nil
+	}
+	record.KeyMaterial = strings.TrimSpace(presentedKey)
+	if record.MaskedKey == "" {
+		record.MaskedKey = maskAdminAPIKey(presentedKey)
+	}
+	return record, true, nil
 }
 
 // IsModelFallbackEnabled 检查是否启用模型兜底机制

@@ -74,10 +74,11 @@ describe('payment api', () => {
   })
 
   it('keeps legacy public out_trade_no verification for upgrade compatibility', async () => {
-    await paymentAPI.verifyOrderPublic('legacy-order-no')
+    await paymentAPI.verifyOrderPublic('legacy-order-no', 'lookup-token-123')
 
     expect(post).toHaveBeenCalledWith('/payment/public/orders/verify', {
       out_trade_no: 'legacy-order-no',
+      lookup_token: 'lookup-token-123',
     })
   })
 

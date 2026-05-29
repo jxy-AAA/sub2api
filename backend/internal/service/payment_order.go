@@ -162,7 +162,7 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 		SetOutTradeNo(outTradeNo).
 		SetPaymentType(req.PaymentType).
 		SetPaymentTradeNo("").
-		SetOrderType(req.OrderType).
+		SetOrderType(paymentorder.OrderType(req.OrderType)).
 		SetStatus(OrderStatusPending).
 		SetExpiresAt(exp).
 		SetClientIP(req.ClientIP).
@@ -286,7 +286,7 @@ func paymentOrderSnapshotWxpayAppID(sel *payment.InstanceSelection, req CreateOr
 	return strings.TrimSpace(sel.Config["appId"])
 }
 
-func paymentOrderLimitAmount(orderType string, amount, payAmount float64) float64 {
+func paymentOrderLimitAmount[S ~string](orderType S, amount, payAmount float64) float64 {
 	if orderType == payment.OrderTypeBalance {
 		return payAmount
 	}
@@ -402,6 +402,7 @@ func (s *PaymentService) invokeProvider(ctx context.Context, order *dbent.Paymen
 		return nil, err
 	}
 	resumeToken := ""
+	publicLookupToken := ""
 	if resume := s.paymentResume(); resume != nil {
 		if canonicalReturnURL != "" && resume.isSigningConfigured() {
 			resumeToken, err = resume.CreateToken(ResumeTokenClaims{
@@ -415,9 +416,17 @@ func (s *PaymentService) invokeProvider(ctx context.Context, order *dbent.Paymen
 			if err != nil {
 				return nil, fmt.Errorf("create payment resume token: %w", err)
 			}
+			publicLookupToken, err = resume.CreatePublicOrderLookupToken(PublicOrderLookupClaims{
+				OrderID:    order.ID,
+				OutTradeNo: outTradeNo,
+				UserID:     order.UserID,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("create public order lookup token: %w", err)
+			}
 		}
 	}
-	providerReturnURL, err := buildPaymentReturnURL(canonicalReturnURL, order.ID, outTradeNo, resumeToken)
+	providerReturnURL, err := buildPaymentReturnURL(canonicalReturnURL, order.ID, outTradeNo, resumeToken, publicLookupToken)
 	if err != nil {
 		return nil, err
 	}
@@ -711,10 +720,10 @@ func (s *PaymentService) GetOrderByID(ctx context.Context, orderID int64) (*dben
 func (s *PaymentService) GetUserOrders(ctx context.Context, userID int64, p OrderListParams) ([]*dbent.PaymentOrder, int, error) {
 	q := s.entClient.PaymentOrder.Query().Where(paymentorder.UserIDEQ(userID))
 	if p.Status != "" {
-		q = q.Where(paymentorder.StatusEQ(p.Status))
+		q = q.Where(paymentorder.StatusEQ(paymentorder.Status(p.Status)))
 	}
 	if p.OrderType != "" {
-		q = q.Where(paymentorder.OrderTypeEQ(p.OrderType))
+		q = q.Where(paymentorder.OrderTypeEQ(paymentorder.OrderType(p.OrderType)))
 	}
 	if p.PaymentType != "" {
 		q = q.Where(paymentorder.PaymentTypeEQ(p.PaymentType))
@@ -738,10 +747,10 @@ func (s *PaymentService) AdminListOrders(ctx context.Context, userID int64, p Or
 		q = q.Where(paymentorder.UserIDEQ(userID))
 	}
 	if p.Status != "" {
-		q = q.Where(paymentorder.StatusEQ(p.Status))
+		q = q.Where(paymentorder.StatusEQ(paymentorder.Status(p.Status)))
 	}
 	if p.OrderType != "" {
-		q = q.Where(paymentorder.OrderTypeEQ(p.OrderType))
+		q = q.Where(paymentorder.OrderTypeEQ(paymentorder.OrderType(p.OrderType)))
 	}
 	if p.PaymentType != "" {
 		q = q.Where(paymentorder.PaymentTypeEQ(p.PaymentType))

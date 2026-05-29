@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -34,6 +35,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
+	captureGatewayClientRequest(c, inferGatewayTraceProtocol(c, "openai"), body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"stream":       gjson.GetBytes(body, "stream").Bool(),
+	})
 
 	// 1. Parse Anthropic request
 	var anthropicReq apicompat.AnthropicRequest
@@ -207,7 +213,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// upstreams using the Responses API can derive a stable session identifier
 	// from prompt_cache_key. This makes our Anthropic /v1/messages compatibility
 	// path behave more like a native Responses client.
-	if account.Type == AccountTypeAPIKey {
+	if account.IsStaticKeyAccount() {
 		if trimmedKey := strings.TrimSpace(promptCacheKey); trimmedKey != "" {
 			var reqBody map[string]any
 			if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
@@ -274,6 +280,14 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if compatTurnState != "" && upstreamReq.Header.Get("x-codex-turn-state") == "" {
 		upstreamReq.Header.Set("x-codex-turn-state", compatTurnState)
 	}
+	captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "openai"), upstreamReq, responsesBody, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": originalModel,
+		"upstream_model": upstreamModel,
+		"stream":         isStream,
+		"client_stream":  clientStream,
+	})
 
 	// 7. Send request
 	proxyURL := ""
@@ -434,7 +448,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai messages buffered", requestID)
+	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(c, resp, "openai messages buffered", requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -482,6 +496,7 @@ func isOpenAICompatDoneSentinelLine(line string) bool {
 }
 
 func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
+	c *gin.Context,
 	resp *http.Response,
 	logPrefix string,
 	requestID string,
@@ -498,6 +513,11 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "openai"), resp, traceBuf, map[string]any{
+		"stream": true,
+		"format": "sse",
+	})
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -580,6 +600,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 			if isOpenAICompatDoneSentinelLine(ev.line) {
 				return nil, usage, acc, nil
 			}
+			traceBuf.WriteLine(ev.line)
 			payload, ok := extractOpenAISSEDataLine(ev.line)
 			if !ok || payload == "" {
 				continue
@@ -652,6 +673,13 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "openai"), resp, traceBuf, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": upstreamModel,
+		"stream":         true,
+		"format":         "sse",
+	})
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -783,6 +811,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	if streamInterval <= 0 && keepaliveInterval <= 0 {
 		for scanner.Scan() {
 			line := scanner.Text()
+			traceBuf.WriteLine(line)
 			if isOpenAICompatDoneSentinelLine(line) {
 				return missingTerminalErr()
 			}
@@ -856,6 +885,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			}
 			lastDataAt = time.Now()
 			line := ev.line
+			traceBuf.WriteLine(line)
 			if isOpenAICompatDoneSentinelLine(line) {
 				return missingTerminalErr()
 			}

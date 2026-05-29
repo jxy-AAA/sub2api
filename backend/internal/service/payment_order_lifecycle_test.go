@@ -10,6 +10,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/enttest"
+	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
@@ -231,12 +232,12 @@ func TestVerifyOrderByOutTradeNoBackfillsTradeNoFromPaidQuery(t *testing.T) {
 	got, err := svc.VerifyOrderByOutTradeNo(ctx, order.OutTradeNo, user.ID)
 	require.NoError(t, err)
 	require.Equal(t, order.OutTradeNo, provider.lastQueryTradeNo)
-	require.Equal(t, OrderStatusCompleted, got.Status)
+	require.Equal(t, paymentorder.Status(OrderStatusCompleted), got.Status)
 	require.Equal(t, "upstream-trade-123", got.PaymentTradeNo)
 
 	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, err)
-	require.Equal(t, OrderStatusCompleted, reloaded.Status)
+	require.Equal(t, paymentorder.Status(OrderStatusCompleted), reloaded.Status)
 	require.Equal(t, "upstream-trade-123", reloaded.PaymentTradeNo)
 
 	require.Equal(t, 88.0, userRepo.getByIDUser.Balance)
@@ -339,7 +340,7 @@ func TestVerifyOrderByOutTradeNoRetriesZeroAmountPaidQueryOnce(t *testing.T) {
 	got, err := svc.VerifyOrderByOutTradeNo(ctx, order.OutTradeNo, user.ID)
 	require.NoError(t, err)
 	require.Equal(t, 2, provider.queryCalls)
-	require.Equal(t, OrderStatusCompleted, got.Status)
+	require.Equal(t, paymentorder.Status(OrderStatusCompleted), got.Status)
 	require.Equal(t, "upstream-trade-retry", got.PaymentTradeNo)
 }
 
@@ -423,12 +424,12 @@ func TestVerifyOrderByOutTradeNoRejectsPaidQueryWithZeroAmount(t *testing.T) {
 	got, err := svc.VerifyOrderByOutTradeNo(ctx, order.OutTradeNo, user.ID)
 	require.NoError(t, err)
 	require.Equal(t, order.OutTradeNo, provider.lastQueryTradeNo)
-	require.Equal(t, OrderStatusPending, got.Status)
+	require.Equal(t, paymentorder.Status(OrderStatusPending), got.Status)
 	require.Empty(t, got.PaymentTradeNo)
 
 	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, err)
-	require.Equal(t, OrderStatusPending, reloaded.Status)
+	require.Equal(t, paymentorder.Status(OrderStatusPending), reloaded.Status)
 	require.Empty(t, reloaded.PaymentTradeNo)
 
 	require.Equal(t, 0.0, userRepo.getByIDUser.Balance)

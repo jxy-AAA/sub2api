@@ -29,6 +29,12 @@ func NewAffiliateDistributionMonthlyResetService(affiliateService *AffiliateServ
 	return svc
 }
 
+// ProvideAffiliateDistributionMonthlyResetService creates and starts the monthly
+// affiliate rebate archive scheduler.
+func ProvideAffiliateDistributionMonthlyResetService(affiliateService *AffiliateService) *AffiliateDistributionMonthlyResetService {
+	return NewAffiliateDistributionMonthlyResetService(affiliateService)
+}
+
 func (s *AffiliateDistributionMonthlyResetService) Stop() {
 	if s == nil {
 		return

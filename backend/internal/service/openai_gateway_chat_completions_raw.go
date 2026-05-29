@@ -65,6 +65,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
+	captureGatewayClientRequest(c, inferGatewayTraceProtocol(c, "openai"), body, map[string]any{
+		"account_id":   account.ID,
+		"account_type": string(account.Type),
+		"stream":       gjson.GetBytes(body, "stream").Bool(),
+		"raw_path":     true,
+	})
 
 	// 1. Parse minimal fields needed for routing/billing
 	originalModel := gjson.GetBytes(body, "model").String()
@@ -136,7 +142,6 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
 	if clientStream {
 		upstreamReq.Header.Set("Accept", "text/event-stream")
 	} else {
@@ -152,10 +157,20 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			}
 		}
 	}
+	applyAccountCredentialHeaders(upstreamReq.Header, account)
+	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
 	customUA := account.GetOpenAIUserAgent()
 	if customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
+	captureGatewayUpstreamRequest(c, inferGatewayTraceProtocol(c, "openai"), upstreamReq, upstreamBody, map[string]any{
+		"account_id":     account.ID,
+		"account_type":   string(account.Type),
+		"original_model": originalModel,
+		"upstream_model": upstreamModel,
+		"stream":         clientStream,
+		"raw_path":       true,
+	})
 
 	// 6. Send request
 	proxyURL := ""
@@ -184,6 +199,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "openai"), resp, respBody, map[string]any{
+			"original_model": originalModel,
+			"upstream_model": upstreamModel,
+			"stream":         clientStream,
+			"raw_path":       true,
+			"error":          true,
+		})
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -258,6 +280,14 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	traceBuf := newGatewayTraceBodyBuffer()
+	defer captureGatewayUpstreamResponseBuffer(c, inferGatewayTraceProtocol(c, "openai"), resp, traceBuf, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": upstreamModel,
+		"stream":         true,
+		"format":         "sse",
+		"raw_path":       true,
+	})
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
@@ -265,6 +295,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		traceBuf.WriteLine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			trimmedPayload := strings.TrimSpace(payload)
 			if trimmedPayload != "[DONE]" {
@@ -381,6 +412,12 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		}
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
+	captureGatewayUpstreamResponse(c, inferGatewayTraceProtocol(c, "openai"), resp, respBody, map[string]any{
+		"original_model": originalModel,
+		"upstream_model": upstreamModel,
+		"stream":         false,
+		"raw_path":       true,
+	})
 
 	var ccResp apicompat.ChatCompletionsResponse
 	var usage OpenAIUsage

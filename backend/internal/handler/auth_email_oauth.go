@@ -103,13 +103,13 @@ func (h *AuthHandler) emailOAuthCallback(c *gin.Context, provider string) {
 		frontendCallback = "/auth/oauth/callback"
 	}
 	if providerErr := strings.TrimSpace(c.Query("error")); providerErr != "" {
-		redirectOAuthError(c, frontendCallback, "provider_error", providerErr, c.Query("error_description"))
+		redirectEmailOAuthError(c, frontendCallback, "provider_error", providerErr, c.Query("error_description"))
 		return
 	}
 	code := strings.TrimSpace(c.Query("code"))
 	state := strings.TrimSpace(c.Query("state"))
 	if code == "" || state == "" {
-		redirectOAuthError(c, frontendCallback, "missing_params", "missing code/state", "")
+		redirectEmailOAuthError(c, frontendCallback, "missing_params", "missing code/state", "")
 		return
 	}
 
@@ -122,12 +122,12 @@ func (h *AuthHandler) emailOAuthCallback(c *gin.Context, provider string) {
 	}()
 	expectedState, err := readCookieDecoded(c, emailOAuthStateCookieName)
 	if err != nil || expectedState == "" || expectedState != state {
-		redirectOAuthError(c, frontendCallback, "invalid_state", "invalid oauth state", "")
+		redirectEmailOAuthError(c, frontendCallback, "invalid_state", "invalid oauth state", "")
 		return
 	}
 	expectedProvider, _ := readCookieDecoded(c, emailOAuthProviderCookie)
 	if !strings.EqualFold(strings.TrimSpace(expectedProvider), provider) {
-		redirectOAuthError(c, frontendCallback, "invalid_state", "invalid oauth provider", "")
+		redirectEmailOAuthError(c, frontendCallback, "invalid_state", "invalid oauth provider", "")
 		return
 	}
 	redirectTo, _ := readCookieDecoded(c, emailOAuthRedirectCookie)
@@ -138,12 +138,12 @@ func (h *AuthHandler) emailOAuthCallback(c *gin.Context, provider string) {
 
 	tokenResp, err := exchangeEmailOAuthCode(c.Request.Context(), cfg, code)
 	if err != nil {
-		redirectOAuthError(c, frontendCallback, "token_exchange_failed", "failed to exchange oauth code", singleLine(err.Error()))
+		redirectEmailOAuthError(c, frontendCallback, "token_exchange_failed", "failed to exchange oauth code", singleLine(err.Error()))
 		return
 	}
 	profile, err := fetchEmailOAuthProfile(c.Request.Context(), provider, cfg, tokenResp)
 	if err != nil {
-		redirectOAuthError(c, frontendCallback, "userinfo_failed", "failed to fetch verified email", singleLine(err.Error()))
+		redirectEmailOAuthError(c, frontendCallback, "userinfo_failed", "failed to fetch verified email", singleLine(err.Error()))
 		return
 	}
 	h.emailOAuthCallbackWithProfile(c, provider, cfg, frontendCallback, redirectTo, profile)
@@ -170,42 +170,39 @@ func (h *AuthHandler) emailOAuthCallbackWithProfile(
 	}
 	affiliateCode := h.emailOAuthAffiliateCode(c)
 	if shouldCreate, err := h.emailOAuthShouldCreatePendingRegistration(c.Request.Context(), input); err != nil {
-		redirectOAuthError(c, frontendCallback, infraerrors.Reason(err), infraerrors.Message(err), "")
+		redirectEmailOAuthError(c, frontendCallback, infraerrors.Reason(err), infraerrors.Message(err), "")
 		return
 	} else if shouldCreate {
 		if pendingErr := h.createEmailOAuthRegistrationPendingSession(c, provider, frontendCallback, redirectTo, profile); pendingErr != nil {
-			redirectOAuthError(c, frontendCallback, infraerrors.Reason(pendingErr), infraerrors.Message(pendingErr), "")
+			redirectEmailOAuthError(c, frontendCallback, infraerrors.Reason(pendingErr), infraerrors.Message(pendingErr), "")
 			return
 		}
 		redirectToFrontendCallback(c, frontendCallback)
 		return
 	}
 
-	tokenPair, user, err := h.authService.LoginOrRegisterVerifiedEmailOAuthWithInvitation(c.Request.Context(), input, "", affiliateCode)
+	user, err := h.authService.ResolveVerifiedEmailOAuthUserWithInvitation(c.Request.Context(), input, "", affiliateCode)
 	if err != nil {
 		if errors.Is(err, service.ErrOAuthInvitationRequired) {
 			if pendingErr := h.createEmailOAuthRegistrationPendingSession(c, provider, frontendCallback, redirectTo, profile); pendingErr != nil {
-				redirectOAuthError(c, frontendCallback, infraerrors.Reason(pendingErr), infraerrors.Message(pendingErr), "")
+				redirectEmailOAuthError(c, frontendCallback, infraerrors.Reason(pendingErr), infraerrors.Message(pendingErr), "")
 				return
 			}
 			redirectToFrontendCallback(c, frontendCallback)
 			return
 		}
-		redirectOAuthError(c, frontendCallback, infraerrors.Reason(err), infraerrors.Message(err), "")
+		redirectEmailOAuthError(c, frontendCallback, infraerrors.Reason(err), infraerrors.Message(err), "")
 		return
 	}
 	if err := h.ensureBackendModeAllowsUser(c.Request.Context(), user); err != nil {
-		redirectOAuthError(c, frontendCallback, "login_blocked", infraerrors.Reason(err), infraerrors.Message(err))
+		redirectEmailOAuthError(c, frontendCallback, "login_blocked", infraerrors.Reason(err), infraerrors.Message(err))
 		return
 	}
-
-	fragment := url.Values{}
-	fragment.Set("access_token", tokenPair.AccessToken)
-	fragment.Set("refresh_token", tokenPair.RefreshToken)
-	fragment.Set("expires_in", fmt.Sprintf("%d", tokenPair.ExpiresIn))
-	fragment.Set("token_type", "Bearer")
-	fragment.Set("redirect", redirectTo)
-	redirectWithFragment(c, frontendCallback, fragment)
+	if pendingErr := h.createEmailOAuthLoginPendingSession(c, provider, frontendCallback, redirectTo, profile, user.ID); pendingErr != nil {
+		redirectEmailOAuthError(c, frontendCallback, infraerrors.Reason(pendingErr), infraerrors.Message(pendingErr), "")
+		return
+	}
+	redirectToFrontendCallback(c, frontendCallback)
 }
 
 func (h *AuthHandler) emailOAuthShouldCreatePendingRegistration(ctx context.Context, input service.EmailOAuthIdentityInput) (bool, error) {
@@ -317,6 +314,68 @@ func (h *AuthHandler) createEmailOAuthRegistrationPendingSession(
 	return h.createOAuthPendingSession(c, oauthPendingSessionPayload{
 		Intent:                 oauthIntentLogin,
 		Identity:               service.PendingAuthIdentityKey{ProviderType: provider, ProviderKey: provider, ProviderSubject: strings.TrimSpace(profile.Subject)},
+		ResolvedEmail:          email,
+		RedirectTo:             redirectTo,
+		BrowserSessionKey:      browserSessionKey,
+		UpstreamIdentityClaims: upstreamClaims,
+		CompletionResponse:     completionResponse,
+	})
+}
+
+func (h *AuthHandler) createEmailOAuthLoginPendingSession(
+	c *gin.Context,
+	provider string,
+	frontendCallback string,
+	redirectTo string,
+	profile *emailOAuthProfile,
+	userID int64,
+) error {
+	if h == nil || profile == nil {
+		return infraerrors.ServiceUnavailable("PENDING_AUTH_NOT_READY", "pending auth service is not ready")
+	}
+	if userID <= 0 {
+		return infraerrors.BadRequest("PENDING_AUTH_TARGET_USER_MISSING", "pending auth target user is missing")
+	}
+
+	browserSessionKey, err := generateOAuthPendingBrowserSession()
+	if err != nil {
+		return infraerrors.InternalServer("PENDING_AUTH_SESSION_CREATE_FAILED", "failed to create pending auth session").WithCause(err)
+	}
+	setOAuthPendingBrowserCookie(c, browserSessionKey, isRequestHTTPS(c))
+
+	email := strings.TrimSpace(strings.ToLower(profile.Email))
+	upstreamClaims := map[string]any{
+		"email":            email,
+		"email_verified":   profile.EmailVerified,
+		"username":         strings.TrimSpace(profile.Username),
+		"provider":         provider,
+		"provider_key":     provider,
+		"provider_subject": strings.TrimSpace(profile.Subject),
+	}
+	if strings.TrimSpace(profile.DisplayName) != "" {
+		upstreamClaims["suggested_display_name"] = strings.TrimSpace(profile.DisplayName)
+	}
+	if strings.TrimSpace(profile.AvatarURL) != "" {
+		upstreamClaims["suggested_avatar_url"] = strings.TrimSpace(profile.AvatarURL)
+	}
+	for key, value := range profile.Metadata {
+		if _, exists := upstreamClaims[key]; !exists {
+			upstreamClaims[key] = value
+		}
+	}
+
+	completionResponse := map[string]any{
+		"provider": provider,
+		"redirect": redirectTo,
+	}
+	if strings.TrimSpace(frontendCallback) != "" {
+		completionResponse["frontend_callback"] = strings.TrimSpace(frontendCallback)
+	}
+
+	return h.createOAuthPendingSession(c, oauthPendingSessionPayload{
+		Intent:                 oauthIntentLogin,
+		Identity:               service.PendingAuthIdentityKey{ProviderType: provider, ProviderKey: provider, ProviderSubject: strings.TrimSpace(profile.Subject)},
+		TargetUserID:           &userID,
 		ResolvedEmail:          email,
 		RedirectTo:             redirectTo,
 		BrowserSessionKey:      browserSessionKey,
@@ -570,6 +629,33 @@ func fetchGitHubPrimaryVerifiedEmail(ctx context.Context, emailsURL string, acce
 		}
 	}
 	return "", errors.New("github verified email is missing")
+}
+
+func redirectEmailOAuthError(c *gin.Context, frontendCallback string, code string, message string, description string) {
+	u, err := url.Parse(frontendCallback)
+	if err != nil {
+		c.Redirect(http.StatusFound, emailOAuthDefaultRedirect)
+		return
+	}
+	if u.Scheme != "" && !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		c.Redirect(http.StatusFound, emailOAuthDefaultRedirect)
+		return
+	}
+
+	query := u.Query()
+	query.Set("error", truncateFragmentValue(code))
+	query.Set("oauth_source", "backend")
+	if strings.TrimSpace(message) != "" {
+		query.Set("error_message", truncateFragmentValue(message))
+	}
+	if strings.TrimSpace(description) != "" {
+		query.Set("error_description", truncateFragmentValue(description))
+	}
+	u.RawQuery = query.Encode()
+	u.Fragment = ""
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Redirect(http.StatusFound, u.String())
 }
 
 func parseGoogleOAuthProfile(body string) (*emailOAuthProfile, error) {

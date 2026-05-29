@@ -41,21 +41,48 @@ export interface AffiliateInviteCodePricing {
 
 export interface AffiliateDailyRevenueEntry {
   stat_date: string
+  user_id?: number
+  email?: string
+  username?: string
   agent_id: number
   agent_email: string
   agent_username: string
+  business_usd?: number
+  business_rmb?: number
   direct_user_count?: number
   direct_agent_count?: number
+  direct_users?: number
+  direct_agents?: number
+  direct_total_usage_usd?: number
+  direct_total_usage_rmb?: number
+  direct_user_usage_usd?: number
+  direct_user_usage_rmb?: number
+  direct_agent_usage_usd?: number
+  direct_agent_usage_rmb?: number
   revenue_usd: number
   rank?: number
 }
 
 export interface AffiliateRebateBalanceEntry {
+  user_id?: number
+  email?: string
+  username?: string
   agent_id: number
   agent_email: string
   agent_username: string
   current_rebate_balance_rmb: number
+  today_rebate_rmb?: number
   monthly_rebate_rmb?: number
+  direct_user_count?: number
+  direct_agent_count?: number
+  direct_users?: number
+  direct_agents?: number
+  direct_total_usage_usd?: number
+  direct_total_usage_rmb?: number
+  direct_user_usage_usd?: number
+  direct_user_usage_rmb?: number
+  direct_agent_usage_usd?: number
+  direct_agent_usage_rmb?: number
   rank?: number
   updated_at?: string | null
 }
@@ -133,7 +160,14 @@ function normalizeAffiliateDirectChild(child: AffiliateDirectChildResponse): Aff
     role: child.role ?? (child.is_agent ? 'agent' : 'user'),
     joined_at: child.joined_at ?? child.created_at ?? null,
     today_revenue_usd: toFiniteAffiliateNumber(child.today_revenue_usd ?? child.today_business_usd, 0),
+    today_business_rmb: toFiniteAffiliateNumber(child.today_business_rmb ?? child.direct_total_usage_rmb, 0),
     today_rebate_rmb: toFiniteAffiliateNumber(child.today_rebate_rmb, 0),
+    direct_total_usage_usd: toFiniteAffiliateNumber(child.direct_total_usage_usd ?? child.today_revenue_usd ?? child.today_business_usd, 0),
+    direct_total_usage_rmb: toFiniteAffiliateNumber(child.direct_total_usage_rmb ?? child.today_business_rmb, 0),
+    direct_user_usage_usd: toFiniteAffiliateNumber(child.direct_user_usage_usd, 0),
+    direct_user_usage_rmb: toFiniteAffiliateNumber(child.direct_user_usage_rmb, 0),
+    direct_agent_usage_usd: toFiniteAffiliateNumber(child.direct_agent_usage_usd, 0),
+    direct_agent_usage_rmb: toFiniteAffiliateNumber(child.direct_agent_usage_rmb, 0),
     current_rebate_balance_rmb: toFiniteAffiliateNumber(child.current_rebate_balance_rmb, 0),
     group_rates: normalizeAffiliateGroupRates(child.current_group_rates ?? child.group_rates),
   }
@@ -149,6 +183,7 @@ function normalizeAffiliateOverview(raw: AffiliateDistributionDetailResponse): U
     invite_group_rates: normalizeAffiliateGroupRates(raw.invite_group_rates),
     my_group_rates: normalizeAffiliateGroupRates(raw.my_group_rates ?? raw.current_group_rates ?? raw.group_rates),
     today_revenue_usd: toFiniteAffiliateNumber(raw.today_revenue_usd ?? raw.today_business_usd, 0),
+    today_business_rmb: toFiniteAffiliateNumber(raw.today_business_rmb, 0),
     today_rebate_rmb: toFiniteAffiliateNumber(raw.today_rebate_rmb, 0),
     current_rebate_balance_rmb: toFiniteAffiliateNumber(raw.current_rebate_balance_rmb, 0),
     direct_children: directChildren,

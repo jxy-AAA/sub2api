@@ -131,6 +131,7 @@ Community projects that extend or integrate with Sub2API:
 ## Documentation
 
 - Docs index: [docs/README.md](docs/README.md)
+- Compliance export notes: [docs/COMPLIANCE_DATA_EXPORT_CN.md](docs/COMPLIANCE_DATA_EXPORT_CN.md)
 - Developer guide: [DEV_GUIDE.md](DEV_GUIDE.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 
@@ -302,9 +303,13 @@ SERVER_PORT=8080
 
 #### Access
 
-The default bind address is `127.0.0.1`, so publish it through Caddy/Nginx/TLS before exposing it publicly. For local checks:
+The default bind address is `127.0.0.1`, so publish it through Caddy/Nginx/TLS before exposing it publicly.
+
+- Use `/livez` for liveness checks: the process is up and serving HTTP.
+- Use `/health` for readiness checks: PostgreSQL, Redis, and migration state are ready to serve traffic.
 
 ```bash
+curl http://127.0.0.1:8080/livez
 curl http://127.0.0.1:8080/health
 ```
 
@@ -512,6 +517,16 @@ Simple Mode is designed for individual developers or internal teams who want qui
 - Enable: Set environment variable `RUN_MODE=simple`
 - Difference: Hides SaaS-related features and skips billing process
 - Security note: In production, you must also set `SIMPLE_MODE_CONFIRM=true` to allow startup
+
+---
+
+## Model Market & Compatible Clients
+
+- Signed-in users can open `/model-market` to browse the models they can access, including protocol compatibility, reachable channels, and pricing snapshots.
+- Use the model market to confirm whether a model is exposed through an `OpenAI-compatible` or `Anthropic-compatible` upstream before configuring clients.
+- `OpenAI-compatible` upstreams work well for GPT-style tooling such as Cursor. Point the client at your Sub2API base URL and use the standard OpenAI routes like `/v1/chat/completions` or `/v1/responses`.
+- `Anthropic-compatible` upstreams work for Claude Code and Anthropic SDKs. Point the client at your Sub2API base URL and use `/v1/messages`.
+- See `docs/GATEWAYS.md` for the gateway-specific notes.
 
 ---
 

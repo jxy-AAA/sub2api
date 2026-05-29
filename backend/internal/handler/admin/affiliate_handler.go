@@ -28,6 +28,15 @@ type firstAdminLookup interface {
 	GetFirstAdmin(ctx context.Context) (*service.User, error)
 }
 
+// ProvideAffiliateFirstAdminLookups supplies the root-admin lookup dependency
+// in a Wire-friendly non-variadic form.
+func ProvideAffiliateFirstAdminLookups(userService *service.UserService) []firstAdminLookup {
+	if userService == nil {
+		return nil
+	}
+	return []firstAdminLookup{userService}
+}
+
 // NewAffiliateHandler creates a new admin affiliate handler.
 func NewAffiliateHandler(affiliateService *service.AffiliateService, adminService service.AdminService, rootAdminLookups ...firstAdminLookup) *AffiliateHandler {
 	var rootAdminLookup firstAdminLookup

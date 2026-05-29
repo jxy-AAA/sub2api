@@ -74,9 +74,18 @@
                   {{ formatCurrency(readRevenueRMB(row), 'CNY') }}
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                  {{ tt('affiliateManaged.directUsers', '直属用户') }} {{ readDirectUserCount(row) }}
-                  /
-                  {{ tt('affiliateManaged.directAgents', '直属代理') }} {{ readDirectAgentCount(row) }}
+                  <div>
+                    {{ tt('affiliateManaged.directUsers', '直属用户') }} {{ readDirectUserCount(row) }}
+                    /
+                    {{ tt('affiliateManaged.directAgents', '直属代理') }} {{ readDirectAgentCount(row) }}
+                  </div>
+                  <div class="mt-1 text-xs text-gray-500 dark:text-dark-400">
+                    {{ tt('affiliateManaged.directUsageTotal', '直属消耗合计') }} {{ formatCurrency(readDirectTotalUsageRMB(row), 'CNY') }}
+                    /
+                    {{ tt('affiliateManaged.directUserUsage', '直属用户消耗') }} {{ formatCurrency(readDirectUserUsageRMB(row), 'CNY') }}
+                    /
+                    {{ tt('affiliateManaged.directAgentUsage', '直属代理消耗') }} {{ formatCurrency(readDirectAgentUsageRMB(row), 'CNY') }}
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -131,9 +140,14 @@
                   {{ formatCurrency(readRebateBalanceRMB(row), 'CNY') }}
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                  {{ tt('affiliateManaged.todayRebate', '今日返利') }} {{ formatCurrency(readTodayRebateRMB(row), 'CNY') }}
-                  /
-                  {{ tt('affiliateManaged.monthlyRebate', '本月返利') }} {{ formatCurrency(readMonthlyRebateRMB(row), 'CNY') }}
+                  <div>
+                    {{ tt('affiliateManaged.todayRebate', '今日返利') }} {{ formatCurrency(readTodayRebateRMB(row), 'CNY') }}
+                    /
+                    {{ tt('affiliateManaged.monthlyRebate', '本月返利') }} {{ formatCurrency(readMonthlyRebateRMB(row), 'CNY') }}
+                  </div>
+                  <div class="mt-1 text-xs text-gray-500 dark:text-dark-400">
+                    {{ tt('affiliateManaged.directUsageTotal', '直属消耗合计') }} {{ formatCurrency(readDirectTotalUsageRMB(row), 'CNY') }}
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -289,7 +303,7 @@ const daily = reactive({
   loading: false,
   items: [] as ManagedDailyRevenueRankingItem[],
   search: '',
-  date: new Date().toISOString().slice(0, 10),
+  date: localDate(),
 })
 
 const rebate = reactive({
@@ -330,6 +344,14 @@ function tt(key: string, fallback: string, params?: Record<string, unknown>) {
   return translated === key ? fallback : translated
 }
 
+function localDate() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 function isForbidden(error: unknown) {
   const axiosError = error as AxiosError
   const status = axiosError?.response?.status ?? (error as { status?: number })?.status
@@ -354,7 +376,7 @@ function readUsername(row: { agent_username?: string; username?: string }) {
 }
 
 function readDate(row: ManagedDailyRevenueRankingItem) {
-  return row.date || row.revenue_date || ''
+  return row.stat_date || row.date || row.revenue_date || ''
 }
 
 function readRevenueRMB(row: ManagedDailyRevenueRankingItem) {
@@ -379,6 +401,18 @@ function readDirectUserCount(row: Partial<ManagedDailyRevenueRankingItem & Manag
 
 function readDirectAgentCount(row: Partial<ManagedDailyRevenueRankingItem & ManagedRebateBalanceRankingItem>) {
   return toFiniteNumber(row.direct_agent_count ?? row.direct_agents)
+}
+
+function readDirectTotalUsageRMB(row: Partial<ManagedDailyRevenueRankingItem & ManagedRebateBalanceRankingItem>) {
+  return toFiniteNumber(row.direct_total_usage_rmb)
+}
+
+function readDirectUserUsageRMB(row: Partial<ManagedDailyRevenueRankingItem & ManagedRebateBalanceRankingItem>) {
+  return toFiniteNumber(row.direct_user_usage_rmb)
+}
+
+function readDirectAgentUsageRMB(row: Partial<ManagedDailyRevenueRankingItem & ManagedRebateBalanceRankingItem>) {
+  return toFiniteNumber(row.direct_agent_usage_rmb)
 }
 
 function normalizedRates(row: Pick<AffiliateDistributionTreeNode, 'current_group_rates'>) {
@@ -471,7 +505,7 @@ function parentLabel(row: AffiliateDistributionTreeNode) {
 
 function readTreeRevenueRMB(row: AffiliateDistributionTreeNode) {
   const record = row as unknown as Record<string, unknown>
-  return toFiniteNumber(record.today_revenue_rmb ?? record.today_business_rmb)
+  return toFiniteNumber(record.direct_total_usage_rmb ?? record.today_revenue_rmb ?? record.today_business_rmb)
 }
 
 function depthLabel(depth: number) {

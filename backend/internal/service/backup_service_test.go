@@ -21,12 +21,16 @@ import (
 // ─── Mocks ───
 
 type mockSettingRepo struct {
-	mu   sync.Mutex
-	data map[string]string
+	mu           sync.Mutex
+	data         map[string]string
+	getValueErrs map[string]error
 }
 
 func newMockSettingRepo() *mockSettingRepo {
-	return &mockSettingRepo{data: make(map[string]string)}
+	return &mockSettingRepo{
+		data:         make(map[string]string),
+		getValueErrs: make(map[string]error),
+	}
 }
 
 func (m *mockSettingRepo) Get(_ context.Context, key string) (*Setting, error) {
@@ -42,6 +46,9 @@ func (m *mockSettingRepo) Get(_ context.Context, key string) (*Setting, error) {
 func (m *mockSettingRepo) GetValue(_ context.Context, key string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err, ok := m.getValueErrs[key]; ok {
+		return "", err
+	}
 	v, ok := m.data[key]
 	if !ok {
 		return "", nil
@@ -136,12 +143,19 @@ func (m *mockDumper) Restore(_ context.Context, data io.Reader) error {
 
 // blockingDumper 可控延迟的 dumper，用于测试异步行为
 type blockingDumper struct {
-	blockCh chan struct{}
-	data    []byte
-	restErr error
+	blockCh   chan struct{}
+	startedCh chan struct{}
+	data      []byte
+	restErr   error
 }
 
 func (d *blockingDumper) Dump(ctx context.Context) (io.ReadCloser, error) {
+	if d.startedCh != nil {
+		select {
+		case d.startedCh <- struct{}{}:
+		default:
+		}
+	}
 	select {
 	case <-d.blockCh:
 	case <-ctx.Done():
@@ -216,6 +230,36 @@ func newTestBackupService(repo *mockSettingRepo, dumper DBDumper, store *mockObj
 		return store, nil
 	}
 	return NewBackupService(repo, cfg, &plainEncryptor{}, factory, dumper)
+}
+
+type sharedBackupLockStore struct {
+	mu    sync.Mutex
+	state *backupOperationLockState
+}
+
+func (s *sharedBackupLockStore) AcquireBackupOperationLock(ctx context.Context, owner string, operation string, lease time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	if s.state != nil && !backupOperationLockExpired(*s.state, now) && s.state.Owner != owner {
+		return false, nil
+	}
+	s.state = &backupOperationLockState{
+		Owner:      owner,
+		Operation:  operation,
+		ExpiresAt:  now.Add(lease).Format(time.RFC3339Nano),
+		AcquiredAt: now.Format(time.RFC3339Nano),
+	}
+	return true, nil
+}
+
+func (s *sharedBackupLockStore) ReleaseBackupOperationLock(ctx context.Context, owner string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != nil && s.state.Owner == owner {
+		s.state = nil
+	}
+	return nil
 }
 
 func seedS3Config(t *testing.T, repo *mockSettingRepo) {
@@ -328,8 +372,41 @@ func TestBackupService_LoadRecords_Corrupted(t *testing.T) {
 	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())
 
 	records, err := svc.loadRecords(context.Background())
-	require.Error(t, err) // 损坏数据应返回错误
+	require.Error(t, err)
 	require.Nil(t, records)
+}
+
+func TestBackupService_SaveRecord_DoesNotOverwriteOnReadError(t *testing.T) {
+	repo := newMockSettingRepo()
+	existingRaw := `[{"id":"existing","status":"completed","started_at":"2026-01-02T03:04:05Z"}]`
+	require.NoError(t, repo.Set(context.Background(), settingKeyBackupRecords, existingRaw))
+	repo.getValueErrs[settingKeyBackupRecords] = fmt.Errorf("settings store unavailable")
+	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())
+	err := svc.saveRecord(context.Background(), &BackupRecord{
+		ID:        "new-record",
+		Status:    "completed",
+		StartedAt: time.Now().Format(time.RFC3339),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "load backup records")
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Equal(t, existingRaw, repo.data[settingKeyBackupRecords])
+}
+
+func TestBackupService_SaveRecord_DoesNotOverwriteCorruptRecords(t *testing.T) {
+	repo := newMockSettingRepo()
+	require.NoError(t, repo.Set(context.Background(), settingKeyBackupRecords, "not valid json{{{"))
+	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())
+	err := svc.saveRecord(context.Background(), &BackupRecord{
+		ID:        "new-record",
+		Status:    "completed",
+		StartedAt: time.Now().Format(time.RFC3339),
+	})
+	require.ErrorIs(t, err, ErrBackupRecordsCorrupt)
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Equal(t, "not valid json{{{", repo.data[settingKeyBackupRecords])
 }
 
 func TestBackupService_CreateBackup_Streaming(t *testing.T) {
@@ -597,6 +674,32 @@ func TestStartBackup_ConcurrentBlocked(t *testing.T) {
 	svc.wg.Wait()
 }
 
+func TestStartBackup_MultiInstanceLockBlocksConcurrentBackup(t *testing.T) {
+	repo1 := newMockSettingRepo()
+	repo2 := newMockSettingRepo()
+	seedS3Config(t, repo1)
+	seedS3Config(t, repo2)
+
+	dumper1 := &blockingDumper{blockCh: make(chan struct{}), data: []byte("data")}
+	dumper2 := &mockDumper{dumpData: []byte("other")}
+	store := newMockObjectStore()
+	lockStore := &sharedBackupLockStore{}
+
+	svc1 := newTestBackupService(repo1, dumper1, store)
+	svc2 := newTestBackupService(repo2, dumper2, store)
+	svc1.lockStore = lockStore
+	svc2.lockStore = lockStore
+
+	_, err := svc1.StartBackup(context.Background(), "manual", 14)
+	require.NoError(t, err)
+
+	_, err = svc2.StartBackup(context.Background(), "manual", 14)
+	require.ErrorIs(t, err, ErrBackupInProgress)
+
+	close(dumper1.blockCh)
+	svc1.wg.Wait()
+}
+
 func TestStartBackup_ShuttingDown(t *testing.T) {
 	repo := newMockSettingRepo()
 	seedS3Config(t, repo)
@@ -676,6 +779,53 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestStop_CancelsActiveBackupAfterGracePeriod(t *testing.T) {
+	repo := newMockSettingRepo()
+	seedS3Config(t, repo)
+	dumper := &blockingDumper{
+		blockCh:   make(chan struct{}),
+		startedCh: make(chan struct{}, 1),
+		data:      []byte("data"),
+	}
+	store := newMockObjectStore()
+	svc := newTestBackupService(repo, dumper, store)
+	svc.shutdownGracePeriod = 20 * time.Millisecond
+	svc.shutdownCancelWait = time.Second
+	svc.cronStopTimeout = 20 * time.Millisecond
+	record, err := svc.StartBackup(context.Background(), "manual", 14)
+	require.NoError(t, err)
+	select {
+	case <-dumper.startedCh:
+	case <-time.After(time.Second):
+		t.Fatal("backup did not start dumping")
+	}
+	done := make(chan struct{})
+	go func() {
+		svc.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return after cancelling the active backup")
+	}
+	final, err := svc.GetBackupRecord(context.Background(), record.ID)
+	require.NoError(t, err)
+	require.Equal(t, "failed", final.Status)
+	require.Contains(t, final.ErrorMsg, "context canceled")
+}
+
+func TestStopWithContext_TimesOutWhenOperationsDoNotExit(t *testing.T) {
+	svc := newTestBackupService(newMockSettingRepo(), &mockDumper{}, newMockObjectStore())
+	svc.shutdownGracePeriod = 10 * time.Millisecond
+	svc.shutdownCancelWait = 10 * time.Millisecond
+	svc.cronStopTimeout = 10 * time.Millisecond
+	svc.wg.Add(1)
+	defer svc.wg.Done()
+	err := svc.stopWithContext(context.Background())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func TestStartRestore_Async(t *testing.T) {
 	repo := newMockSettingRepo()
 	seedS3Config(t, repo)
@@ -700,4 +850,55 @@ func TestStartRestore_Async(t *testing.T) {
 	final, err := svc.GetBackupRecord(context.Background(), record.ID)
 	require.NoError(t, err)
 	require.Equal(t, "completed", final.RestoreStatus)
+}
+
+func TestStartRestore_MultiInstanceLockBlocksConcurrentBackup(t *testing.T) {
+	repo1 := newMockSettingRepo()
+	repo2 := newMockSettingRepo()
+	seedS3Config(t, repo1)
+	seedS3Config(t, repo2)
+
+	dumpContent := "-- PostgreSQL dump\nCREATE TABLE test (id int);\n"
+	dumperRestore := &blockingDumper{blockCh: make(chan struct{}), data: []byte(dumpContent)}
+	createDumper := &mockDumper{dumpData: []byte(dumpContent)}
+	store := newMockObjectStore()
+	lockStore := &sharedBackupLockStore{}
+
+	svc1 := newTestBackupService(repo1, createDumper, store)
+	record, err := svc1.CreateBackup(context.Background(), "manual", 14)
+	require.NoError(t, err)
+
+	svcRestore := newTestBackupService(repo1, dumperRestore, store)
+	svcRestore.lockStore = lockStore
+	restoreRecord, err := svcRestore.StartRestore(context.Background(), record.ID)
+	require.NoError(t, err)
+	require.Equal(t, "running", restoreRecord.RestoreStatus)
+
+	svcBackup := newTestBackupService(repo2, &mockDumper{dumpData: []byte("other")}, store)
+	svcBackup.lockStore = lockStore
+	_, err = svcBackup.StartBackup(context.Background(), "manual", 14)
+	require.ErrorIs(t, err, ErrBackupInProgress)
+
+	close(dumperRestore.blockCh)
+	svcRestore.wg.Wait()
+}
+
+func TestSettingBackupOperationLockStoreReleaseRequiresOwner(t *testing.T) {
+	repo := newMockSettingRepo()
+	store := &settingBackupOperationLockStore{repo: repo, nowFunc: time.Now}
+
+	ok, err := store.AcquireBackupOperationLock(context.Background(), "owner-1", "backup", time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	require.NoError(t, store.ReleaseBackupOperationLock(context.Background(), "owner-2"))
+
+	raw, err := repo.GetValue(context.Background(), backupLockKey)
+	require.NoError(t, err)
+	require.NotEmpty(t, raw)
+
+	require.NoError(t, store.ReleaseBackupOperationLock(context.Background(), "owner-1"))
+	raw, err = repo.GetValue(context.Background(), backupLockKey)
+	require.NoError(t, err)
+	require.Empty(t, raw)
 }

@@ -379,6 +379,18 @@
         <p class="text-sm text-gray-500 dark:text-dark-400">
           &copy; {{ currentYear }} {{ siteName }}. {{ t('home.footer.allRightsReserved') }}
         </p>
+        <p class="text-sm text-gray-500 dark:text-dark-400">
+          由
+          <a
+            :href="kawaiSupportUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="font-medium text-primary-600 transition-colors hover:text-primary-700 hover:underline dark:text-primary-400 dark:hover:text-primary-300"
+          >
+            kawai.cloud
+          </a>
+          提供域名和部分技术支持
+        </p>
         <div class="flex items-center gap-4">
           <a
             v-if="docUrl"
@@ -410,6 +422,7 @@ import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { renderSafeHomeContent, resolveSafeHomeIframeUrl } from '@/utils/homeContent'
+import { KAWAI_SUPPORT_URL } from '@/constants/sandog'
 
 const { t } = useI18n()
 
@@ -433,6 +446,7 @@ const isDark = ref(document.documentElement.classList.contains('dark'))
 
 // GitHub URL
 const githubUrl = 'https://github.com/Wei-Shaw/sub2api'
+const kawaiSupportUrl = KAWAI_SUPPORT_URL
 
 // Auth state
 const isAuthenticated = computed(() => authStore.isAuthenticated)

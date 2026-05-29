@@ -485,9 +485,208 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity'
+export type GroupPlatform =
+  | 'anthropic'
+  | 'openai'
+  | 'gemini'
+  | 'antigravity'
+  | 'openai_compatible'
+  | 'anthropic_compatible'
 
 export type SubscriptionType = 'standard' | 'subscription'
+
+export type ModelMarketProtocol = 'openai' | 'anthropic'
+export type ModelMarketStatus = 'active' | 'hidden' | 'disabled'
+
+export interface ModelMarketItem {
+  id: number
+  model_id: string
+  display_name: string
+  provider_key: string
+  protocol: ModelMarketProtocol
+  capabilities: string[]
+  context_window?: number | null
+  description?: string | null
+  tags: string[]
+  status: ModelMarketStatus
+  sort_order: number
+  metadata?: Record<string, unknown>
+  created_at?: string
+  updated_at?: string
+  channel_refs?: ModelMarketChannelRef[]
+  available_channel_count?: number
+}
+
+export interface ModelMarketChannelRef {
+  channel_id: number
+  channel_name: string
+  channel_status: string
+  platform: string
+  group_ids: number[]
+  pricing?: ModelMarketChannelPricing | null
+}
+
+export interface ModelMarketChannelPricing {
+  billing_mode?: string | null
+  input_price?: number | null
+  output_price?: number | null
+  cache_write_price?: number | null
+  cache_read_price?: number | null
+  image_output_price?: number | null
+  per_request_price?: number | null
+}
+
+export interface ModelMarketImportResult {
+  message?: string
+  imported?: number
+  imported_count?: number
+  created?: number
+  created_count?: number
+  updated?: number
+  updated_count?: number
+  skipped?: number
+  skipped_count?: number
+  total?: number
+  total_count?: number
+  items?: ModelMarketItem[]
+}
+
+export interface TraceRecord {
+  id: number
+  task_id: string
+  request_id?: string | null
+  response_id?: string | null
+  user_id?: number | null
+  api_key_id?: number | null
+  group_id?: number | null
+  account_id?: number | null
+  capture_rule_id?: number | null
+  protocol: string
+  model: string
+  requested_model?: string | null
+  upstream_model?: string | null
+  request_content_type?: string | null
+  response_content_type?: string | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  total_tokens?: number | null
+  upstream_status_code?: number | null
+  scaffold: string
+  scaffold_version: string
+  prompt?: unknown
+  candidates?: unknown
+  tools?: unknown
+  signature?: unknown
+  meta?: unknown
+  raw_request?: unknown
+  raw_response?: unknown
+  raw_request_text?: string | null
+  raw_response_text?: string | null
+  dedupe_hash: string
+  prompt_hash: string
+  created_at: string
+}
+
+export interface TraceRule {
+  id: number
+  name: string
+  enabled: boolean
+  priority: number
+  model_patterns: string[]
+  user_ids: number[]
+  api_key_ids: number[]
+  keywords: string[]
+  min_tokens?: number | null
+  max_tokens?: number | null
+  sampling_ratio: number
+  active_from?: string | null
+  active_to?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateTraceRuleRequest {
+  name: string
+  enabled?: boolean
+  priority?: number
+  model_patterns?: string[]
+  user_ids?: number[]
+  api_key_ids?: number[]
+  keywords?: string[]
+  min_tokens?: number | null
+  max_tokens?: number | null
+  sampling_ratio?: number
+  active_from?: string | null
+  active_to?: string | null
+}
+
+export interface UpdateTraceRuleRequest {
+  name?: string
+  enabled?: boolean
+  priority?: number
+  model_patterns?: string[]
+  user_ids?: number[]
+  api_key_ids?: number[]
+  keywords?: string[]
+  min_tokens?: number | null
+  max_tokens?: number | null
+  sampling_ratio?: number
+  active_from?: string | null
+  active_to?: string | null
+}
+
+export interface TraceRecordFilters {
+  model?: string
+  user_id?: number | null
+  api_key_id?: number | null
+  capture_rule_id?: number | null
+  start_time?: string | null
+  end_time?: string | null
+  start_date?: string | null
+  end_date?: string | null
+  timezone?: string | null
+  keyword?: string
+  min_input_tokens?: number | null
+  max_input_tokens?: number | null
+  min_output_tokens?: number | null
+  max_output_tokens?: number | null
+  min_total_tokens?: number | null
+  max_total_tokens?: number | null
+}
+
+export type TraceExportTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'canceled'
+
+export interface TraceExportTask {
+  id: number
+  status: TraceExportTaskStatus
+  format: string
+  filters: TraceRecordFilters
+  include_raw: boolean
+  requested_by: number
+  download_filename?: string | null
+  file_size_bytes: number
+  target_records: number
+  total_records: number
+  processed_records: number
+  error_message?: string | null
+  canceled_by?: number | null
+  canceled_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateTraceExportTaskRequest {
+  filters: TraceRecordFilters
+  include_raw?: boolean
+  target_records?: number
+}
 
 export interface OpenAIMessagesDispatchModelConfig {
   opus_mapped_model?: string
@@ -668,7 +867,13 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity'
+export type AccountPlatform =
+  | 'anthropic'
+  | 'openai'
+  | 'gemini'
+  | 'antigravity'
+  | 'openai_compatible'
+  | 'anthropic_compatible'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'

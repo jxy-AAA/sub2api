@@ -117,7 +117,7 @@ func TestCanonicalizeReturnURLRejectsNonCanonicalPath(t *testing.T) {
 func TestBuildPaymentReturnURL(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildPaymentReturnURL("https://example.com/payment/result?from=checkout#fragment", 42, "sub2_42", "resume-token")
+	got, err := buildPaymentReturnURL("https://example.com/payment/result?from=checkout#fragment", 42, "sub2_42", "resume-token", "lookup-token")
 	if err != nil {
 		t.Fatalf("buildPaymentReturnURL returned error: %v", err)
 	}
@@ -142,6 +142,9 @@ func TestBuildPaymentReturnURL(t *testing.T) {
 	if query.Get("resume_token") != "resume-token" {
 		t.Fatalf("resume_token = %q", query.Get("resume_token"))
 	}
+	if query.Get("lookup_token") != "lookup-token" {
+		t.Fatalf("lookup_token = %q", query.Get("lookup_token"))
+	}
 	if query.Get("status") != "success" {
 		t.Fatalf("status = %q", query.Get("status"))
 	}
@@ -150,7 +153,7 @@ func TestBuildPaymentReturnURL(t *testing.T) {
 func TestBuildPaymentReturnURLWithoutResumeTokenStillIncludesOutTradeNo(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildPaymentReturnURL("https://example.com/payment/result", 42, "sub2_42", "")
+	got, err := buildPaymentReturnURL("https://example.com/payment/result", 42, "sub2_42", "", "")
 	if err != nil {
 		t.Fatalf("buildPaymentReturnURL returned error: %v", err)
 	}
@@ -174,7 +177,7 @@ func TestBuildPaymentReturnURLWithoutResumeTokenStillIncludesOutTradeNo(t *testi
 func TestBuildPaymentReturnURLEmptyBase(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildPaymentReturnURL("", 42, "sub2_42", "resume-token")
+	got, err := buildPaymentReturnURL("", 42, "sub2_42", "resume-token", "lookup-token")
 	if err != nil {
 		t.Fatalf("buildPaymentReturnURL returned error: %v", err)
 	}
@@ -212,6 +215,28 @@ func TestPaymentResumeTokenRoundTrip(t *testing.T) {
 	}
 	if claims.CanonicalReturnURL != "https://example.com/payment/result" {
 		t.Fatalf("claims return URL = %q", claims.CanonicalReturnURL)
+	}
+}
+
+func TestPublicOrderLookupTokenRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	svc := NewPaymentResumeService([]byte("0123456789abcdef0123456789abcdef"))
+	token, err := svc.CreatePublicOrderLookupToken(PublicOrderLookupClaims{
+		OrderID:    42,
+		OutTradeNo: "sub2_42",
+		UserID:     7,
+	})
+	if err != nil {
+		t.Fatalf("CreatePublicOrderLookupToken returned error: %v", err)
+	}
+
+	claims, err := svc.ParsePublicOrderLookupToken(token)
+	if err != nil {
+		t.Fatalf("ParsePublicOrderLookupToken returned error: %v", err)
+	}
+	if claims.OrderID != 42 || claims.OutTradeNo != "sub2_42" || claims.UserID != 7 {
+		t.Fatalf("claims mismatch: %+v", claims)
 	}
 }
 

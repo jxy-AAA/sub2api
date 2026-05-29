@@ -166,7 +166,7 @@ func buildSystemOperationID(c *gin.Context, operation string) string {
 	}
 	actorScope := "admin:0"
 	if subject, ok := middleware2.GetAuthSubjectFromContext(c); ok {
-		actorScope = "admin:" + strconv.FormatInt(subject.UserID, 10)
+		actorScope = subject.ActorScope("admin")
 	}
 	seed := operation + "|" + actorScope + "|" + c.FullPath() + "|" + key
 	hash := service.HashIdempotencyKey(seed)

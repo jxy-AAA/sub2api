@@ -117,6 +117,14 @@ type JWTConfig struct {
 	ExpireHour int    `json:"expire_hour" yaml:"expire_hour"`
 }
 
+type setupBootstrapConfig struct {
+	AutoSetup        bool   `yaml:"auto_setup"`
+	ConfigSource     string `yaml:"config_source,omitempty"`
+	AdminBootstrap   string `yaml:"admin_bootstrap,omitempty"`
+	SecretsFromEnv   bool   `yaml:"secrets_from_env"`
+	EnvReferenceMode string `yaml:"env_reference_mode,omitempty"`
+}
+
 const (
 	adminBootstrapReasonEmptyDatabase          = "empty_database"
 	adminBootstrapReasonAdminExists            = "admin_exists"
@@ -522,6 +530,7 @@ func writeConfigFile(cfg *SetupConfig) error {
 			Secret     string `yaml:"secret"`
 			ExpireHour int    `yaml:"expire_hour"`
 		} `yaml:"jwt"`
+		Setup   setupBootstrapConfig `yaml:"setup"`
 		Default struct {
 			UserConcurrency int     `yaml:"user_concurrency"`
 			UserBalance     float64 `yaml:"user_balance"`
@@ -535,14 +544,20 @@ func writeConfigFile(cfg *SetupConfig) error {
 		Timezone string `yaml:"timezone"`
 	}{
 		Server:   cfg.Server,
-		Database: cfg.Database,
-		Redis:    cfg.Redis,
+		Database: redactSecretsForConfig(cfg.Database),
+		Redis:    redactRedisSecretsForConfig(cfg.Redis),
 		JWT: struct {
 			Secret     string `yaml:"secret"`
 			ExpireHour int    `yaml:"expire_hour"`
 		}{
-			Secret:     cfg.JWT.Secret,
+			Secret:     preferEnvReference("JWT_SECRET", cfg.JWT.Secret),
 			ExpireHour: cfg.JWT.ExpireHour,
+		},
+		Setup: setupBootstrapConfig{
+			AutoSetup:        AutoSetupEnabled(),
+			ConfigSource:     "setup-wizard",
+			SecretsFromEnv:   secretEnvReferenceEnabled("DATABASE_PASSWORD") || secretEnvReferenceEnabled("REDIS_PASSWORD") || secretEnvReferenceEnabled("JWT_SECRET"),
+			EnvReferenceMode: "literal_env_names",
 		},
 		Default: struct {
 			UserConcurrency int     `yaml:"user_concurrency"`
@@ -571,6 +586,36 @@ func writeConfigFile(cfg *SetupConfig) error {
 	}
 
 	return os.WriteFile(GetConfigFilePath(), data, 0600)
+}
+
+func redactSecretsForConfig(cfg DatabaseConfig) DatabaseConfig {
+	cfg.Password = preferEnvReference("DATABASE_PASSWORD", cfg.Password)
+	return cfg
+}
+
+func redactRedisSecretsForConfig(cfg RedisConfig) RedisConfig {
+	cfg.Password = preferEnvReference("REDIS_PASSWORD", cfg.Password)
+	return cfg
+}
+
+func envReferenceValue(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	return "${" + name + "}"
+}
+
+func preferEnvReference(name, fallback string) string {
+	if secretEnvReferenceEnabled(name) {
+		return envReferenceValue(name)
+	}
+	return fallback
+}
+
+func secretEnvReferenceEnabled(name string) bool {
+	value, ok := os.LookupEnv(strings.TrimSpace(name))
+	return ok && strings.TrimSpace(value) != ""
 }
 
 func generateSecret(length int) (string, error) {

@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -140,13 +139,12 @@ func (h *OpsHandler) UpdateRuntimeLogConfig(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+	subject, ok := requireAdminSubject(c)
+	if !ok {
 		return
 	}
 
-	updated, err := h.opsService.UpdateRuntimeLogConfig(c.Request.Context(), &req, subject.UserID)
+	updated, err := h.opsService.UpdateRuntimeLogConfig(c.Request.Context(), &req, adminActorUserID(subject))
 	if err != nil {
 		response.Error(c, http.StatusBadRequest, err.Error())
 		return
@@ -166,13 +164,12 @@ func (h *OpsHandler) ResetRuntimeLogConfig(c *gin.Context) {
 		return
 	}
 
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok || subject.UserID <= 0 {
-		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+	subject, ok := requireAdminSubject(c)
+	if !ok {
 		return
 	}
 
-	updated, err := h.opsService.ResetRuntimeLogConfig(c.Request.Context(), subject.UserID)
+	updated, err := h.opsService.ResetRuntimeLogConfig(c.Request.Context(), adminActorUserID(subject))
 	if err != nil {
 		response.Error(c, http.StatusBadRequest, err.Error())
 		return

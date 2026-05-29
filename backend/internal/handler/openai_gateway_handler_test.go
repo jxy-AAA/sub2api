@@ -1023,6 +1023,14 @@ type openAIWSUsageHandlerAccountRepoStub struct {
 	account service.Account
 }
 
+func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulable(ctx context.Context) ([]service.Account, error) {
+	return []service.Account{s.account}, nil
+}
+
+func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]service.Account, error) {
+	return []service.Account{s.account}, nil
+}
+
 func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
 	if s.account.Platform != platform {
 		return nil, nil
@@ -1032,6 +1040,27 @@ func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByPlatform(ctx cont
 
 func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]service.Account, error) {
 	return s.ListSchedulableByPlatform(ctx, platform)
+}
+
+func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]service.Account, error) {
+	for _, platform := range platforms {
+		if s.account.Platform == platform {
+			return []service.Account{s.account}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByGroupIDAndPlatforms(ctx context.Context, groupID int64, platforms []string) ([]service.Account, error) {
+	return s.ListSchedulableByPlatforms(ctx, platforms)
+}
+
+func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	return s.ListSchedulableByPlatform(ctx, platform)
+}
+
+func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]service.Account, error) {
+	return s.ListSchedulableByPlatforms(ctx, platforms)
 }
 
 func (s *openAIWSUsageHandlerAccountRepoStub) GetByID(ctx context.Context, id int64) (*service.Account, error) {

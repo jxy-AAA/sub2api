@@ -17,6 +17,8 @@ type pricingRemoteClient struct {
 	httpClient *http.Client
 }
 
+const maxPricingHashBytes int64 = 4 << 10
+
 // pricingRemoteClientError 代理初始化失败时的错误占位客户端
 // 所有请求直接返回初始化错误，禁止回退到直连
 type pricingRemoteClientError struct {
@@ -71,7 +73,19 @@ func (c *pricingRemoteClient) FetchPricingJSON(ctx context.Context, url string) 
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	if resp.ContentLength > serviceMaxRemotePricingDownloadBytes() {
+		return nil, fmt.Errorf("pricing payload too large: %d bytes (max %d)", resp.ContentLength, serviceMaxRemotePricingDownloadBytes())
+	}
+
+	limited := io.LimitReader(resp.Body, serviceMaxRemotePricingDownloadBytes()+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > serviceMaxRemotePricingDownloadBytes() {
+		return nil, fmt.Errorf("pricing payload exceeded maximum size of %d bytes", serviceMaxRemotePricingDownloadBytes())
+	}
+	return body, nil
 }
 
 func (c *pricingRemoteClient) FetchHashText(ctx context.Context, url string) (string, error) {
@@ -90,9 +104,13 @@ func (c *pricingRemoteClient) FetchHashText(ctx context.Context, url string) (st
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	limited := io.LimitReader(resp.Body, maxPricingHashBytes+1)
+	body, err := io.ReadAll(limited)
 	if err != nil {
 		return "", err
+	}
+	if int64(len(body)) > maxPricingHashBytes {
+		return "", fmt.Errorf("pricing hash payload exceeded maximum size of %d bytes", maxPricingHashBytes)
 	}
 
 	// 哈希文件格式：hash  filename 或者纯 hash
@@ -102,4 +120,8 @@ func (c *pricingRemoteClient) FetchHashText(ctx context.Context, url string) (st
 		return parts[0], nil
 	}
 	return hash, nil
+}
+
+func serviceMaxRemotePricingDownloadBytes() int64 {
+	return service.MaxRemotePricingDownloadBytes()
 }

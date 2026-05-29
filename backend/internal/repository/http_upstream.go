@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 // 默认配置常量
@@ -273,7 +274,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 
 	client := &http.Client{Transport: transport}
-	if s.shouldValidateResolvedIP() {
+	if s.shouldEnforceRedirectPolicy() {
 		client.CheckRedirect = s.redirectChecker
 	}
 
@@ -302,6 +303,13 @@ func (s *httpUpstreamService) shouldValidateResolvedIP() bool {
 		return false
 	}
 	return !s.cfg.Security.URLAllowlist.AllowPrivateHosts
+}
+
+func (s *httpUpstreamService) shouldEnforceRedirectPolicy() bool {
+	if s.cfg == nil {
+		return false
+	}
+	return s.cfg.Security.URLAllowlist.Enabled
 }
 
 type lookupIPFunc func(ctx context.Context, network, host string) ([]net.IP, error)
@@ -379,7 +387,81 @@ func (s *httpUpstreamService) redirectChecker(req *http.Request, via []*http.Req
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
 	}
+	if err := s.validateRedirectTarget(req); err != nil {
+		return err
+	}
+	if len(via) == 0 {
+		return nil
+	}
+	origin := normalizedRedirectOrigin(via[0])
+	target := normalizedRedirectURLOrigin(req.URL)
+	if origin == "" || target == "" {
+		return errors.New("redirect target origin is empty")
+	}
+	if origin != target {
+		return fmt.Errorf("redirect to different origin %q is not allowed", target)
+	}
 	return nil
+}
+
+func (s *httpUpstreamService) validateRedirectTarget(req *http.Request) error {
+	if req == nil || req.URL == nil {
+		return errors.New("redirect target url is empty")
+	}
+	if !s.shouldEnforceRedirectPolicy() {
+		return nil
+	}
+
+	normalized, err := urlvalidator.ValidateHTTPSURL(req.URL.String(), urlvalidator.ValidationOptions{
+		AllowedHosts:     s.cfg.Security.URLAllowlist.UpstreamHosts,
+		RequireAllowlist: true,
+		AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
+	})
+	if err != nil {
+		return fmt.Errorf("redirect target is not allowed: %w", err)
+	}
+	if !s.shouldValidateResolvedIP() {
+		return nil
+	}
+
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return fmt.Errorf("redirect target is not allowed: %w", err)
+	}
+	if _, err := resolveDialIPs(req.Context(), net.DefaultResolver.LookupIP, parsed.Hostname()); err != nil {
+		return fmt.Errorf("redirect target is not allowed: %w", err)
+	}
+	return nil
+}
+
+func normalizedRedirectOrigin(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	return normalizedRedirectURLOrigin(req.URL)
+}
+
+func normalizedRedirectURLOrigin(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	scheme := strings.ToLower(strings.TrimSpace(target.Scheme))
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(target.Hostname())), ".")
+	if scheme == "" || host == "" {
+		return ""
+	}
+	port := strings.TrimSpace(target.Port())
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return ""
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
 }
 
 // acquireClient 获取或创建客户端，并标记为进行中请求
@@ -471,7 +553,7 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 		return nil, fmt.Errorf("build transport: %w", err)
 	}
 	client := &http.Client{Transport: transport}
-	if s.shouldValidateResolvedIP() {
+	if s.shouldEnforceRedirectPolicy() {
 		client.CheckRedirect = s.redirectChecker
 	}
 	entry := &upstreamClientEntry{
