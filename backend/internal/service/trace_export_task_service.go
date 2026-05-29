@@ -152,6 +152,15 @@ func (s *TraceExportTaskService) OpenDownload(ctx context.Context, id int64) (*T
 		return nil, err
 	}
 
+	if task.DownloadedAt == nil {
+		now := time.Now().UTC()
+		if _, err := s.repo.MarkDownloaded(ctx, task.ID, now); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		task.DownloadedAt = &now
+	}
+
 	size := task.FileSizeBytes
 	if size <= 0 {
 		size = info.Size()

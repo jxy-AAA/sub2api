@@ -51,6 +51,7 @@ func modelTraceCaptureFromGatewayTrace(trace *CodexTraceExport, entries []Gatewa
 		TaskID:              strings.TrimSpace(trace.TaskID),
 		RequestID:           traceStringPtr(traceCaptureFirstNonEmptyString(input.RequestID, rawJSONObjectString(trace.Meta, "request_id"))),
 		ResponseID:          traceStringPtr(traceCaptureFirstNonEmptyString(responseInfo.ResponseID, rawJSONObjectStringFromMap(responseMap, "id"), traceNestedJSONString(responseMap["response"], "id"))),
+		MainSessionID:       resolveTraceMainSessionID(requestMap, input),
 		UserID:              cloneTraceExportTaskInt64Ptr(input.UserID),
 		APIKeyID:            cloneTraceExportTaskInt64Ptr(input.APIKeyID),
 		GroupID:             cloneTraceExportTaskInt64Ptr(input.GroupID),
@@ -99,6 +100,32 @@ func modelTraceCaptureFromGatewayTrace(trace *CodexTraceExport, entries []Gatewa
 		return nil, err
 	}
 	return capture, nil
+}
+
+func resolveTraceMainSessionID(request map[string]json.RawMessage, input GatewayTraceRecordInput) string {
+	if value := traceMainSessionIDFromMetadata(rawJSONObjectString(request["metadata"], "user_id")); value != "" {
+		return value
+	}
+	if value := traceMainSessionIDFromMetadata(rawJSONObjectStringFromMap(request, "metadata_user_id")); value != "" {
+		return value
+	}
+	return traceCaptureFirstNonEmptyString(
+		input.MainSessionID,
+		rawJSONObjectStringFromMap(request, "session_id"),
+		rawJSONObjectStringFromMap(request, "conversation_id"),
+		rawJSONObjectStringFromMap(request, "prompt_cache_key"),
+	)
+}
+
+func traceMainSessionIDFromMetadata(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if parsed := ParseMetadataUserID(raw); parsed != nil {
+		return strings.TrimSpace(parsed.SessionID)
+	}
+	return raw
 }
 
 func codexTraceExportFromModelTraceCapture(item *ModelTraceCapture) CodexTraceExport {

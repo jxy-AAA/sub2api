@@ -117,6 +117,7 @@ trace_export:
   task_timeout_seconds: 3600
   cleanup_batch_size: 50
   max_records_per_task: 100000
+  download_retention_seconds: 86400
 ```
 
 含义：
@@ -126,9 +127,9 @@ trace_export:
 - `poll_interval_seconds`：轮询 `pending` 任务的间隔
 - `batch_size`：单批读取 `model_trace_captures` 的页大小
 - `task_timeout_seconds`：任务最大执行时长；超时的 `running` 任务会被标记为 `failed`
-- 清理策略：后台任务每周按 UTC 自然周清理上周及更早的受管导出文件
 - `cleanup_batch_size`：单次清理的文件元数据批量大小
 - `max_records_per_task`：单任务允许导出的最大 trace 数
+- `download_retention_seconds`：导出文件首次下载后的保留秒数，默认 86400 秒（24 小时）
 
 对应环境变量：
 
@@ -139,15 +140,18 @@ trace_export:
 - `TRACE_EXPORT_TASK_TIMEOUT_SECONDS`
 - `TRACE_EXPORT_CLEANUP_BATCH_SIZE`
 - `TRACE_EXPORT_MAX_RECORDS_PER_TASK`
+- `TRACE_EXPORT_DOWNLOAD_RETENTION_SECONDS`
 
 ## 5. 保留与清理
 
-执行器会定期扫描已结束任务：
+执行器会定期扫描已下载任务：
 
-- 若 `file_path` 指向受管目录下的导出文件，且 `finished_at` 早于当前 UTC 自然周起点，则在每周清理时删除文件。
-- 删除成功后会清空任务上的 `file_path` 和 `file_size_bytes`，保留任务元数据与状态审计信息。
+- 导出任务成功后，文件不会仅因为任务完成时间而自动删除。
+- 首次下载成功打开文件时，会写入 `downloaded_at`。
+- 若 `file_path` 指向受管目录下的导出文件，且 `downloaded_at + trace_export.download_retention_seconds` 已过期，则清理任务会删除文件。
+- 删除成功后会清空任务上的 `file_path` 和 `file_size_bytes`，保留任务元数据、`downloaded_at` 与状态审计信息。
 
-因此，历史任务列表会保留，但过期任务的下载可能返回“文件不存在”。
+因此，历史任务列表会保留，但首次下载 24 小时后（默认配置）导出文件会被清理，之后再次下载可能返回“文件不存在”。
 
 ## 6. 本地验证
 

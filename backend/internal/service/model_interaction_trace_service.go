@@ -44,13 +44,14 @@ func NewModelInteractionTraceService(
 }
 
 type GatewayTraceRecordInput struct {
-	UserID    *int64
-	APIKeyID  *int64
-	GroupID   *int64
-	AccountID *int64
-	RequestID string
-	Method    string
-	Path      string
+	UserID        *int64
+	APIKeyID      *int64
+	GroupID       *int64
+	AccountID     *int64
+	RequestID     string
+	MainSessionID string
+	Method        string
+	Path          string
 }
 
 type TaodingTraceExportBundle struct {

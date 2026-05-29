@@ -784,6 +784,7 @@ func TestLoadDefaultTraceExportConfig(t *testing.T) {
 	require.Equal(t, 3600, cfg.TraceExport.TaskTimeoutSeconds)
 	require.Equal(t, 50, cfg.TraceExport.CleanupBatchSize)
 	require.EqualValues(t, 100000, cfg.TraceExport.MaxRecordsPerTask)
+	require.Equal(t, 86400, cfg.TraceExport.DownloadRetentionSeconds)
 }
 
 func TestLoadTraceExportConfigFromEnv(t *testing.T) {
@@ -792,6 +793,7 @@ func TestLoadTraceExportConfigFromEnv(t *testing.T) {
 	t.Setenv("TRACE_EXPORT_EXPORT_DIR", "./custom-exports")
 	t.Setenv("TRACE_EXPORT_BATCH_SIZE", "25")
 	t.Setenv("TRACE_EXPORT_MAX_RECORDS_PER_TASK", "1234")
+	t.Setenv("TRACE_EXPORT_DOWNLOAD_RETENTION_SECONDS", "7200")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -799,6 +801,7 @@ func TestLoadTraceExportConfigFromEnv(t *testing.T) {
 	require.Equal(t, filepath.Clean("./custom-exports"), cfg.TraceExport.ExportDir)
 	require.Equal(t, 25, cfg.TraceExport.BatchSize)
 	require.EqualValues(t, 1234, cfg.TraceExport.MaxRecordsPerTask)
+	require.Equal(t, 7200, cfg.TraceExport.DownloadRetentionSeconds)
 }
 
 func TestValidateTraceExportConfigEnabled(t *testing.T) {

@@ -1226,13 +1226,14 @@ type UsageCleanupConfig struct {
 
 // TraceExportConfig controls background execution of root-admin trace export tasks.
 type TraceExportConfig struct {
-	Enabled             bool   `mapstructure:"enabled"`
-	ExportDir           string `mapstructure:"export_dir"`
-	PollIntervalSeconds int    `mapstructure:"poll_interval_seconds"`
-	BatchSize           int    `mapstructure:"batch_size"`
-	TaskTimeoutSeconds  int    `mapstructure:"task_timeout_seconds"`
-	CleanupBatchSize    int    `mapstructure:"cleanup_batch_size"`
-	MaxRecordsPerTask   int64  `mapstructure:"max_records_per_task"`
+	Enabled                  bool   `mapstructure:"enabled"`
+	ExportDir                string `mapstructure:"export_dir"`
+	PollIntervalSeconds      int    `mapstructure:"poll_interval_seconds"`
+	BatchSize                int    `mapstructure:"batch_size"`
+	TaskTimeoutSeconds       int    `mapstructure:"task_timeout_seconds"`
+	CleanupBatchSize         int    `mapstructure:"cleanup_batch_size"`
+	MaxRecordsPerTask        int64  `mapstructure:"max_records_per_task"`
+	DownloadRetentionSeconds int    `mapstructure:"download_retention_seconds"`
 }
 
 func NormalizeRunMode(value string) string {
@@ -1695,6 +1696,7 @@ func setDefaults() {
 	viper.SetDefault("trace_export.task_timeout_seconds", 3600)
 	viper.SetDefault("trace_export.cleanup_batch_size", 50)
 	viper.SetDefault("trace_export.max_records_per_task", int64(100000))
+	viper.SetDefault("trace_export.download_retention_seconds", 86400)
 
 	// Idempotency
 	viper.SetDefault("idempotency.observe_only", true)
@@ -2360,6 +2362,9 @@ func (c *Config) Validate() error {
 		if c.TraceExport.MaxRecordsPerTask <= 0 {
 			return fmt.Errorf("trace_export.max_records_per_task must be positive")
 		}
+		if c.TraceExport.DownloadRetentionSeconds <= 0 {
+			return fmt.Errorf("trace_export.download_retention_seconds must be positive")
+		}
 	} else {
 		if c.TraceExport.PollIntervalSeconds < 0 {
 			return fmt.Errorf("trace_export.poll_interval_seconds must be non-negative")
@@ -2375,6 +2380,9 @@ func (c *Config) Validate() error {
 		}
 		if c.TraceExport.MaxRecordsPerTask < 0 {
 			return fmt.Errorf("trace_export.max_records_per_task must be non-negative")
+		}
+		if c.TraceExport.DownloadRetentionSeconds < 0 {
+			return fmt.Errorf("trace_export.download_retention_seconds must be non-negative")
 		}
 	}
 	if c.Idempotency.DefaultTTLSeconds <= 0 {

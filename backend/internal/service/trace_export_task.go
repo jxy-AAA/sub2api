@@ -125,10 +125,11 @@ type TraceExportTask struct {
 
 	ErrorMsg *string `json:"error_message,omitempty"`
 
-	CanceledBy *int64     `json:"canceled_by,omitempty"`
-	CanceledAt *time.Time `json:"canceled_at,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	CanceledBy   *int64     `json:"canceled_by,omitempty"`
+	CanceledAt   *time.Time `json:"canceled_at,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	DownloadedAt *time.Time `json:"downloaded_at,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -154,6 +155,7 @@ type TraceExportTaskRepository interface {
 	UpdateProgress(ctx context.Context, id int64, totalRecords, processedRecords int64, updatedAt time.Time) (bool, error)
 	MarkSucceeded(ctx context.Context, id int64, filePath string, fileSizeBytes, totalRecords, processedRecords int64, finishedAt time.Time) (bool, error)
 	MarkFailed(ctx context.Context, id int64, totalRecords, processedRecords int64, errorMessage string, finishedAt time.Time) (bool, error)
+	MarkDownloaded(ctx context.Context, id int64, downloadedAt time.Time) (bool, error)
 	FailStaleRunning(ctx context.Context, staleBefore time.Time, errorMessage string, failedAt time.Time) (int64, error)
 	ListReadyForFileCleanup(ctx context.Context, finishedBefore time.Time, limit int) ([]TraceExportTask, error)
 	ClearFileForTask(ctx context.Context, id int64, updatedAt time.Time) (bool, error)

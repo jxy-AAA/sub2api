@@ -142,42 +142,52 @@ func (s *traceExportTaskExecutorRepoStub) MarkFailed(ctx context.Context, id int
 	return true, nil
 }
 
+func (s *traceExportTaskExecutorRepoStub) MarkDownloaded(ctx context.Context, id int64, downloadedAt time.Time) (bool, error) {
+	task, ok := s.tasks[id]
+	if !ok || task.Status != TraceExportTaskStatusSucceeded || task.FilePath == "" || task.DownloadedAt != nil {
+		return false, nil
+	}
+	at := downloadedAt.UTC()
+	task.DownloadedAt = &at
+	task.UpdatedAt = at
+	return true, nil
+}
+
 func (s *traceExportTaskExecutorRepoStub) FailStaleRunning(ctx context.Context, staleBefore time.Time, errorMessage string, failedAt time.Time) (int64, error) {
 	return 0, nil
 }
 
-func (s *traceExportTaskExecutorRepoStub) ListReadyForFileCleanup(ctx context.Context, finishedBefore time.Time, limit int) ([]TraceExportTask, error) {
+func (s *traceExportTaskExecutorRepoStub) ListReadyForFileCleanup(ctx context.Context, downloadedBefore time.Time, limit int) ([]TraceExportTask, error) {
 	s.cleanupCalls++
-	s.cleanupBefore = finishedBefore.UTC()
+	s.cleanupBefore = downloadedBefore.UTC()
 	if limit <= 0 {
 		limit = 50
 	}
 	items := make([]TraceExportTask, 0, limit)
 	for _, task := range s.tasks {
-		if task == nil || strings.TrimSpace(task.FilePath) == "" || task.FinishedAt == nil {
+		if task == nil || strings.TrimSpace(task.FilePath) == "" || task.DownloadedAt == nil {
 			continue
 		}
-		if !task.FinishedAt.UTC().Before(finishedBefore.UTC()) {
+		if !task.DownloadedAt.UTC().Before(downloadedBefore.UTC()) {
 			continue
 		}
-		switch task.Status {
-		case TraceExportTaskStatusSucceeded, TraceExportTaskStatusFailed, TraceExportTaskStatusCanceled:
+		if task.Status == TraceExportTaskStatusSucceeded {
 			items = append(items, *cloneTraceExportTask(task))
 		}
 	}
 	sort.Slice(items, func(i, j int) bool {
 		left := items[i]
 		right := items[j]
-		leftFinished := time.Time{}
-		rightFinished := time.Time{}
-		if left.FinishedAt != nil {
-			leftFinished = left.FinishedAt.UTC()
+		leftDownloaded := time.Time{}
+		rightDownloaded := time.Time{}
+		if left.DownloadedAt != nil {
+			leftDownloaded = left.DownloadedAt.UTC()
 		}
-		if right.FinishedAt != nil {
-			rightFinished = right.FinishedAt.UTC()
+		if right.DownloadedAt != nil {
+			rightDownloaded = right.DownloadedAt.UTC()
 		}
-		if !leftFinished.Equal(rightFinished) {
-			return leftFinished.Before(rightFinished)
+		if !leftDownloaded.Equal(rightDownloaded) {
+			return leftDownloaded.Before(rightDownloaded)
 		}
 		return left.ID < right.ID
 	})
@@ -566,51 +576,50 @@ func TestTraceExportTaskExecutorAllowsLargeExportFiles(t *testing.T) {
 	require.FileExists(t, task.FilePath)
 }
 
-func TestTraceExportTaskExecutorCleansPreviousWeekExports(t *testing.T) {
+func TestTraceExportTaskExecutorCleansDownloadsOlderThanRetention(t *testing.T) {
 	tempDir := t.TempDir()
-	oldPath := filepath.Join(tempDir, "previous-week.json")
-	currentPath := filepath.Join(tempDir, "current-week.json")
+	oldPath := filepath.Join(tempDir, "old-download.json")
+	currentPath := filepath.Join(tempDir, "recent-download.json")
 	require.NoError(t, os.WriteFile(oldPath, []byte(`[{"old":true}]`), 0o600))
 	require.NoError(t, os.WriteFile(currentPath, []byte(`[{"current":true}]`), 0o600))
 
-	oldFinished := time.Date(2026, 5, 24, 23, 59, 0, 0, time.UTC)
-	currentFinished := time.Date(2026, 5, 25, 1, 0, 0, 0, time.UTC)
+	finished := time.Date(2026, 5, 26, 9, 0, 0, 0, time.UTC)
+	oldDownloaded := time.Date(2026, 5, 26, 11, 59, 0, 0, time.UTC)
+	currentDownloaded := time.Date(2026, 5, 26, 12, 30, 0, 0, time.UTC)
 	repo := &traceExportTaskExecutorRepoStub{
 		tasks: map[int64]*TraceExportTask{
 			8: {
-				ID:         8,
-				Status:     TraceExportTaskStatusSucceeded,
-				FilePath:   oldPath,
-				FinishedAt: &oldFinished,
+				ID:           8,
+				Status:       TraceExportTaskStatusSucceeded,
+				FilePath:     oldPath,
+				FinishedAt:   &finished,
+				DownloadedAt: &oldDownloaded,
 			},
 			9: {
-				ID:         9,
-				Status:     TraceExportTaskStatusSucceeded,
-				FilePath:   currentPath,
-				FinishedAt: &currentFinished,
+				ID:           9,
+				Status:       TraceExportTaskStatusSucceeded,
+				FilePath:     currentPath,
+				FinishedAt:   &finished,
+				DownloadedAt: &currentDownloaded,
 			},
 		},
 	}
 	executor := NewTraceExportTaskExecutor(repo, nil, TraceExportTaskExecutorOptions{
-		Enabled:          true,
-		ExportDir:        tempDir,
-		CleanupBatchSize: 10,
-		MaxRecords:       10,
+		Enabled:           true,
+		ExportDir:         tempDir,
+		CleanupBatchSize:  10,
+		MaxRecords:        10,
+		DownloadRetention: 24 * time.Hour,
 	})
 
 	err := executor.cleanupExpiredFiles(context.Background(), time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC))
 	require.NoError(t, err)
-	require.Equal(t, time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC), repo.cleanupBefore)
+	require.Equal(t, time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC), repo.cleanupBefore)
 	require.Empty(t, repo.tasks[8].FilePath)
 	_, statErr := os.Stat(oldPath)
 	require.True(t, os.IsNotExist(statErr))
 	require.Equal(t, currentPath, repo.tasks[9].FilePath)
 	require.FileExists(t, currentPath)
-
-	calls := repo.cleanupCalls
-	err = executor.cleanupExpiredFiles(context.Background(), time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC))
-	require.NoError(t, err)
-	require.Equal(t, calls, repo.cleanupCalls)
 }
 
 func TestTraceExportTaskExecutorCleanupContinuesAfterUnmanagedPath(t *testing.T) {
@@ -622,29 +631,33 @@ func TestTraceExportTaskExecutorCleanupContinuesAfterUnmanagedPath(t *testing.T)
 	require.NoError(t, os.WriteFile(unmanagedPath, []byte(`[{"external":true}]`), 0o600))
 	require.NoError(t, os.WriteFile(managedPath, []byte(`[{"managed":true}]`), 0o600))
 
-	unmanagedFinished := time.Date(2026, 5, 23, 23, 59, 0, 0, time.UTC)
-	managedFinished := time.Date(2026, 5, 24, 23, 59, 0, 0, time.UTC)
+	finished := time.Date(2026, 5, 26, 9, 0, 0, 0, time.UTC)
+	unmanagedDownloaded := time.Date(2026, 5, 26, 10, 0, 0, 0, time.UTC)
+	managedDownloaded := time.Date(2026, 5, 26, 10, 30, 0, 0, time.UTC)
 	repo := &traceExportTaskExecutorRepoStub{
 		tasks: map[int64]*TraceExportTask{
 			10: {
-				ID:         10,
-				Status:     TraceExportTaskStatusSucceeded,
-				FilePath:   unmanagedPath,
-				FinishedAt: &unmanagedFinished,
+				ID:           10,
+				Status:       TraceExportTaskStatusSucceeded,
+				FilePath:     unmanagedPath,
+				FinishedAt:   &finished,
+				DownloadedAt: &unmanagedDownloaded,
 			},
 			11: {
-				ID:         11,
-				Status:     TraceExportTaskStatusSucceeded,
-				FilePath:   managedPath,
-				FinishedAt: &managedFinished,
+				ID:           11,
+				Status:       TraceExportTaskStatusSucceeded,
+				FilePath:     managedPath,
+				FinishedAt:   &finished,
+				DownloadedAt: &managedDownloaded,
 			},
 		},
 	}
 	executor := NewTraceExportTaskExecutor(repo, nil, TraceExportTaskExecutorOptions{
-		Enabled:          true,
-		ExportDir:        exportDir,
-		CleanupBatchSize: 1,
-		MaxRecords:       10,
+		Enabled:           true,
+		ExportDir:         exportDir,
+		CleanupBatchSize:  1,
+		MaxRecords:        10,
+		DownloadRetention: 24 * time.Hour,
 	})
 
 	err := executor.cleanupExpiredFiles(context.Background(), time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC))
@@ -741,6 +754,7 @@ func cloneTraceExportTask(task *TraceExportTask) *TraceExportTask {
 	cloned.CanceledAt = cloneTraceExportTaskTimePtr(task.CanceledAt)
 	cloned.StartedAt = cloneTraceExportTaskTimePtr(task.StartedAt)
 	cloned.FinishedAt = cloneTraceExportTaskTimePtr(task.FinishedAt)
+	cloned.DownloadedAt = cloneTraceExportTaskTimePtr(task.DownloadedAt)
 	if task.ErrorMsg != nil {
 		msg := *task.ErrorMsg
 		cloned.ErrorMsg = &msg

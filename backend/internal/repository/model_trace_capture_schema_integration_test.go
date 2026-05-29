@@ -11,6 +11,8 @@ func TestMigrationsRunner_ModelTraceCapturesSchemaStayAligned(t *testing.T) {
 	requireColumn(t, tx, "model_trace_captures", "task_id", "character varying", 128, false)
 	requireColumn(t, tx, "model_trace_captures", "request_id", "character varying", 128, true)
 	requireColumn(t, tx, "model_trace_captures", "response_id", "character varying", 128, true)
+	requireColumn(t, tx, "model_trace_captures", "main_session_id", "text", 0, false)
+	requireColumn(t, tx, "model_trace_captures", "main_session_key", "character", 64, false)
 	requireColumn(t, tx, "model_trace_captures", "user_id", "bigint", 0, true)
 	requireColumn(t, tx, "model_trace_captures", "api_key_id", "bigint", 0, true)
 	requireColumn(t, tx, "model_trace_captures", "group_id", "bigint", 0, true)
@@ -54,4 +56,6 @@ func TestMigrationsRunner_ModelTraceCapturesSchemaStayAligned(t *testing.T) {
 	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_prompt_hash")
 	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_request_id")
 	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_response_id")
+	requireIndex(t, tx, "model_trace_captures", "model_trace_captures_main_session_key_unique")
+	requireIndex(t, tx, "model_trace_captures", "idx_model_trace_captures_main_session_id")
 }

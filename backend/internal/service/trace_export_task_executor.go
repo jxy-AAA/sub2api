@@ -20,35 +20,38 @@ import (
 )
 
 const (
-	defaultTraceExportTaskPollInterval = 15 * time.Second
-	defaultTraceExportTaskTimeout      = 0
-	defaultTraceExportTaskExportDir    = "./data/trace-exports"
-	defaultTraceExportTaskBatchSize    = 200
-	defaultTraceExportTaskCleanupBatch = 50
-	defaultTraceExportTaskMaxRecords   = int64(100000)
+	defaultTraceExportTaskPollInterval  = 15 * time.Second
+	defaultTraceExportTaskTimeout       = 0
+	defaultTraceExportTaskExportDir     = "./data/trace-exports"
+	defaultTraceExportTaskBatchSize     = 200
+	defaultTraceExportTaskCleanupBatch  = 50
+	defaultTraceExportTaskMaxRecords    = int64(100000)
+	defaultTraceExportDownloadRetention = 24 * time.Hour
 )
 
 var errTraceExportTaskCanceled = errors.New("trace export task canceled")
 
 type TraceExportTaskExecutorOptions struct {
-	Enabled          bool
-	ExportDir        string
-	PollInterval     time.Duration
-	BatchSize        int
-	TaskTimeout      time.Duration
-	CleanupBatchSize int
-	MaxRecords       int64
+	Enabled           bool
+	ExportDir         string
+	PollInterval      time.Duration
+	BatchSize         int
+	TaskTimeout       time.Duration
+	CleanupBatchSize  int
+	MaxRecords        int64
+	DownloadRetention time.Duration
 }
 
 func DefaultTraceExportTaskExecutorOptions() TraceExportTaskExecutorOptions {
 	return TraceExportTaskExecutorOptions{
-		Enabled:          true,
-		ExportDir:        defaultTraceExportTaskExportDir,
-		PollInterval:     defaultTraceExportTaskPollInterval,
-		BatchSize:        defaultTraceExportTaskBatchSize,
-		TaskTimeout:      defaultTraceExportTaskTimeout,
-		CleanupBatchSize: defaultTraceExportTaskCleanupBatch,
-		MaxRecords:       defaultTraceExportTaskMaxRecords,
+		Enabled:           true,
+		ExportDir:         defaultTraceExportTaskExportDir,
+		PollInterval:      defaultTraceExportTaskPollInterval,
+		BatchSize:         defaultTraceExportTaskBatchSize,
+		TaskTimeout:       defaultTraceExportTaskTimeout,
+		CleanupBatchSize:  defaultTraceExportTaskCleanupBatch,
+		MaxRecords:        defaultTraceExportTaskMaxRecords,
+		DownloadRetention: defaultTraceExportDownloadRetention,
 	}
 }
 
@@ -76,6 +79,9 @@ func (o *TraceExportTaskExecutorOptions) normalize() {
 	if o.MaxRecords <= 0 {
 		o.MaxRecords = defaults.MaxRecords
 	}
+	if o.DownloadRetention <= 0 {
+		o.DownloadRetention = defaults.DownloadRetention
+	}
 }
 
 type traceExportTaskCaptureReader interface {
@@ -92,8 +98,6 @@ type TraceExportTaskExecutor struct {
 	wg        sync.WaitGroup
 	stopCh    chan struct{}
 	running   atomic.Int32
-
-	lastCleanupWeekStart time.Time
 }
 
 func NewTraceExportTaskExecutor(repo TraceExportTaskRepository, traceService traceExportTaskCaptureReader, opts TraceExportTaskExecutorOptions) *TraceExportTaskExecutor {
@@ -465,14 +469,13 @@ func (s *TraceExportTaskExecutor) failTask(taskID, total, processed int64, cause
 }
 
 func (s *TraceExportTaskExecutor) cleanupExpiredFiles(ctx context.Context, now time.Time) error {
-	weekStart := traceExportTaskWeekStart(now)
-	if weekStart.IsZero() || (!s.lastCleanupWeekStart.IsZero() && !weekStart.After(s.lastCleanupWeekStart)) {
-		return nil
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
+	cutoff := now.UTC().Add(-s.opts.DownloadRetention)
 
-	hadError := false
 	for {
-		tasks, err := s.repo.ListReadyForFileCleanup(ctx, weekStart, s.opts.CleanupBatchSize)
+		tasks, err := s.repo.ListReadyForFileCleanup(ctx, cutoff, s.opts.CleanupBatchSize)
 		if err != nil {
 			return err
 		}
@@ -488,7 +491,6 @@ func (s *TraceExportTaskExecutor) cleanupExpiredFiles(ctx context.Context, now t
 			}
 			if s.isManagedExportPath(path) {
 				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-					hadError = true
 					logger.LegacyPrintf("service.trace_export_task", "[TraceExportTaskExecutor] remove expired export file task=%d path=%s error=%v", task.ID, path, err)
 					continue
 				}
@@ -499,7 +501,6 @@ func (s *TraceExportTaskExecutor) cleanupExpiredFiles(ctx context.Context, now t
 			_, clearErr := s.repo.ClearFileForTask(stateCtx, task.ID, time.Now().UTC())
 			cancel()
 			if clearErr != nil {
-				hadError = true
 				logger.LegacyPrintf("service.trace_export_task", "[TraceExportTaskExecutor] clear expired export metadata task=%d error=%v", task.ID, clearErr)
 				continue
 			}
@@ -509,21 +510,7 @@ func (s *TraceExportTaskExecutor) cleanupExpiredFiles(ctx context.Context, now t
 			break
 		}
 	}
-	if !hadError {
-		s.lastCleanupWeekStart = weekStart
-	}
 	return nil
-}
-
-func traceExportTaskWeekStart(now time.Time) time.Time {
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	utc := now.UTC()
-	year, month, day := utc.Date()
-	date := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
-	daysSinceMonday := (int(date.Weekday()) + 6) % 7
-	return date.AddDate(0, 0, -daysSinceMonday)
 }
 
 func (s *TraceExportTaskExecutor) ensureExportDir() (string, error) {

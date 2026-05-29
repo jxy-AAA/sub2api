@@ -37,6 +37,13 @@ func (s *ModelTraceCaptureService) GetByTaskID(ctx context.Context, taskID strin
 	return s.repo.GetByTaskID(ctx, taskID)
 }
 
+func (s *ModelTraceCaptureService) GetByMainSessionKey(ctx context.Context, mainSessionKey string) (*ModelTraceCapture, error) {
+	if s == nil || s.repo == nil {
+		return nil, fmt.Errorf("model trace capture repository is not configured")
+	}
+	return s.repo.GetByMainSessionKey(ctx, mainSessionKey)
+}
+
 func (s *ModelTraceCaptureService) GetByDedupeHash(ctx context.Context, dedupeHash string) (*ModelTraceCapture, error) {
 	if s == nil || s.repo == nil {
 		return nil, fmt.Errorf("model trace capture repository is not configured")

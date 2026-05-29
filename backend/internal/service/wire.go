@@ -372,6 +372,7 @@ func ProvideTraceExportTaskExecutor(
 		opts.TaskTimeout = time.Duration(cfg.TraceExport.TaskTimeoutSeconds) * time.Second
 		opts.CleanupBatchSize = cfg.TraceExport.CleanupBatchSize
 		opts.MaxRecords = cfg.TraceExport.MaxRecordsPerTask
+		opts.DownloadRetention = time.Duration(cfg.TraceExport.DownloadRetentionSeconds) * time.Second
 	}
 	svc := NewTraceExportTaskExecutor(repo, traceSvc, opts)
 	svc.Start()

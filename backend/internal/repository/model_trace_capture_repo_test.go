@@ -141,6 +141,8 @@ func TestModelTraceCaptureRepositoryCreateDuplicateSkipsInsert(t *testing.T) {
 	repo := &modelTraceCaptureRepository{sql: db}
 
 	capture := newModelTraceCaptureFixture()
+	capture.MainSessionID = ""
+	capture.MainSessionKey = ""
 	require.NoError(t, capture.Validate())
 
 	createdAt := time.Date(2026, 5, 27, 9, 0, 0, 0, time.UTC)
@@ -159,6 +161,33 @@ func TestModelTraceCaptureRepositoryCreateDuplicateSkipsInsert(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, inserted)
 	require.Equal(t, existing.ID, capture.ID)
+	require.Equal(t, createdAt, capture.CreatedAt)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestModelTraceCaptureRepositoryCreateDuplicateByMainSessionRefreshesSessionRecord(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &modelTraceCaptureRepository{sql: db}
+
+	capture := newModelTraceCaptureFixture()
+	capture.TaskID = "task-new"
+	require.NoError(t, capture.Validate())
+
+	createdAt := time.Date(2026, 5, 27, 9, 0, 0, 0, time.UTC)
+	existingID := int64(654)
+
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO model_trace_captures")).
+		WithArgs(modelTraceCaptureInsertArgs(capture)...).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}))
+
+	mock.ExpectQuery(regexp.QuoteMeta("UPDATE model_trace_captures")).
+		WithArgs(modelTraceCaptureUpdateByMainSessionArgs(capture)...).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(existingID, createdAt))
+
+	stored, err := repo.Create(context.Background(), capture)
+	require.NoError(t, err)
+	require.True(t, stored)
+	require.Equal(t, existingID, capture.ID)
 	require.Equal(t, createdAt, capture.CreatedAt)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -250,6 +279,7 @@ func newModelTraceCaptureFixture() *service.ModelTraceCapture {
 		TaskID:              "task-001",
 		RequestID:           &requestID,
 		ResponseID:          &responseID,
+		MainSessionID:       "main-session-001",
 		UserID:              &userID,
 		APIKeyID:            &apiKeyID,
 		GroupID:             &groupID,
@@ -284,6 +314,8 @@ func modelTraceCaptureInsertArgs(capture *service.ModelTraceCapture) []driver.Va
 		capture.TaskID,
 		stringPtrParam(capture.RequestID),
 		stringPtrParam(capture.ResponseID),
+		capture.MainSessionID,
+		capture.MainSessionKey,
 		nullInt64(capture.UserID),
 		nullInt64(capture.APIKeyID),
 		nullInt64(capture.GroupID),
@@ -315,10 +347,18 @@ func modelTraceCaptureInsertArgs(capture *service.ModelTraceCapture) []driver.Va
 	}
 }
 
+func modelTraceCaptureUpdateByMainSessionArgs(capture *service.ModelTraceCapture) []driver.Value {
+	args := []driver.Value{capture.MainSessionKey}
+	args = append(args, modelTraceCaptureInsertArgs(capture)...)
+	return args
+}
+
 func modelTraceCaptureRows(capture *service.ModelTraceCapture, createdAt time.Time) *sqlmock.Rows {
 	var (
 		requestID          any
 		responseID         any
+		mainSessionID      any
+		mainSessionKey     any
 		userID             any
 		apiKeyID           any
 		groupID            any
@@ -336,6 +376,12 @@ func modelTraceCaptureRows(capture *service.ModelTraceCapture, createdAt time.Ti
 	}
 	if capture.ResponseID != nil {
 		responseID = *capture.ResponseID
+	}
+	if capture.MainSessionID != "" {
+		mainSessionID = capture.MainSessionID
+	}
+	if capture.MainSessionKey != "" {
+		mainSessionKey = capture.MainSessionKey
 	}
 	if capture.UserID != nil {
 		userID = *capture.UserID
@@ -371,45 +417,13 @@ func modelTraceCaptureRows(capture *service.ModelTraceCapture, createdAt time.Ti
 		upstreamStatusCode = *capture.UpstreamStatusCode
 	}
 
-	return sqlmock.NewRows([]string{
-		"id",
-		"task_id",
-		"request_id",
-		"response_id",
-		"user_id",
-		"api_key_id",
-		"group_id",
-		"account_id",
-		"capture_rule_id",
-		"protocol",
-		"model",
-		"requested_model",
-		"upstream_model",
-		"request_content_type",
-		"response_content_type",
-		"input_tokens",
-		"output_tokens",
-		"total_tokens",
-		"upstream_status_code",
-		"scaffold",
-		"scaffold_version",
-		"prompt_json",
-		"candidates_json",
-		"tools_json",
-		"signature_json",
-		"meta_json",
-		"raw_request_json",
-		"raw_response_json",
-		"raw_request_text",
-		"raw_response_text",
-		"dedupe_hash",
-		"prompt_hash",
-		"created_at",
-	}).AddRow(
+	return sqlmock.NewRows(modelTraceCaptureColumnNames()).AddRow(
 		capture.ID,
 		capture.TaskID,
 		requestID,
 		responseID,
+		mainSessionID,
+		mainSessionKey,
 		userID,
 		apiKeyID,
 		groupID,
@@ -442,6 +456,46 @@ func modelTraceCaptureRows(capture *service.ModelTraceCapture, createdAt time.Ti
 	)
 }
 
+func modelTraceCaptureColumnNames() []string {
+	return []string{
+		"id",
+		"task_id",
+		"request_id",
+		"response_id",
+		"main_session_id",
+		"main_session_key",
+		"user_id",
+		"api_key_id",
+		"group_id",
+		"account_id",
+		"capture_rule_id",
+		"protocol",
+		"model",
+		"requested_model",
+		"upstream_model",
+		"request_content_type",
+		"response_content_type",
+		"input_tokens",
+		"output_tokens",
+		"total_tokens",
+		"upstream_status_code",
+		"scaffold",
+		"scaffold_version",
+		"prompt_json",
+		"candidates_json",
+		"tools_json",
+		"signature_json",
+		"meta_json",
+		"raw_request_json",
+		"raw_response_json",
+		"raw_request_text",
+		"raw_response_text",
+		"dedupe_hash",
+		"prompt_hash",
+		"created_at",
+	}
+}
+
 func assertModelTraceCaptureMatches(t *testing.T, expected, actual *service.ModelTraceCapture) {
 	t.Helper()
 
@@ -450,6 +504,8 @@ func assertModelTraceCaptureMatches(t *testing.T, expected, actual *service.Mode
 	require.Equal(t, expected.TaskID, actual.TaskID)
 	require.Equal(t, expected.RequestID, actual.RequestID)
 	require.Equal(t, expected.ResponseID, actual.ResponseID)
+	require.Equal(t, expected.MainSessionID, actual.MainSessionID)
+	require.Equal(t, expected.MainSessionKey, actual.MainSessionKey)
 	require.Equal(t, expected.UserID, actual.UserID)
 	require.Equal(t, expected.APIKeyID, actual.APIKeyID)
 	require.Equal(t, expected.GroupID, actual.GroupID)

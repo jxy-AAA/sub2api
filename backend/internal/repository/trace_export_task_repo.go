@@ -31,6 +31,7 @@ const traceExportTaskSelectColumns = `
 	canceled_at,
 	started_at,
 	finished_at,
+	downloaded_at,
 	created_at,
 	updated_at
 `
@@ -53,6 +54,7 @@ const traceExportTaskReturningColumns = `
 	t.canceled_at,
 	t.started_at,
 	t.finished_at,
+	t.downloaded_at,
 	t.created_at,
 	t.updated_at
 `
@@ -363,6 +365,32 @@ func (r *traceExportTaskRepository) MarkFailed(ctx context.Context, id int64, to
 	return true, nil
 }
 
+func (r *traceExportTaskRepository) MarkDownloaded(ctx context.Context, id int64, downloadedAt time.Time) (bool, error) {
+	query := `
+		UPDATE trace_export_tasks
+		SET downloaded_at = $2,
+			updated_at = $2
+		WHERE id = $1
+			AND status = $3
+			AND file_path <> ''
+			AND downloaded_at IS NULL
+		RETURNING id
+	`
+	var returnedID int64
+	err := scanSingleRow(ctx, r.sql, query, []any{
+		id,
+		downloadedAt.UTC(),
+		service.TraceExportTaskStatusSucceeded,
+	}, &returnedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (r *traceExportTaskRepository) FailStaleRunning(ctx context.Context, staleBefore time.Time, message string, failedAt time.Time) (int64, error) {
 	res, err := r.sql.ExecContext(ctx, `
 		UPDATE trace_export_tasks
@@ -385,7 +413,7 @@ func (r *traceExportTaskRepository) FailStaleRunning(ctx context.Context, staleB
 	return affected, nil
 }
 
-func (r *traceExportTaskRepository) ListReadyForFileCleanup(ctx context.Context, finishedBefore time.Time, limit int) ([]service.TraceExportTask, error) {
+func (r *traceExportTaskRepository) ListReadyForFileCleanup(ctx context.Context, downloadedBefore time.Time, limit int) ([]service.TraceExportTask, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -394,17 +422,15 @@ func (r *traceExportTaskRepository) ListReadyForFileCleanup(ctx context.Context,
 	` + traceExportTaskSelectColumns + `
 		FROM trace_export_tasks
 		WHERE file_path <> ''
-			AND finished_at IS NOT NULL
-			AND finished_at < $1
-			AND status IN ($2, $3, $4)
-		ORDER BY finished_at ASC, id ASC
-		LIMIT $5
+			AND downloaded_at IS NOT NULL
+			AND downloaded_at < $1
+			AND status = $2
+		ORDER BY downloaded_at ASC, id ASC
+		LIMIT $3
 	`
 	rows, err := r.sql.QueryContext(ctx, query,
-		finishedBefore.UTC(),
+		downloadedBefore.UTC(),
 		service.TraceExportTaskStatusSucceeded,
-		service.TraceExportTaskStatusFailed,
-		service.TraceExportTaskStatusCanceled,
 		limit,
 	)
 	if err != nil {
@@ -480,6 +506,7 @@ func scanTraceExportTask(scanner interface{ Scan(...any) error }) (*service.Trac
 		canceledAt       sql.NullTime
 		startedAt        sql.NullTime
 		finishedAt       sql.NullTime
+		downloadedAt     sql.NullTime
 		downloadFilename sql.NullString
 		filePath         sql.NullString
 	)
@@ -502,6 +529,7 @@ func scanTraceExportTask(scanner interface{ Scan(...any) error }) (*service.Trac
 		&canceledAt,
 		&startedAt,
 		&finishedAt,
+		&downloadedAt,
 		&task.CreatedAt,
 		&task.UpdatedAt,
 	); err != nil {
@@ -537,6 +565,10 @@ func scanTraceExportTask(scanner interface{ Scan(...any) error }) (*service.Trac
 	if finishedAt.Valid {
 		value := finishedAt.Time
 		task.FinishedAt = &value
+	}
+	if downloadedAt.Valid {
+		value := downloadedAt.Time
+		task.DownloadedAt = &value
 	}
 	return task, nil
 }

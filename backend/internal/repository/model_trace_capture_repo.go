@@ -19,6 +19,8 @@ const modelTraceCaptureSelectColumns = `
 	task_id,
 	request_id,
 	response_id,
+	main_session_id,
+	main_session_key,
 	user_id,
 	api_key_id,
 	group_id,
@@ -71,6 +73,8 @@ func (r *modelTraceCaptureRepository) Create(ctx context.Context, capture *servi
 			task_id,
 			request_id,
 			response_id,
+			main_session_id,
+			main_session_key,
 			user_id,
 			api_key_id,
 			group_id,
@@ -120,26 +124,65 @@ func (r *modelTraceCaptureRepository) Create(ctx context.Context, capture *servi
 			$18,
 			$19,
 			$20,
-			$21::jsonb,
-			$22::jsonb,
+			$21,
+			$22,
 			$23::jsonb,
 			$24::jsonb,
 			$25::jsonb,
 			$26::jsonb,
 			$27::jsonb,
-			$28,
-			$29,
+			$28::jsonb,
+			$29::jsonb,
 			$30,
-			$31
+			$31,
+			$32,
+			$33
 		)
 		ON CONFLICT DO NOTHING
 		RETURNING id, created_at
 	`
 
-	args := []any{
+	args := modelTraceCaptureWriteArgs(capture)
+
+	var createdAt time.Time
+	err := scanSingleRow(ctx, r.sql, query, args, &capture.ID, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		if capture.MainSessionKey != "" {
+			if updated, updateErr := r.updateByMainSessionKey(ctx, capture); updateErr != nil {
+				return false, updateErr
+			} else if updated {
+				return true, nil
+			}
+		}
+		if existing, lookupErr := r.GetByTaskID(ctx, capture.TaskID); lookupErr == nil && existing != nil {
+			capture.ID = existing.ID
+			capture.CreatedAt = existing.CreatedAt
+			return false, nil
+		}
+		if capture.DedupeHash != "" {
+			if existing, lookupErr := r.GetByDedupeHash(ctx, capture.DedupeHash); lookupErr == nil && existing != nil {
+				capture.ID = existing.ID
+				capture.CreatedAt = existing.CreatedAt
+				return false, nil
+			}
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	capture.CreatedAt = createdAt
+	return true, nil
+}
+
+func modelTraceCaptureWriteArgs(capture *service.ModelTraceCapture) []any {
+	return []any{
 		capture.TaskID,
 		stringPtrParam(capture.RequestID),
 		stringPtrParam(capture.ResponseID),
+		capture.MainSessionID,
+		capture.MainSessionKey,
 		nullInt64(capture.UserID),
 		nullInt64(capture.APIKeyID),
 		nullInt64(capture.GroupID),
@@ -169,22 +212,52 @@ func (r *modelTraceCaptureRepository) Create(ctx context.Context, capture *servi
 		capture.DedupeHash,
 		capture.PromptHash,
 	}
+}
 
+func (r *modelTraceCaptureRepository) updateByMainSessionKey(ctx context.Context, capture *service.ModelTraceCapture) (bool, error) {
+	query := `
+		UPDATE model_trace_captures
+		SET task_id = $2,
+			request_id = $3,
+			response_id = $4,
+			main_session_id = $5,
+			main_session_key = $6,
+			user_id = $7,
+			api_key_id = $8,
+			group_id = $9,
+			account_id = $10,
+			capture_rule_id = $11,
+			protocol = $12,
+			model = $13,
+			requested_model = $14,
+			upstream_model = $15,
+			request_content_type = $16,
+			response_content_type = $17,
+			input_tokens = $18,
+			output_tokens = $19,
+			total_tokens = $20,
+			upstream_status_code = $21,
+			scaffold = $22,
+			scaffold_version = $23,
+			prompt_json = $24::jsonb,
+			candidates_json = $25::jsonb,
+			tools_json = $26::jsonb,
+			signature_json = $27::jsonb,
+			meta_json = $28::jsonb,
+			raw_request_json = $29::jsonb,
+			raw_response_json = $30::jsonb,
+			raw_request_text = $31,
+			raw_response_text = $32,
+			dedupe_hash = $33,
+			prompt_hash = $34
+		WHERE main_session_key = $1
+			AND main_session_key <> ''
+		RETURNING id, created_at
+	`
+	args := append([]any{capture.MainSessionKey}, modelTraceCaptureWriteArgs(capture)...)
 	var createdAt time.Time
 	err := scanSingleRow(ctx, r.sql, query, args, &capture.ID, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		if existing, lookupErr := r.GetByTaskID(ctx, capture.TaskID); lookupErr == nil && existing != nil {
-			capture.ID = existing.ID
-			capture.CreatedAt = existing.CreatedAt
-			return false, nil
-		}
-		if capture.DedupeHash != "" {
-			if existing, lookupErr := r.GetByDedupeHash(ctx, capture.DedupeHash); lookupErr == nil && existing != nil {
-				capture.ID = existing.ID
-				capture.CreatedAt = existing.CreatedAt
-				return false, nil
-			}
-		}
 		return false, nil
 	}
 	if err != nil {
@@ -208,6 +281,14 @@ func (r *modelTraceCaptureRepository) GetByTaskID(ctx context.Context, taskID st
 		return nil, fmt.Errorf("task_id is required")
 	}
 	return r.getOne(ctx, "task_id = $1", taskID)
+}
+
+func (r *modelTraceCaptureRepository) GetByMainSessionKey(ctx context.Context, mainSessionKey string) (*service.ModelTraceCapture, error) {
+	mainSessionKey = strings.TrimSpace(mainSessionKey)
+	if mainSessionKey == "" {
+		return nil, fmt.Errorf("main_session_key is required")
+	}
+	return r.getOne(ctx, "main_session_key = $1", mainSessionKey)
 }
 
 func (r *modelTraceCaptureRepository) GetByDedupeHash(ctx context.Context, dedupeHash string) (*service.ModelTraceCapture, error) {
@@ -457,6 +538,8 @@ func scanModelTraceCapture(scanner interface{ Scan(...any) error }) (*service.Mo
 	var (
 		requestID           sql.NullString
 		responseID          sql.NullString
+		mainSessionID       sql.NullString
+		mainSessionKey      sql.NullString
 		userID              sql.NullInt64
 		apiKeyID            sql.NullInt64
 		groupID             sql.NullInt64
@@ -485,6 +568,8 @@ func scanModelTraceCapture(scanner interface{ Scan(...any) error }) (*service.Mo
 		&item.TaskID,
 		&requestID,
 		&responseID,
+		&mainSessionID,
+		&mainSessionKey,
 		&userID,
 		&apiKeyID,
 		&groupID,
@@ -533,6 +618,12 @@ func scanModelTraceCapture(scanner interface{ Scan(...any) error }) (*service.Mo
 	if responseID.Valid && strings.TrimSpace(responseID.String) != "" {
 		value := responseID.String
 		item.ResponseID = &value
+	}
+	if mainSessionID.Valid {
+		item.MainSessionID = strings.TrimSpace(mainSessionID.String)
+	}
+	if mainSessionKey.Valid {
+		item.MainSessionKey = strings.TrimSpace(mainSessionKey.String)
 	}
 	if userID.Valid {
 		value := userID.Int64

@@ -19,6 +19,7 @@ func TestModelTraceCaptureExportDerivesPromptRolesAndExcludesRawByDefault(t *tes
 	capture := &ModelTraceCapture{
 		TaskID:              "task_001",
 		RequestID:           &requestID,
+		MainSessionID:       "session-001",
 		CaptureRuleID:       &captureRuleID,
 		Protocol:            "openai.responses",
 		Model:               "gpt-4.1",
@@ -54,6 +55,7 @@ func TestModelTraceCaptureExportDerivesPromptRolesAndExcludesRawByDefault(t *tes
 	require.Equal(t, "task_001", export.TaskID)
 	require.NotNil(t, export.RequestID)
 	require.Equal(t, requestID, *export.RequestID)
+	require.Equal(t, "session-001", export.MainSessionID)
 	require.NotNil(t, export.CaptureRuleID)
 	require.Equal(t, captureRuleID, *export.CaptureRuleID)
 	require.Equal(t, "openai.responses", export.Protocol)
@@ -85,6 +87,45 @@ func TestModelTraceCaptureExportDerivesPromptRolesAndExcludesRawByDefault(t *tes
 	require.Equal(t, `{"body":"secret"}`, string(exportWithRaw.RawResponse))
 	require.Equal(t, "raw request body", exportWithRaw.RawRequestText)
 	require.Equal(t, "raw response body", exportWithRaw.RawResponseText)
+}
+
+func TestModelTraceCaptureValidateComputesScopedMainSessionKey(t *testing.T) {
+	t.Parallel()
+
+	userID := int64(1)
+	apiKeyID := int64(2)
+	groupID := int64(3)
+	first := &ModelTraceCapture{
+		TaskID:          "task_001",
+		MainSessionID:   "session-001",
+		UserID:          &userID,
+		APIKeyID:        &apiKeyID,
+		GroupID:         &groupID,
+		Protocol:        "openai.responses",
+		Model:           "gpt-4.1",
+		Scaffold:        "claude-code",
+		ScaffoldVersion: "2.1.140",
+		Prompt:          json.RawMessage(`[{"role":"user","content":"hello"}]`),
+	}
+	secondUserID := int64(99)
+	second := &ModelTraceCapture{
+		TaskID:          "task_002",
+		MainSessionID:   "session-001",
+		UserID:          &secondUserID,
+		APIKeyID:        &apiKeyID,
+		GroupID:         &groupID,
+		Protocol:        "openai.responses",
+		Model:           "gpt-4.1",
+		Scaffold:        "claude-code",
+		ScaffoldVersion: "2.1.140",
+		Prompt:          json.RawMessage(`[{"role":"user","content":"hello"}]`),
+	}
+
+	require.NoError(t, first.Validate())
+	require.NoError(t, second.Validate())
+	require.Len(t, first.MainSessionKey, 64)
+	require.Len(t, second.MainSessionKey, 64)
+	require.NotEqual(t, first.MainSessionKey, second.MainSessionKey)
 }
 
 func TestModelTraceCaptureValidateDefaultsOptionalJSONFields(t *testing.T) {

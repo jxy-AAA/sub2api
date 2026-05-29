@@ -15,14 +15,17 @@ import (
 )
 
 type traceExportTaskRepoStub struct {
-	createdTask *TraceExportTask
-	listTasks   []TraceExportTask
-	listResult  *pagination.PaginationResult
-	listErr     error
-	taskByID    map[int64]*TraceExportTask
-	getErr      error
-	cancelOK    bool
-	cancelErr   error
+	createdTask     *TraceExportTask
+	listTasks       []TraceExportTask
+	listResult      *pagination.PaginationResult
+	listErr         error
+	taskByID        map[int64]*TraceExportTask
+	getErr          error
+	cancelOK        bool
+	cancelErr       error
+	downloadMarkID  int64
+	downloadedAt    *time.Time
+	markDownloadErr error
 }
 
 func (s *traceExportTaskRepoStub) Create(ctx context.Context, task *TraceExportTask) error {
@@ -76,6 +79,19 @@ func (s *traceExportTaskRepoStub) MarkSucceeded(ctx context.Context, id int64, f
 }
 
 func (s *traceExportTaskRepoStub) MarkFailed(ctx context.Context, id int64, totalRecords, processedRecords int64, errorMessage string, finishedAt time.Time) (bool, error) {
+	return true, nil
+}
+
+func (s *traceExportTaskRepoStub) MarkDownloaded(ctx context.Context, id int64, downloadedAt time.Time) (bool, error) {
+	if s.markDownloadErr != nil {
+		return false, s.markDownloadErr
+	}
+	s.downloadMarkID = id
+	at := downloadedAt.UTC()
+	s.downloadedAt = &at
+	if task := s.taskByID[id]; task != nil && task.DownloadedAt == nil {
+		task.DownloadedAt = &at
+	}
 	return true, nil
 }
 
@@ -162,6 +178,8 @@ func TestTraceExportTaskServiceOpenDownload(t *testing.T) {
 	require.NotNil(t, download)
 	require.Equal(t, "trace-export.json", download.Filename)
 	require.Equal(t, "application/json; charset=utf-8", download.ContentType)
+	require.Equal(t, int64(8), repo.downloadMarkID)
+	require.NotNil(t, repo.downloadedAt)
 	body, err := io.ReadAll(download.Reader)
 	require.NoError(t, err)
 	require.Equal(t, `[{"task_id":"task-1"}]`, string(body))

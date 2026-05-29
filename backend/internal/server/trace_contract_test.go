@@ -195,6 +195,13 @@ func (r *traceContractCaptureRepo) GetByTaskID(ctx context.Context, taskID strin
 	return nil, nil
 }
 
+func (r *traceContractCaptureRepo) GetByMainSessionKey(ctx context.Context, mainSessionKey string) (*service.ModelTraceCapture, error) {
+	if r.item != nil && r.item.MainSessionKey == mainSessionKey {
+		return r.item, nil
+	}
+	return nil, nil
+}
+
 func (r *traceContractCaptureRepo) GetByDedupeHash(ctx context.Context, dedupeHash string) (*service.ModelTraceCapture, error) {
 	if r.item != nil && r.item.DedupeHash == dedupeHash {
 		return r.item, nil
@@ -288,6 +295,10 @@ func (r *traceContractTaskRepo) MarkSucceeded(ctx context.Context, id int64, fil
 }
 
 func (r *traceContractTaskRepo) MarkFailed(ctx context.Context, id int64, totalRecords, processedRecords int64, errorMessage string, finishedAt time.Time) (bool, error) {
+	return false, nil
+}
+
+func (r *traceContractTaskRepo) MarkDownloaded(ctx context.Context, id int64, downloadedAt time.Time) (bool, error) {
 	return false, nil
 }
 

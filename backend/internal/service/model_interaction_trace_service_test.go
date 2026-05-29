@@ -106,6 +106,10 @@ func (s *traceCaptureRepoStub) GetByTaskID(ctx context.Context, taskID string) (
 	return nil, nil
 }
 
+func (s *traceCaptureRepoStub) GetByMainSessionKey(ctx context.Context, mainSessionKey string) (*ModelTraceCapture, error) {
+	return nil, nil
+}
+
 func (s *traceCaptureRepoStub) GetByDedupeHash(ctx context.Context, dedupeHash string) (*ModelTraceCapture, error) {
 	return nil, nil
 }

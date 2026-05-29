@@ -88,7 +88,7 @@ func TestTraceExportTaskRepositoryGetByIDNotFound(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "status", "format", "filters", "include_raw", "target_records", "requested_by",
 			"download_filename", "file_path", "file_size_bytes", "total_records", "processed_records",
-			"error_message", "canceled_by", "canceled_at", "started_at", "finished_at", "created_at", "updated_at",
+			"error_message", "canceled_by", "canceled_at", "started_at", "finished_at", "downloaded_at", "created_at", "updated_at",
 		}))
 
 	_, err := repo.GetByID(context.Background(), 99)
@@ -149,6 +149,15 @@ func TestTraceExportTaskRepositoryExecutionLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
+	downloadedAt := finishedAt.Add(time.Minute)
+	mock.ExpectQuery("UPDATE trace_export_tasks").
+		WithArgs(task.ID, downloadedAt, service.TraceExportTaskStatusSucceeded).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(task.ID))
+
+	ok, err = repo.MarkDownloaded(context.Background(), task.ID, downloadedAt)
+	require.NoError(t, err)
+	require.True(t, ok)
+
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -166,8 +175,10 @@ func TestTraceExportTaskRepositoryFailureAndCleanupHelpers(t *testing.T) {
 	require.Equal(t, int64(2), affected)
 
 	task := newTraceExportTaskFixture()
+	downloadedAt := failedAt.Add(-25 * time.Hour)
+	task.DownloadedAt = &downloadedAt
 	mock.ExpectQuery("FROM trace_export_tasks").
-		WithArgs(failedAt, service.TraceExportTaskStatusSucceeded, service.TraceExportTaskStatusFailed, service.TraceExportTaskStatusCanceled, 10).
+		WithArgs(failedAt, service.TraceExportTaskStatusSucceeded, 10).
 		WillReturnRows(traceExportTaskRows(task, failedAt.Add(-time.Hour), failedAt.Add(-time.Hour)))
 
 	items, err := repo.ListReadyForFileCleanup(context.Background(), failedAt, 10)
@@ -231,11 +242,12 @@ func traceExportTaskRows(task *service.TraceExportTask, createdAt, updatedAt tim
 	}
 
 	var (
-		errorMsg   any
-		canceledBy any
-		canceledAt any
-		startedAt  any
-		finishedAt any
+		errorMsg     any
+		canceledBy   any
+		canceledAt   any
+		startedAt    any
+		finishedAt   any
+		downloadedAt any
 	)
 	if task.ErrorMsg != nil {
 		errorMsg = *task.ErrorMsg
@@ -252,11 +264,14 @@ func traceExportTaskRows(task *service.TraceExportTask, createdAt, updatedAt tim
 	if task.FinishedAt != nil {
 		finishedAt = *task.FinishedAt
 	}
+	if task.DownloadedAt != nil {
+		downloadedAt = *task.DownloadedAt
+	}
 
 	return sqlmock.NewRows([]string{
 		"id", "status", "format", "filters", "include_raw", "target_records", "requested_by",
 		"download_filename", "file_path", "file_size_bytes", "total_records", "processed_records",
-		"error_message", "canceled_by", "canceled_at", "started_at", "finished_at", "created_at", "updated_at",
+		"error_message", "canceled_by", "canceled_at", "started_at", "finished_at", "downloaded_at", "created_at", "updated_at",
 	}).AddRow(
 		task.ID,
 		task.Status,
@@ -275,6 +290,7 @@ func traceExportTaskRows(task *service.TraceExportTask, createdAt, updatedAt tim
 		canceledAt,
 		startedAt,
 		finishedAt,
+		downloadedAt,
 		createdAt,
 		updatedAt,
 	)
@@ -301,6 +317,7 @@ func assertTraceExportTaskMatches(t *testing.T, expected, actual *service.TraceE
 	require.Equal(t, expected.CanceledAt, actual.CanceledAt)
 	require.Equal(t, expected.StartedAt, actual.StartedAt)
 	require.Equal(t, expected.FinishedAt, actual.FinishedAt)
+	require.Equal(t, expected.DownloadedAt, actual.DownloadedAt)
 	require.Equal(t, createdAt, actual.CreatedAt)
 	require.Equal(t, updatedAt, actual.UpdatedAt)
 }

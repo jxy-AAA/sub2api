@@ -25,6 +25,9 @@ type ModelTraceCapture struct {
 	RequestID  *string `json:"request_id,omitempty"`
 	ResponseID *string `json:"response_id,omitempty"`
 
+	MainSessionID  string `json:"main_session_id,omitempty"`
+	MainSessionKey string `json:"-"`
+
 	UserID        *int64 `json:"user_id,omitempty"`
 	APIKeyID      *int64 `json:"api_key_id,omitempty"`
 	GroupID       *int64 `json:"group_id,omitempty"`
@@ -77,6 +80,8 @@ type ModelTraceCaptureExport struct {
 	TaskID     string  `json:"task_id"`
 	RequestID  *string `json:"request_id,omitempty"`
 	ResponseID *string `json:"response_id,omitempty"`
+
+	MainSessionID string `json:"main_session_id,omitempty"`
 
 	UserID        *int64 `json:"user_id,omitempty"`
 	APIKeyID      *int64 `json:"api_key_id,omitempty"`
@@ -144,6 +149,7 @@ type ModelTraceCaptureRepository interface {
 	Create(ctx context.Context, capture *ModelTraceCapture) (bool, error)
 	GetByID(ctx context.Context, id int64) (*ModelTraceCapture, error)
 	GetByTaskID(ctx context.Context, taskID string) (*ModelTraceCapture, error)
+	GetByMainSessionKey(ctx context.Context, mainSessionKey string) (*ModelTraceCapture, error)
 	GetByDedupeHash(ctx context.Context, dedupeHash string) (*ModelTraceCapture, error)
 	List(ctx context.Context, filter ModelTraceCaptureListFilter, params pagination.PaginationParams) ([]*ModelTraceCapture, *pagination.PaginationResult, error)
 	ListByTimeRange(ctx context.Context, startTime, endTime time.Time, params pagination.PaginationParams) ([]*ModelTraceCapture, *pagination.PaginationResult, error)
@@ -157,6 +163,8 @@ func (c *ModelTraceCapture) Validate() error {
 		return fmt.Errorf("model trace capture is nil")
 	}
 	c.TaskID = strings.TrimSpace(c.TaskID)
+	c.MainSessionID = strings.TrimSpace(c.MainSessionID)
+	c.MainSessionKey = strings.TrimSpace(c.MainSessionKey)
 	c.Protocol = strings.TrimSpace(c.Protocol)
 	c.Model = strings.TrimSpace(c.Model)
 	c.Scaffold = strings.TrimSpace(c.Scaffold)
@@ -226,11 +234,17 @@ func (c *ModelTraceCapture) Validate() error {
 	if strings.TrimSpace(c.DedupeHash) == "" {
 		c.DedupeHash = c.ComputeDedupeHash()
 	}
+	if c.MainSessionID != "" && c.MainSessionKey == "" {
+		c.MainSessionKey = c.ComputeMainSessionKey()
+	}
 	if len(strings.TrimSpace(c.PromptHash)) != 64 {
 		return fmt.Errorf("prompt_hash must be a 64-character hex digest")
 	}
 	if len(strings.TrimSpace(c.DedupeHash)) != 64 {
 		return fmt.Errorf("dedupe_hash must be a 64-character hex digest")
+	}
+	if c.MainSessionKey != "" && len(strings.TrimSpace(c.MainSessionKey)) != 64 {
+		return fmt.Errorf("main_session_key must be empty or a 64-character hex digest")
 	}
 	return nil
 }
@@ -255,6 +269,19 @@ func (c *ModelTraceCapture) ComputeDedupeHash() string {
 	)
 }
 
+// ComputeMainSessionKey scopes a client session ID to the authenticated caller.
+func (c *ModelTraceCapture) ComputeMainSessionKey() string {
+	if c == nil || strings.TrimSpace(c.MainSessionID) == "" {
+		return ""
+	}
+	return traceCaptureHash(
+		traceHashPart{label: "main_session_id", value: []byte(strings.TrimSpace(c.MainSessionID))},
+		traceHashPart{label: "user_id", value: []byte(traceCaptureInt64PtrString(c.UserID))},
+		traceHashPart{label: "api_key_id", value: []byte(traceCaptureInt64PtrString(c.APIKeyID))},
+		traceHashPart{label: "group_id", value: []byte(traceCaptureInt64PtrString(c.GroupID))},
+	)
+}
+
 // Export converts the capture into the root/admin JSON export shape.
 func (c *ModelTraceCapture) Export(opts ModelTraceCaptureExportOptions) *ModelTraceCaptureExport {
 	if c == nil {
@@ -266,6 +293,7 @@ func (c *ModelTraceCapture) Export(opts ModelTraceCaptureExportOptions) *ModelTr
 		TaskID:              c.TaskID,
 		RequestID:           traceCaptureCloneStringPtr(c.RequestID),
 		ResponseID:          traceCaptureCloneStringPtr(c.ResponseID),
+		MainSessionID:       c.MainSessionID,
 		UserID:              traceCaptureCloneInt64Ptr(c.UserID),
 		APIKeyID:            traceCaptureCloneInt64Ptr(c.APIKeyID),
 		GroupID:             traceCaptureCloneInt64Ptr(c.GroupID),
@@ -481,6 +509,13 @@ func traceCaptureCloneIntPtr(v *int) *int {
 	}
 	out := *v
 	return &out
+}
+
+func traceCaptureInt64PtrString(v *int64) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *v)
 }
 
 func firstTraceMessageByRole(raw json.RawMessage, role string) json.RawMessage {

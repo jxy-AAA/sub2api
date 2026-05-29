@@ -19,7 +19,7 @@ func TestModelTraceCaptureFromGatewayTraceDerivesSSEMetadataAndPreservesRawBodie
 			Stage:       GatewayTraceStageClientRequest,
 			Protocol:    "openai.responses",
 			ContentType: "application/json",
-			Body:        `{"model":"gpt-4.1","messages":[{"role":"user","content":"incident please inspect"}]}`,
+			Body:        `{"model":"gpt-4.1","metadata":{"user_id":"user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_account__session_123e4567-e89b-12d3-a456-426614174000"},"messages":[{"role":"user","content":"incident please inspect"}]}`,
 			Meta: map[string]any{
 				"account_id": int64(99),
 			},
@@ -62,6 +62,8 @@ func TestModelTraceCaptureFromGatewayTraceDerivesSSEMetadataAndPreservesRawBodie
 	require.Equal(t, "req_123", *capture.RequestID)
 	require.NotNil(t, capture.ResponseID)
 	require.Equal(t, "resp_123", *capture.ResponseID)
+	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", capture.MainSessionID)
+	require.Len(t, capture.MainSessionKey, 64)
 	require.NotNil(t, capture.AccountID)
 	require.Equal(t, int64(99), *capture.AccountID)
 	require.Equal(t, "gpt-4.1-mini", capture.Model)
@@ -90,4 +92,37 @@ func TestModelTraceCaptureFromGatewayTraceDerivesSSEMetadataAndPreservesRawBodie
 	var scaffold map[string]any
 	require.NoError(t, json.Unmarshal(export.Scaffold, &scaffold))
 	require.Equal(t, "sub2api_gateway_capture", scaffold["source"])
+}
+
+func TestModelTraceCaptureFromGatewayTraceUsesHeaderMainSessionFallback(t *testing.T) {
+	t.Parallel()
+
+	userID := int64(42)
+	entries := []GatewayTraceCaptureEntry{
+		{
+			Stage:       GatewayTraceStageClientRequest,
+			Protocol:    "openai.responses",
+			ContentType: "application/json",
+			Body:        `{"model":"gpt-4.1","input":"hello"}`,
+		},
+		{
+			Stage:       GatewayTraceStageUpstreamResponse,
+			Protocol:    "openai.responses",
+			ContentType: "application/json",
+			StatusCode:  200,
+			Body:        `{"id":"resp_456","model":"gpt-4.1","output":"ok"}`,
+		},
+	}
+	input := GatewayTraceRecordInput{
+		UserID:        &userID,
+		MainSessionID: "header-session-001",
+		RequestID:     "req_456",
+	}
+
+	trace, err := BuildCodexTraceExportFromGatewayCaptures(entries, input)
+	require.NoError(t, err)
+	capture, err := modelTraceCaptureFromGatewayTrace(trace, entries, input)
+	require.NoError(t, err)
+	require.Equal(t, "header-session-001", capture.MainSessionID)
+	require.Len(t, capture.MainSessionKey, 64)
 }

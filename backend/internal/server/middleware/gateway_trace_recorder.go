@@ -27,7 +27,8 @@ func GatewayTraceRecorder(traceService *service.ModelInteractionTraceService) gi
 		}
 
 		input := service.GatewayTraceRecordInput{
-			Method: strings.TrimSpace(c.Request.Method),
+			Method:        strings.TrimSpace(c.Request.Method),
+			MainSessionID: gatewayTraceHeaderMainSessionID(c),
 		}
 		if c.Request.URL != nil {
 			input.Path = strings.TrimSpace(c.Request.URL.Path)
@@ -62,4 +63,21 @@ func GatewayTraceRecorder(traceService *service.ModelInteractionTraceService) gi
 			)
 		}
 	}
+}
+
+func gatewayTraceHeaderMainSessionID(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	for _, name := range []string{
+		"X-Claude-Code-Session-Id",
+		"session_id",
+		"Session_ID",
+		"conversation_id",
+	} {
+		if value := strings.TrimSpace(c.GetHeader(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
