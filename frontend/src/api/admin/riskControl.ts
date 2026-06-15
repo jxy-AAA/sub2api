@@ -26,6 +26,7 @@ export interface ContentModerationConfig {
   ban_threshold: number
   violation_window_hours: number
   retry_count: number
+  fail_closed: boolean
   hit_retention_days: number
   non_hit_retention_days: number
   pre_hash_check_enabled: boolean
@@ -97,6 +98,7 @@ export interface UpdateContentModerationConfig {
   ban_threshold?: number
   violation_window_hours?: number
   retry_count?: number
+  fail_closed?: boolean
   hit_retention_days?: number
   non_hit_retention_days?: number
   pre_hash_check_enabled?: boolean

@@ -43,6 +43,7 @@ type contentModerationConfigRequest struct {
 	BanThreshold         *int      `json:"ban_threshold"`
 	ViolationWindowHours *int      `json:"violation_window_hours"`
 	RetryCount           *int      `json:"retry_count"`
+	FailClosed           *bool     `json:"fail_closed"`
 	HitRetentionDays     *int      `json:"hit_retention_days"`
 	NonHitRetentionDays  *int      `json:"non_hit_retention_days"`
 	PreHashCheckEnabled  *bool     `json:"pre_hash_check_enabled"`
@@ -100,6 +101,7 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		BanThreshold:         req.BanThreshold,
 		ViolationWindowHours: req.ViolationWindowHours,
 		RetryCount:           req.RetryCount,
+		FailClosed:           req.FailClosed,
 		HitRetentionDays:     req.HitRetentionDays,
 		NonHitRetentionDays:  req.NonHitRetentionDays,
 		PreHashCheckEnabled:  req.PreHashCheckEnabled,

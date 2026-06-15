@@ -296,6 +296,13 @@
                 <label class="input-label">{{ t('admin.riskControl.retryCount') }}</label>
                 <input v-model.number="configForm.retry_count" type="number" min="0" max="5" class="input" />
               </div>
+              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.failClosed') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.failClosedHint') }}</p>
+                </div>
+                <Toggle v-model="configForm.fail_closed" />
+              </div>
               <div>
                 <label class="input-label">{{ t('admin.riskControl.sampleRate') }}</label>
                 <div class="relative">
@@ -904,6 +911,7 @@ const configForm = reactive({
   clear_api_key: false,
   timeout_ms: 3000,
   retry_count: 2,
+  fail_closed: false,
   sample_rate: 100,
   all_groups: true,
   group_ids: [] as number[],
@@ -1180,6 +1188,7 @@ function applyConfig(config: ContentModerationConfig) {
   apiKeyRowsExpanded.value = false
   configForm.timeout_ms = config.timeout_ms || 3000
   configForm.retry_count = config.retry_count ?? 2
+  configForm.fail_closed = config.fail_closed ?? false
   configForm.sample_rate = config.sample_rate ?? 100
   configForm.all_groups = config.all_groups
   configForm.group_ids = Array.isArray(config.group_ids) ? [...config.group_ids] : []
@@ -1248,6 +1257,7 @@ async function saveConfig() {
       model: configForm.model,
       timeout_ms: Number(configForm.timeout_ms) || 3000,
       retry_count: Number(configForm.retry_count) || 0,
+      fail_closed: configForm.fail_closed,
       sample_rate: Number(configForm.sample_rate) || 0,
       all_groups: configForm.all_groups,
       group_ids: configForm.all_groups ? [] : [...configForm.group_ids],

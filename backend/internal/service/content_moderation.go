@@ -139,6 +139,7 @@ type ContentModerationConfig struct {
 	BanThreshold         int                `json:"ban_threshold"`
 	ViolationWindowHours int                `json:"violation_window_hours"`
 	RetryCount           int                `json:"retry_count"`
+	FailClosed           bool               `json:"fail_closed"`
 	HitRetentionDays     int                `json:"hit_retention_days"`
 	NonHitRetentionDays  int                `json:"non_hit_retention_days"`
 	PreHashCheckEnabled  bool               `json:"pre_hash_check_enabled"`
@@ -168,6 +169,7 @@ type ContentModerationConfigView struct {
 	BanThreshold         int                             `json:"ban_threshold"`
 	ViolationWindowHours int                             `json:"violation_window_hours"`
 	RetryCount           int                             `json:"retry_count"`
+	FailClosed           bool                            `json:"fail_closed"`
 	HitRetentionDays     int                             `json:"hit_retention_days"`
 	NonHitRetentionDays  int                             `json:"non_hit_retention_days"`
 	PreHashCheckEnabled  bool                            `json:"pre_hash_check_enabled"`
@@ -237,6 +239,7 @@ type UpdateContentModerationConfigInput struct {
 	BanThreshold         *int      `json:"ban_threshold"`
 	ViolationWindowHours *int      `json:"violation_window_hours"`
 	RetryCount           *int      `json:"retry_count"`
+	FailClosed           *bool     `json:"fail_closed"`
 	HitRetentionDays     *int      `json:"hit_retention_days"`
 	NonHitRetentionDays  *int      `json:"non_hit_retention_days"`
 	PreHashCheckEnabled  *bool     `json:"pre_hash_check_enabled"`
@@ -551,6 +554,9 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if input.RetryCount != nil {
 		cfg.RetryCount = *input.RetryCount
 	}
+	if input.FailClosed != nil {
+		cfg.FailClosed = *input.FailClosed
+	}
 	if input.HitRetentionDays != nil {
 		cfg.HitRetentionDays = *input.HitRetentionDays
 	}
@@ -858,7 +864,7 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		if queueDelay != nil {
 			s.asyncErrors.Add(1)
 		}
-		if s.repo != nil && (cfg.RecordNonHits || failClosed) {
+		if s.repo != nil && (cfg.RecordNonHits || cfg.Mode == ContentModerationModePreBlock || failClosed) {
 			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, nil, content.ExcerptText(), &latency, queueDelay, err.Error())
 			_ = s.repo.CreateLog(ctx, log)
 		}
@@ -868,7 +874,7 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		return allow, nil
 	}
 
-	flagged, highestCategory, highestScore := evaluateModerationScores(result.CategoryScores, cfg.Thresholds)
+	flagged, highestCategory, highestScore := evaluateModerationResult(result, cfg.Thresholds)
 	action := ContentModerationActionAllow
 	blocked := false
 	if allowBlock && flagged && cfg.Mode == ContentModerationModePreBlock {
@@ -926,7 +932,7 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 }
 
 func shouldFailClosedContentModeration(cfg *ContentModerationConfig, queueDelay *int, allowBlock bool) bool {
-	return cfg != nil && cfg.Mode == ContentModerationModePreBlock && allowBlock && queueDelay == nil
+	return cfg != nil && cfg.FailClosed && cfg.Mode == ContentModerationModePreBlock && allowBlock && queueDelay == nil
 }
 
 func buildContentModerationErrorDecision(cfg *ContentModerationConfig) *ContentModerationDecision {
@@ -1493,6 +1499,7 @@ func defaultContentModerationConfig() *ContentModerationConfig {
 		BanThreshold:         defaultContentModerationBanThreshold,
 		ViolationWindowHours: defaultContentModerationViolationWindowHours,
 		RetryCount:           defaultContentModerationRetryCount,
+		FailClosed:           false,
 		HitRetentionDays:     defaultContentModerationHitRetentionDays,
 		NonHitRetentionDays:  defaultContentModerationNonHitRetentionDays,
 		PreHashCheckEnabled:  false,
@@ -1747,6 +1754,7 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		BanThreshold:         cfg.BanThreshold,
 		ViolationWindowHours: cfg.ViolationWindowHours,
 		RetryCount:           cfg.RetryCount,
+		FailClosed:           cfg.FailClosed,
 		HitRetentionDays:     cfg.HitRetentionDays,
 		NonHitRetentionDays:  cfg.NonHitRetentionDays,
 		PreHashCheckEnabled:  cfg.PreHashCheckEnabled,
@@ -1891,7 +1899,13 @@ func buildContentModerationTestAuditResult(result *moderationAPIResult, threshol
 		scores[category] = score
 	}
 	thresholdSnapshot := mergeContentModerationThresholds(ContentModerationDefaultThresholds(), thresholds)
-	flagged, highestCategory, highestScore := evaluateModerationScores(scores, thresholdSnapshot)
+	normalizedResult := &moderationAPIResult{
+		Flagged:        result.Flagged,
+		flaggedPresent: result.flaggedPresent,
+		Categories:     result.Categories,
+		CategoryScores: scores,
+	}
+	flagged, highestCategory, highestScore := evaluateModerationResult(normalizedResult, thresholdSnapshot)
 	compositeScore := highestScore
 	return &ContentModerationTestAuditResult{
 		Flagged:         flagged,
@@ -1923,8 +1937,69 @@ type moderationAPIResponse struct {
 }
 
 type moderationAPIResult struct {
-	Flagged        bool               `json:"flagged"`
+	Flagged        bool `json:"flagged"`
+	flaggedPresent bool
+	Categories     map[string]bool    `json:"categories"`
 	CategoryScores map[string]float64 `json:"category_scores"`
+}
+
+func (r *moderationAPIResult) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Flagged        *bool              `json:"flagged"`
+		Categories     map[string]bool    `json:"categories"`
+		CategoryScores map[string]float64 `json:"category_scores"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.Flagged = raw.Flagged != nil && *raw.Flagged
+	r.flaggedPresent = raw.Flagged != nil
+	r.Categories = raw.Categories
+	r.CategoryScores = raw.CategoryScores
+	return nil
+}
+
+func evaluateModerationResult(result *moderationAPIResult, thresholds map[string]float64) (bool, string, float64) {
+	if result == nil {
+		return false, "", 0
+	}
+	scoreFlagged, highestCategory, highestScore := evaluateModerationScores(result.CategoryScores, thresholds)
+	if result.flaggedPresent || len(result.Categories) > 0 {
+		flagged := result.Flagged || moderationCategoriesFlagged(result.Categories)
+		if flagged && highestCategory == "" {
+			highestCategory = firstFlaggedModerationCategory(result.Categories)
+		}
+		return flagged, highestCategory, highestScore
+	}
+	return scoreFlagged, highestCategory, highestScore
+}
+
+func moderationCategoriesFlagged(categories map[string]bool) bool {
+	for _, category := range contentModerationCategoryOrder {
+		if categories[category] {
+			return true
+		}
+	}
+	for _, flagged := range categories {
+		if flagged {
+			return true
+		}
+	}
+	return false
+}
+
+func firstFlaggedModerationCategory(categories map[string]bool) string {
+	for _, category := range contentModerationCategoryOrder {
+		if categories[category] {
+			return category
+		}
+	}
+	for category, flagged := range categories {
+		if flagged {
+			return category
+		}
+	}
+	return ""
 }
 
 func evaluateModerationScores(scores map[string]float64, thresholds map[string]float64) (bool, string, float64) {
@@ -1932,12 +2007,15 @@ func evaluateModerationScores(scores map[string]float64, thresholds map[string]f
 	highestCategory := ""
 	highestScore := 0.0
 	for _, category := range contentModerationCategoryOrder {
-		score := scores[category]
+		score, ok := scores[category]
+		if !ok {
+			continue
+		}
 		if score > highestScore || highestCategory == "" {
 			highestScore = score
 			highestCategory = category
 		}
-		if score >= thresholds[category] {
+		if threshold := thresholds[category]; threshold > 0 && score >= threshold {
 			flagged = true
 		}
 	}
@@ -1957,11 +2035,8 @@ func mergeContentModerationThresholds(base map[string]float64, override map[stri
 	}
 	for _, category := range contentModerationCategoryOrder {
 		if v, ok := override[category]; ok {
-			if v < 0 {
-				v = 0
-			}
-			if v > 1 {
-				v = 1
+			if v <= 0 || v > 1 {
+				continue
 			}
 			out[category] = v
 		}

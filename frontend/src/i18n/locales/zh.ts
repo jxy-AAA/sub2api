@@ -2927,6 +2927,8 @@ export default {
       keepApiKey: '保留已保存 Key',
       timeoutMs: 'HTTP 超时 (ms)',
       retryCount: '失败重试次数',
+      failClosed: '审查异常时拦截',
+      failClosedHint: '关闭时，审查 API 异常只记录日志并放行业务请求；仅在希望审查不可用也阻断流量时开启。',
       sampleRate: '采样率',
       recordNonHits: '记录未命中输入',
       recordNonHitsHint: '开启后会记录抽样但未命中的请求摘要，摘要会先脱敏再入库。',

@@ -30,6 +30,7 @@ func TestRunContentModeration_ReturnsBlockingDecisionOnFailClosedError(t *testin
 		Model:        "omni-moderation-latest",
 		APIKeys:      []string{"sk-test"},
 		RetryCount:   0,
+		FailClosed:   true,
 		SampleRate:   100,
 		AllGroups:    true,
 		BlockStatus:  http.StatusServiceUnavailable,

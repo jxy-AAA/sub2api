@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
@@ -480,7 +481,9 @@ func TestBuildModerationTestInputRejectsMultipleImages(t *testing.T) {
 	})
 
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "最多上传 1 张测试图片")
+	var appErr *infraerrors.ApplicationError
+	require.ErrorAs(t, err, &appErr)
+	require.Equal(t, "TOO_MANY_MODERATION_TEST_IMAGES", appErr.Reason)
 }
 
 func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMessage(t *testing.T) {
@@ -573,6 +576,9 @@ func TestContentModerationCheck_PreBlockBlocksCodexResponsesLatestUserInput(t *t
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&moderationRequest))
 		_ = json.NewEncoder(w).Encode(moderationAPIResponse{
 			Results: []moderationAPIResult{{
+				Flagged:        true,
+				flaggedPresent: true,
+				Categories:     map[string]bool{"sexual": true},
 				CategoryScores: map[string]float64{"sexual": 0.9},
 			}},
 		})
@@ -634,7 +640,7 @@ func TestContentModerationCheck_PreBlockBlocksCodexResponsesLatestUserInput(t *t
 	require.Equal(t, "latest blocked prompt", moderationRequest.Input)
 }
 
-func TestContentModerationCheck_PreBlockBlocksWhenModerationAPIUnavailable(t *testing.T) {
+func TestContentModerationCheck_PreBlockAllowsWhenModerationAPIUnavailableByDefault(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))
@@ -648,7 +654,62 @@ func TestContentModerationCheck_PreBlockBlocksWhenModerationAPIUnavailable(t *te
 	cfg.APIKeys = []string{"sk-test"}
 	cfg.RetryCount = 0
 	cfg.BlockStatus = http.StatusServiceUnavailable
-	cfg.BlockMessage = "内容审核服务暂时不可用，请稍后重试"
+	cfg.BlockMessage = "moderation unavailable"
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		repo,
+		&contentModerationTestHashCache{},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		UserID:   1001,
+		Endpoint: "/chat/completions",
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		Protocol: ContentModerationProtocolOpenAIChat,
+		Body:     []byte(`{"messages":[{"role":"user","content":"please check this"}]}`),
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.True(t, decision.Allowed)
+	require.False(t, decision.Blocked)
+	require.False(t, decision.Flagged)
+	require.Equal(t, ContentModerationActionAllow, decision.Action)
+	require.Len(t, repo.logs, 1)
+	require.Equal(t, ContentModerationActionError, repo.logs[0].Action)
+	require.False(t, repo.logs[0].Flagged)
+	require.Equal(t, ContentModerationModePreBlock, repo.logs[0].Mode)
+	require.Contains(t, repo.logs[0].Error, "moderation api status 500")
+}
+
+func TestContentModerationCheck_PreBlockBlocksWhenModerationAPIUnavailableAndFailClosed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModePreBlock
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.RetryCount = 0
+	cfg.FailClosed = true
+	cfg.BlockStatus = http.StatusServiceUnavailable
+	cfg.BlockMessage = "moderation unavailable"
 	rawCfg, err := json.Marshal(cfg)
 	require.NoError(t, err)
 
@@ -684,14 +745,13 @@ func TestContentModerationCheck_PreBlockBlocksWhenModerationAPIUnavailable(t *te
 	require.False(t, decision.Flagged)
 	require.Equal(t, ContentModerationActionError, decision.Action)
 	require.Equal(t, http.StatusServiceUnavailable, decision.StatusCode)
-	require.Equal(t, "内容审核服务暂时不可用，请稍后重试", decision.Message)
+	require.Equal(t, "moderation unavailable", decision.Message)
 	require.Len(t, repo.logs, 1)
 	require.Equal(t, ContentModerationActionError, repo.logs[0].Action)
 	require.False(t, repo.logs[0].Flagged)
 	require.Equal(t, ContentModerationModePreBlock, repo.logs[0].Mode)
 	require.Contains(t, repo.logs[0].Error, "moderation api status 500")
 }
-
 func TestContentModerationCheck_ObserveModerationAPIFailureAllowsAsync(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -750,20 +810,57 @@ func TestContentModerationCheck_ObserveModerationAPIFailureAllowsAsync(t *testin
 	require.EqualValues(t, 1, svc.asyncErrors.Load())
 }
 
-func TestBuildContentModerationTestAuditResult_UsesConfiguredThresholdsOnly(t *testing.T) {
+func TestBuildContentModerationTestAuditResult_UsesOfficialFlaggedAndConfiguredThresholdSnapshot(t *testing.T) {
 	result := buildContentModerationTestAuditResult(&moderationAPIResult{
-		Flagged: true,
+		Flagged:        true,
+		flaggedPresent: true,
+		Categories:     map[string]bool{"harassment": true},
 		CategoryScores: map[string]float64{
 			"harassment": 0.65,
 		},
 	}, nil)
 
 	require.NotNil(t, result)
-	require.False(t, result.Flagged)
+	require.True(t, result.Flagged)
 	require.Equal(t, "harassment", result.HighestCategory)
 	require.Equal(t, 0.65, result.HighestScore)
 	require.Equal(t, 0.65, result.CompositeScore)
 	require.Equal(t, 0.98, result.Thresholds["harassment"])
+}
+
+func TestContentModerationEvaluateResult_OfficialFlaggedFalseWinsOverLocalThreshold(t *testing.T) {
+	result := &moderationAPIResult{
+		Flagged:        false,
+		flaggedPresent: true,
+		Categories:     map[string]bool{"sexual": false},
+		CategoryScores: map[string]float64{"sexual": 0.99},
+	}
+
+	flagged, highestCategory, highestScore := evaluateModerationResult(result, ContentModerationDefaultThresholds())
+
+	require.False(t, flagged)
+	require.Equal(t, "sexual", highestCategory)
+	require.Equal(t, 0.99, highestScore)
+}
+
+func TestContentModerationEvaluateScores_ZeroThresholdDoesNotFlagMissingScores(t *testing.T) {
+	thresholds := ContentModerationDefaultThresholds()
+	thresholds["sexual"] = 0
+
+	flagged, highestCategory, highestScore := evaluateModerationScores(map[string]float64{}, thresholds)
+
+	require.False(t, flagged)
+	require.Empty(t, highestCategory)
+	require.Zero(t, highestScore)
+}
+
+func TestContentModerationConfigNormalize_ZeroThresholdFallsBackToDefault(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	cfg.Thresholds = map[string]float64{"sexual": 0}
+
+	cfg.normalize()
+
+	require.Equal(t, ContentModerationDefaultThresholds()["sexual"], cfg.Thresholds["sexual"])
 }
 
 func TestContentModerationCallModeration_400DoesNotFreezeAPIKey(t *testing.T) {
@@ -913,6 +1010,9 @@ func TestContentModerationCheck_PreBlockFlaggedWritesRedisHashCache(t *testing.T
 		requestCount++
 		_ = json.NewEncoder(w).Encode(moderationAPIResponse{
 			Results: []moderationAPIResult{{
+				Flagged:        true,
+				flaggedPresent: true,
+				Categories:     map[string]bool{"sexual": true},
 				CategoryScores: map[string]float64{"sexual": 0.9},
 			}},
 		})
@@ -1027,6 +1127,9 @@ func TestContentModerationCheck_AsyncFlaggedWritesRedisHashCache(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(moderationAPIResponse{
 			Results: []moderationAPIResult{{
+				Flagged:        true,
+				flaggedPresent: true,
+				Categories:     map[string]bool{"sexual": true},
 				CategoryScores: map[string]float64{"sexual": 0.9},
 			}},
 		})

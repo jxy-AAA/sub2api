@@ -2849,6 +2849,8 @@ export default {
       keepApiKey: 'Keep stored key',
       timeoutMs: 'HTTP Timeout (ms)',
       retryCount: 'Retry Count',
+      failClosed: 'Block when moderation fails',
+      failClosedHint: 'When off, moderation API errors are logged but normal requests continue. Turn on only if you prefer availability failures to block traffic.',
       sampleRate: 'Sample Rate',
       recordNonHits: 'Record Non-Hits',
       recordNonHitsHint: 'When enabled, sampled non-hit request summaries are redacted before storage.',
